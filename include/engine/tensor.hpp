@@ -9,67 +9,100 @@
 #include <random>
 #include <string>
 #include <numeric>
+#include <memory>
+#include <functional>
 
 namespace engine {
 
+struct TensorImpl;
+
 class Tensor {
 private:
-    std::vector<float> data_;         // Buffer de memoria unidimensional contiguo en memoria (CPU)
-    std::vector<size_t> shape_;       // Dimensiones del tensor (ej. [2, 3] para una matriz 2x3)
-    std::vector<size_t> strides_;     // Pasos o zancadas para indexación multidimensional (row-major)
+    std::shared_ptr<TensorImpl> impl_;
 
-    // Calcula los strides en orden C (row-major) basándose en la forma (shape)
-    void compute_strides();
+    // Constructor privado para envolver un TensorImpl existente
+    explicit Tensor(std::shared_ptr<TensorImpl> impl);
 
 public:
-    // Constructores
+    // Constructores públicos
     Tensor();
-    explicit Tensor(const std::vector<size_t>& shape, float fill_value = 0.0f);
-    Tensor(const std::vector<size_t>& shape, const std::vector<float>& data);
+    explicit Tensor(const std::vector<size_t>& shape, float fill_value = 0.0f, bool requires_grad = false);
+    Tensor(const std::vector<size_t>& shape, const std::vector<float>& data, bool requires_grad = false);
 
-    // Métodos estáticos de fábrica (Factory Methods)
-    static Tensor zeros(const std::vector<size_t>& shape);
-    static Tensor ones(const std::vector<size_t>& shape);
-    static Tensor rand(const std::vector<size_t>& shape, float min_val = -1.0f, float max_val = 1.0f);
+    // Método estático auxiliar para envolver una implementación compartida
+    static Tensor from_impl(std::shared_ptr<TensorImpl> impl);
 
-    // Cálculo del índice plano 1D desde coordenadas multidimensionales
+    // Métodos estáticos de fábrica
+    static Tensor zeros(const std::vector<size_t>& shape, bool requires_grad = false);
+    static Tensor ones(const std::vector<size_t>& shape, bool requires_grad = false);
+    static Tensor rand(const std::vector<size_t>& shape, float min_val = -1.0f, float max_val = 1.0f, bool requires_grad = false);
+
+    // Métodos Autograd y Gradientes
+    bool requires_grad() const;
+    void set_requires_grad(bool requires_grad);
+    Tensor grad() const;
+    bool has_grad() const;
+    void zero_grad();
+    void add_grad(const Tensor& g);
+    void backward();
+
+    // Obtener implementación compartida interna
+    std::shared_ptr<TensorImpl> get_impl() const { return impl_; }
+
+    // Indexación y propiedades
     size_t get_flat_index(const std::vector<size_t>& indices) const;
-
-    // Operadores de acceso a elementos
     float& operator()(const std::vector<size_t>& indices);
     const float& operator()(const std::vector<size_t>& indices) const;
-    
     float& at(size_t flat_index);
     const float& at(size_t flat_index) const;
 
-    // Métodos de consulta de propiedades (Getters)
-    const std::vector<size_t>& shape() const { return shape_; }
-    const std::vector<size_t>& strides() const { return strides_; }
-    const std::vector<float>& data() const { return data_; }
-    std::vector<float>& data() { return data_; }
-    size_t size() const { return data_.size(); }
-    size_t ndim() const { return shape_.size(); }
+    const std::vector<size_t>& shape() const;
+    const std::vector<size_t>& strides() const;
+    const std::vector<float>& data() const;
+    std::vector<float>& data();
+    size_t size() const;
+    size_t ndim() const;
 
-    // Operaciones matemáticas elemento a elemento (Element-wise)
+    // Operaciones matemáticas con soporte para Autograd
     Tensor operator+(const Tensor& other) const;
     Tensor operator-(const Tensor& other) const;
     Tensor operator*(const Tensor& other) const;
     Tensor operator/(const Tensor& other) const;
 
     Tensor operator+(float scalar) const;
+    Tensor operator-(float scalar) const;
     Tensor operator*(float scalar) const;
+    Tensor operator/(float scalar) const;
 
-    // Multiplicación matricial (2D MatMul)
     Tensor matmul(const Tensor& other) const;
-
-    // Funciones de activación (elemento a elemento)
+    Tensor transpose() const;
     Tensor relu() const;
-
-    // Reconfiguración de forma (Reshape)
     Tensor reshape(const std::vector<size_t>& new_shape) const;
+    Tensor sum() const;
+    Tensor mean() const;
 
-    // Formateo e impresión por consola (PyTorch style)
+    // Formateo e impresión
     void print(const std::string& name = "") const;
+};
+
+// Estructura interna para almacenar el estado y los nodos del grafo Autograd
+struct TensorImpl {
+    std::vector<float> data;
+    std::vector<size_t> shape;
+    std::vector<size_t> strides;
+
+    bool requires_grad = false;
+    std::shared_ptr<TensorImpl> grad = nullptr;
+
+    std::vector<std::shared_ptr<TensorImpl>> parents;
+    std::function<void()> backward_fn = nullptr;
+
+    TensorImpl() = default;
+    TensorImpl(const std::vector<size_t>& s, float fill_val = 0.0f, bool req_grad = false);
+    TensorImpl(const std::vector<size_t>& s, const std::vector<float>& d, bool req_grad = false);
+
+    void compute_strides();
+    size_t get_flat_index(const std::vector<size_t>& indices) const;
 };
 
 } // namespace engine
