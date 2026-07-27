@@ -159,7 +159,11 @@ std::vector<std::pair<std::string, StoredTensor>> read_file(const std::string& p
             in.read(reinterpret_cast<char*>(entry.data.data()),
                     static_cast<std::streamsize>(total * sizeof(float)));
             if (!in) {
-                throw std::runtime_error("Fichero de pesos truncado en '" + name + "': " + path);
+                std::string message = "Fichero de pesos truncado en '";
+                message += name;
+                message += "': ";
+                message += path;
+                throw std::runtime_error(message);
             }
         }
         stored.emplace_back(name, std::move(entry));

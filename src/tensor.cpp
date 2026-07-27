@@ -1,6 +1,7 @@
 #include "engine/tensor.hpp"
 #include "engine/autograd.hpp"
 #include "engine/detail/restrict.hpp"
+#include "engine/parallel.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -28,6 +29,32 @@ namespace {
 
 // El grafo solo se construye si el tensor lo pide y el modo autograd está
 // activo (durante el backward y dentro de los optimizadores está desactivado).
+// Umbrales de reparto, calibrados con el coste medido de despachar una región
+// paralela: unos 8 us con cuatro hilos en esta máquina. Por debajo de unos
+// 100 us de trabajo, repartir sale más caro que calcular.
+//
+// El primer intento usó umbrales diez veces menores y los ejemplos se volvieron
+// más LENTOS: el del Transformer pasó de 15,9 s a 22,6 s, porque encadena
+// muchos productos pequeños y cada uno pagaba la sincronización sin ganar nada.
+
+// Un producto de 1M de multiplicaciones y sumas son unos 130 us a 15 GFLOP/s.
+constexpr size_t kMatmulParallelFloor = 1u << 20;
+// Trozos de ~65k operaciones: bastantes para que el reparto dinámico equilibre,
+// sin que el coste de pedir el siguiente trozo pese.
+constexpr size_t kMatmulChunkWork = 1u << 16;
+
+// Una operación elemento a elemento está limitada por el ancho de banda de
+// memoria, no por el cálculo, así que escala peor y necesita más trabajo para
+// merecer la pena: medido, 1,77x con cuatro hilos frente a 3,08x del producto.
+constexpr size_t kElementsPerThread = 1u << 17;
+
+// Devuelve 0 —«ejecuta en línea»— cuando el producto no da para repartir.
+inline size_t matmul_rows_per_thread(size_t rows, size_t K, size_t N) {
+    const size_t per_row = std::max<size_t>(1, K * N);
+    if (rows * per_row < kMatmulParallelFloor) return 0;
+    return std::max<size_t>(1, kMatmulChunkWork / per_row);
+}
+
 inline bool track(bool requires_grad) {
     return requires_grad && autograd::grad_enabled();
 }
@@ -340,7 +367,9 @@ Tensor Tensor::operator+(const Tensor& other) const {
     float* ENGINE_RESTRICT out = res.data().data();
 
     if (!broadcast) {
-        for (size_t i = 0; i < n; ++i) out[i] = lhs[i] + rhs[i];
+        parallel::parallel_for(n, kElementsPerThread, [&](size_t from, size_t to) {
+            for (size_t i = from; i < to; ++i) out[i] = lhs[i] + rhs[i];
+        });
     } else {
         // Por bloques en lugar de con un módulo por elemento: el operando
         // difundido se repite tal cual, y así el bucle interno vectoriza.
@@ -399,7 +428,9 @@ Tensor Tensor::operator-(const Tensor& other) const {
         const float* ENGINE_RESTRICT rhs = other.data().data();
         float* ENGINE_RESTRICT out = res.data().data();
         if (!broadcast) {
-            for (size_t i = 0; i < n; ++i) out[i] = lhs[i] - rhs[i];
+            parallel::parallel_for(n, kElementsPerThread, [&](size_t from, size_t to) {
+                for (size_t i = from; i < to; ++i) out[i] = lhs[i] - rhs[i];
+            });
         } else {
             // Por bloques en lugar de con un módulo por elemento: el operando
             // difundido se repite tal cual, y así el bucle interno vectoriza.
@@ -452,7 +483,9 @@ Tensor Tensor::operator*(const Tensor& other) const {
         const float* ENGINE_RESTRICT rhs = other.data().data();
         float* ENGINE_RESTRICT out = res.data().data();
         if (!broadcast) {
-            for (size_t i = 0; i < n; ++i) out[i] = lhs[i] * rhs[i];
+            parallel::parallel_for(n, kElementsPerThread, [&](size_t from, size_t to) {
+                for (size_t i = from; i < to; ++i) out[i] = lhs[i] * rhs[i];
+            });
         } else {
             // Por bloques en lugar de con un módulo por elemento: el operando
             // difundido se repite tal cual, y así el bucle interno vectoriza.
@@ -506,7 +539,9 @@ Tensor Tensor::operator/(const Tensor& other) const {
         const float* ENGINE_RESTRICT rhs = other.data().data();
         float* ENGINE_RESTRICT out = res.data().data();
         if (!broadcast) {
-            for (size_t i = 0; i < n; ++i) out[i] = lhs[i] / rhs[i];
+            parallel::parallel_for(n, kElementsPerThread, [&](size_t from, size_t to) {
+                for (size_t i = from; i < to; ++i) out[i] = lhs[i] / rhs[i];
+            });
         } else {
             // Por bloques en lugar de con un módulo por elemento: el operando
             // difundido se repite tal cual, y así el bucle interno vectoriza.
@@ -746,14 +781,19 @@ Tensor Tensor::matmul(const Tensor& B) const {
     // exacto —la segunda capa densa de cada bloque Transformer, por ejemplo—
     // y ahí se salta la mitad del trabajo. Medido de las dos formas sobre el
     // ejemplo del Transformer: sin la rama 18,7 s, con ella 15,9 s.
-    for (size_t b = 0; b < batch; ++b) {
-        const float* ENGINE_RESTRICT a = a_data.data() + b * a_stride;
-        const float* ENGINE_RESTRICT bm = b_data.data() + b * b_stride;
-        float* ENGINE_RESTRICT c = c_data.data() + b * M * N;
+    // El reparto va por filas de la salida: cada fila la calcula un único hilo
+    // de principio a fin, así que el orden de acumulación no cambia y el
+    // resultado es idéntico bit a bit sea cual sea el número de hilos.
+    const size_t rows = batch * M;
+    parallel::parallel_for(rows, matmul_rows_per_thread(rows, K, N),
+                           [&](size_t from, size_t to) {
+        for (size_t row = from; row < to; ++row) {
+            const size_t b = row / M;
+            const size_t i = row % M;
 
-        for (size_t i = 0; i < M; ++i) {
-            float* ENGINE_RESTRICT c_row = c + i * N;
-            const float* ENGINE_RESTRICT a_row = a + i * K;
+            const float* ENGINE_RESTRICT a_row = a_data.data() + b * a_stride + i * K;
+            const float* ENGINE_RESTRICT bm = b_data.data() + b * b_stride;
+            float* ENGINE_RESTRICT c_row = c_data.data() + b * M * N + i * N;
 
             for (size_t k = 0; k < K; ++k) {
                 const float a_ik = a_row[k];
@@ -764,7 +804,7 @@ Tensor Tensor::matmul(const Tensor& B) const {
                 }
             }
         }
-    }
+    });
 
     if (req_g) {
         C.impl_->parents = { impl_, B.impl_ };
@@ -1125,6 +1165,7 @@ Tensor Tensor::concat(const std::vector<Tensor>& parts, size_t axis) {
 
     if (req_g) {
         std::vector<std::shared_ptr<TensorImpl>> parents;
+        parents.reserve(parts.size());
         std::vector<Tensor> copies = parts;
         for (const Tensor& t : parts) parents.push_back(t.get_impl());
         res.impl_->parents = parents;
@@ -1275,7 +1316,7 @@ void Tensor::print(const std::string& name) const {
         std::cout << "  grad = \n";
         grad().print("  gradientes");
     }
-    std::cout << std::endl;
+    std::cout << "\n";
 }
 
 } // namespace engine

@@ -1,5 +1,6 @@
 #include "engine/conv.hpp"
 #include "engine/autograd.hpp"
+#include "engine/parallel.hpp"
 
 #include <limits>
 
@@ -15,6 +16,10 @@ namespace nn {
 // ---------------------------------------------------------
 
 namespace {
+
+// Mismo criterio que en el tensor: repartir cuesta unos 8 us, así que solo
+// compensa a partir de bastante trabajo por región.
+constexpr size_t kConvRowsPerThread = 4096;
 
 size_t output_size(size_t in_size, size_t kernel, size_t stride, size_t padding) {
     const size_t padded = in_size + 2 * padding;
@@ -67,10 +72,15 @@ Tensor im2col(const Tensor& input, const Window2d& window) {
     const std::vector<float>& src = input.data();
     std::vector<float>& dst = cols.data();
 
-    for (size_t n = 0; n < N; ++n) {
-        for (size_t oh = 0; oh < oH; ++oh) {
-            for (size_t ow = 0; ow < oW; ++ow) {
-                const size_t row = (n * oH + oh) * oW + ow;
+    // Cada fila de salida la escribe una única iteración, así que repartir por
+    // filas no crea ninguna carrera.
+    parallel::parallel_for(N * oH * oW, kConvRowsPerThread, [&](size_t from, size_t to) {
+    for (size_t row = from; row < to; ++row) {
+        {
+            {
+                const size_t n = row / (oH * oW);
+                const size_t oh = (row % (oH * oW)) / oW;
+                const size_t ow = row % oW;
                 for (size_t c = 0; c < C; ++c) {
                     for (size_t i = 0; i < kH; ++i) {
                         // Coordenada en la imagen sin relleno; puede quedar fuera
@@ -93,6 +103,7 @@ Tensor im2col(const Tensor& input, const Window2d& window) {
             }
         }
     }
+    });
     return cols;
 }
 
@@ -121,7 +132,11 @@ Tensor col2im(const Tensor& cols, const std::vector<size_t>& input_shape, const 
     const std::vector<float>& src = cols.data();
     std::vector<float>& dst = out.data();
 
-    for (size_t n = 0; n < N; ++n) {
+    // Aquí NO se puede repartir por filas: dos ventanas solapadas acumulan en
+    // el mismo píxel. Se reparte por imagen del lote, que son regiones
+    // disjuntas de la salida.
+    parallel::parallel_for(N, 1, [&](size_t n_from, size_t n_to) {
+    for (size_t n = n_from; n < n_to; ++n) {
         for (size_t oh = 0; oh < oH; ++oh) {
             for (size_t ow = 0; ow < oW; ++ow) {
                 const size_t row = (n * oH + oh) * oW + ow;
@@ -148,6 +163,7 @@ Tensor col2im(const Tensor& cols, const std::vector<size_t>& input_shape, const 
             }
         }
     }
+    });
     return out;
 }
 
@@ -213,18 +229,22 @@ Tensor Conv2d::forward(const Tensor& input) {
         const std::vector<float>& b = bias_.data();
         std::vector<float>& o = out.data();
 
-        for (size_t m = 0; m < M; ++m) {
-            const size_t n = m / spatial;
-            const size_t p = m % spatial;
-            const float* col_row = c.data() + m * K;
+        // Cada m escribe posiciones distintas de la salida: reparto directo.
+        const size_t rows_per_thread = std::max<size_t>(1, 32768 / std::max<size_t>(1, K * out_channels_));
+        parallel::parallel_for(M, rows_per_thread, [&](size_t from, size_t to) {
+            for (size_t m = from; m < to; ++m) {
+                const size_t n = m / spatial;
+                const size_t p = m % spatial;
+                const float* col_row = c.data() + m * K;
 
-            for (size_t oc = 0; oc < out_channels_; ++oc) {
-                const float* w_row = w.data() + oc * K;
-                float acc = use_bias_ ? b[oc] : 0.0f;
-                for (size_t k = 0; k < K; ++k) acc += col_row[k] * w_row[k];
-                o[(n * out_channels_ + oc) * spatial + p] = acc;
+                for (size_t oc = 0; oc < out_channels_; ++oc) {
+                    const float* w_row = w.data() + oc * K;
+                    float acc = use_bias_ ? b[oc] : 0.0f;
+                    for (size_t k = 0; k < K; ++k) acc += col_row[k] * w_row[k];
+                    o[(n * out_channels_ + oc) * spatial + p] = acc;
+                }
             }
-        }
+        });
     }
 
     const bool req_g = autograd::grad_enabled() &&
@@ -242,7 +262,8 @@ Tensor Conv2d::forward(const Tensor& input) {
     Window2d win = window_;
     const size_t out_channels = out_channels_;
     const bool use_bias = use_bias_;
-    const std::vector<size_t> in_shape = input.shape();
+    // La lambda la captura por valor, así que aquí basta con la referencia
+    const std::vector<size_t>& in_shape = input.shape();
 
     out.get_impl()->backward_fn =
         [input_copy, weight_copy, bias_copy, win, in_shape,
@@ -260,29 +281,52 @@ Tensor Conv2d::forward(const Tensor& input) {
             std::vector<float>& dbv = db.data();
             std::vector<float>& dc = dcols.data();
 
-            // Un solo recorrido acumula los tres gradientes:
-            //   dW    = cols^T x dOut     db = suma por canal de salida
-            //   dcols = dOut x W^T        (y dX = col2im(dcols))
-            for (size_t m = 0; m < M; ++m) {
-                const size_t n = m / spatial;
-                const size_t p = m % spatial;
-                const float* col_row = c.data() + m * K;
-                float* dcol_row = dc.data() + m * K;
+            // Se recorre dos veces, no una, para poder repartir sin carreras.
+            // En un solo recorrido sobre m, dW y db los escribirían todos los
+            // hilos a la vez; separando las pasadas cada una tiene su propio
+            // eje disjunto y el orden de acumulación sigue siendo fijo, así que
+            // el resultado no depende del número de hilos.
 
-                for (size_t oc = 0; oc < out_channels; ++oc) {
-                    const float grad = g[(n * out_channels + oc) * spatial + p];
-                    if (grad == 0.0f) continue;
+            // Pasada 1, repartida por m: dcols = dOut x W^T. Cada m escribe su
+            // propia fila de dcols.
+            const size_t rows_per_thread =
+                std::max<size_t>(1, 32768 / std::max<size_t>(1, K * out_channels));
+            parallel::parallel_for(M, rows_per_thread, [&](size_t from, size_t to) {
+                for (size_t m = from; m < to; ++m) {
+                    const size_t n = m / spatial;
+                    const size_t p = m % spatial;
+                    float* dcol_row = dc.data() + m * K;
 
-                    const float* w_row = w.data() + oc * K;
-                    float* dw_row = dw.data() + oc * K;
-
-                    dbv[oc] += grad;
-                    for (size_t k = 0; k < K; ++k) {
-                        dw_row[k] += grad * col_row[k];
-                        dcol_row[k] += grad * w_row[k];
+                    for (size_t oc = 0; oc < out_channels; ++oc) {
+                        const float grad = g[(n * out_channels + oc) * spatial + p];
+                        if (grad == 0.0f) continue;
+                        const float* w_row = w.data() + oc * K;
+                        for (size_t k = 0; k < K; ++k) dcol_row[k] += grad * w_row[k];
                     }
                 }
-            }
+            });
+
+            // Pasada 2, repartida por canal de salida: dW = cols^T x dOut y
+            // db = suma por canal. Cada oc escribe su propia fila de dW y su
+            // propia entrada de db.
+            parallel::parallel_for(out_channels, 1, [&](size_t oc_from, size_t oc_to) {
+                for (size_t oc = oc_from; oc < oc_to; ++oc) {
+                    float* dw_row = dw.data() + oc * K;
+                    float bias_sum = 0.0f;
+
+                    for (size_t m = 0; m < M; ++m) {
+                        const size_t n = m / spatial;
+                        const size_t p = m % spatial;
+                        const float grad = g[(n * out_channels + oc) * spatial + p];
+                        if (grad == 0.0f) continue;
+
+                        const float* col_row = c.data() + m * K;
+                        bias_sum += grad;
+                        for (size_t k = 0; k < K; ++k) dw_row[k] += grad * col_row[k];
+                    }
+                    dbv[oc] = bias_sum;
+                }
+            });
 
             if (weight_copy.requires_grad()) weight_copy.add_grad(dW);
             if (use_bias && bias_copy.requires_grad()) bias_copy.add_grad(db);

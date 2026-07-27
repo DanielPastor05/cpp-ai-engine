@@ -21,9 +21,11 @@ set(SOURCES
     src/optim.cpp
     src/serialize.cpp
     src/data.cpp
+    src/parallel.cpp
 )
 
 # Librería del motor, compartida por los ejemplos y las pruebas
+find_package(Threads REQUIRED)
 add_library(engine STATIC ${SOURCES})
 
 if(MSVC)
@@ -85,6 +87,7 @@ add_test(NAME engine_tests COMMAND test_engine)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
+target_link_libraries(engine PUBLIC Threads::Threads)
 target_include_directories(engine PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
