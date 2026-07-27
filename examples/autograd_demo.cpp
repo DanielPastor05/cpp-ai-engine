@@ -17,8 +17,8 @@ int main() {
     std::cout << "Funcion: L = a * b + ReLU(a)\n";
     std::cout << "Valores: a = 2.0, b = 3.0\n\n";
 
-    Tensor a({1}, {2.0f}, true);
-    Tensor b({1}, {3.0f}, true);
+    Tensor a({1}, std::vector<float>{2.0f}, true);
+    Tensor b({1}, std::vector<float>{3.0f}, true);
 
     Tensor prod = a * b;
     Tensor relu_a = a.relu();
@@ -62,8 +62,8 @@ int main() {
 
     // Parámetros a optimizar. W es (1, 1) para poder usarse en matmul y bias es
     // un vector fila (1, 1) que se difunde sobre las 4 filas del lote.
-    Tensor W({1, 1}, {0.0f}, true);    // Inicializar peso en 0
-    Tensor bias({1, 1}, {0.0f}, true); // Inicializar sesgo en 0
+    Tensor W({1, 1}, std::vector<float>{0.0f}, true);    // Inicializar peso en 0
+    Tensor bias({1, 1}, std::vector<float>{0.0f}, true); // Inicializar sesgo en 0
 
     // Datos de entrenamiento (x e y)
     Tensor x({4, 1}, {1.0f, 2.0f, 3.0f, 4.0f}, false);

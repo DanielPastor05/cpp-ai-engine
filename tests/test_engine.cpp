@@ -173,8 +173,8 @@ void test_autograd_scalar() {
     section("Autograd: derivadas analiticas conocidas");
 
     // L = a*b + relu(a), con a=2, b=3 -> dL/da = b+1 = 4, dL/db = a = 2
-    Tensor a({1}, {2.0f}, true);
-    Tensor b({1}, {3.0f}, true);
+    Tensor a({1}, std::vector<float>{2.0f}, true);
+    Tensor b({1}, std::vector<float>{3.0f}, true);
     Tensor L = (a * b) + a.relu();
     L.backward();
 
@@ -183,13 +183,13 @@ void test_autograd_scalar() {
     check_close(b.grad().data()[0], 2.0f, "dL/db == a == 2");
 
     // Un nodo reutilizado debe acumular gradiente por ambas ramas: L = x + x
-    Tensor x({1}, {5.0f}, true);
+    Tensor x({1}, std::vector<float>{5.0f}, true);
     Tensor y = (x + x).sum();
     y.backward();
     check_close(x.grad().data()[0], 2.0f, "un nodo compartido acumula gradiente de ambas ramas");
 
     // Llamar backward dos veces acumula (igual que PyTorch)
-    Tensor z({1}, {3.0f}, true);
+    Tensor z({1}, std::vector<float>{3.0f}, true);
     Tensor w = (z * 2.0f).sum();
     w.backward();
     Tensor w2 = (z * 2.0f).sum();
@@ -237,6 +237,74 @@ void test_autograd_numeric() {
     std::vector<size_t> targets = {2, 0, 1, 1};
     check_gradient("gradiente de cross_entropy_loss()", logits, [&](Tensor& t) {
         return nn::cross_entropy_loss(t, targets);
+    });
+}
+
+void test_repeated_backward() {
+    section("Autograd: backward repetido sobre el mismo grafo");
+
+    // Regresión: los nodos intermedios conservaban el gradiente de la llamada
+    // anterior, así que el segundo recorrido propagaba la suma de ambos y
+    // multiplicaba el gradiente de las hojas (daba 18 en lugar de 6).
+    Tensor x({1}, std::vector<float>{1.0f}, true);
+    Tensor h = x * 2.0f;
+    Tensor L = (h * 3.0f).sum();
+
+    L.backward();
+    check_close(x.grad().data()[0], 6.0f, "primer backward: dL/dx == 6");
+
+    x.zero_grad();
+    L.backward();
+    check_close(x.grad().data()[0], 6.0f, "segundo backward sobre el mismo grafo: dL/dx == 6");
+
+    // Sin limpiar la hoja, el resultado debe ser exactamente el doble:
+    // solo las hojas acumulan.
+    L.backward();
+    check_close(x.grad().data()[0], 12.0f, "sin zero_grad las hojas acumulan (6 + 6)");
+}
+
+void test_row_indexing_and_batches() {
+    section("Tensor: indexacion (fila, col) y mini-lotes");
+
+    Tensor A({2, 3}, {1, 2, 3, 4, 5, 6});
+    check_close(A(1, 2), 6.0f, "A(1, 2) accede sin reservar memoria dinamica");
+    check_close(A(0, 0), 1.0f, "A(0, 0) es el primer elemento");
+    A(0, 1) = 99.0f;
+    check_close(A({0, 1}), 99.0f, "A(fila, col) permite escritura");
+    check_throws([&] { A(2, 0); }, "A(fila, col) fuera de rango lanza excepcion");
+    check_throws([&] { Tensor({4}, 1.0f)(0, 0); }, "A(fila, col) sobre un tensor 1D lanza excepcion");
+
+    // Escalar a la izquierda
+    Tensor t({2}, {1.0f, 2.0f});
+    check_close((2.0f * t).data()[1], 4.0f, "2.0f * t multiplica por la izquierda");
+    check_close((1.0f + t).data()[0], 2.0f, "1.0f + t suma por la izquierda");
+    check_close((10.0f - t).data()[1], 8.0f, "10.0f - t resta por la izquierda");
+
+    // select_rows
+    Tensor X({4, 2}, {0, 0,
+                      1, 1,
+                      2, 2,
+                      3, 3}, true);
+    Tensor batch = X.select_rows({3, 1});
+    check(batch.shape() == std::vector<size_t>({2, 2}), "select_rows da (n_indices, cols)");
+    check_close(batch(0, 0), 3.0f, "select_rows respeta el orden pedido");
+    check_close(batch(1, 0), 1.0f, "select_rows toma la fila correcta");
+
+    // Con índices repetidos el gradiente debe acumularse en la fila de origen
+    X.zero_grad();
+    Tensor loss = X.select_rows({0, 0, 2}).sum();
+    loss.backward();
+    check_close(X.grad()(0, 0), 2.0f, "un indice repetido acumula gradiente");
+    check_close(X.grad()(1, 0), 0.0f, "una fila no seleccionada no recibe gradiente");
+    check_close(X.grad()(2, 0), 1.0f, "una fila seleccionada una vez recibe gradiente 1");
+
+    check_throws([&] { X.select_rows({}); }, "select_rows sin indices lanza excepcion");
+    check_throws([&] { X.select_rows({9}); }, "select_rows con un indice invalido lanza excepcion");
+
+    Tensor G({3, 4}, 0.0f);
+    for (size_t i = 0; i < G.size(); ++i) G.data()[i] = 0.5f * static_cast<float>(i) - 2.25f;
+    check_gradient("gradiente de select_rows()", G, [](Tensor& t) {
+        return t.select_rows({2, 0, 2}).sum();
     });
 }
 
@@ -367,30 +435,30 @@ void test_optimizers() {
     auto minimize = [](optim::Optimizer& opt, Tensor& w, int steps) {
         for (int i = 0; i < steps; ++i) {
             opt.zero_grad();
-            Tensor diff = w - Tensor({1}, {3.0f});
+            Tensor diff = w - Tensor({1}, std::vector<float>{3.0f});
             Tensor loss = (diff * diff).sum();
             loss.backward();
             opt.step();
         }
     };
 
-    Tensor w_sgd({1}, {0.0f}, true);
+    Tensor w_sgd({1}, std::vector<float>{0.0f}, true);
     optim::SGD sgd({w_sgd}, 0.1f);
     minimize(sgd, w_sgd, 200);
     check_close(w_sgd.data()[0], 3.0f, "SGD converge al minimo", 1e-3f);
 
-    Tensor w_mom({1}, {0.0f}, true);
+    Tensor w_mom({1}, std::vector<float>{0.0f}, true);
     optim::SGD sgd_mom({w_mom}, 0.05f, 0.9f);
     minimize(sgd_mom, w_mom, 200);
     check_close(w_mom.data()[0], 3.0f, "SGD con momento converge al minimo", 1e-3f);
 
-    Tensor w_adam({1}, {0.0f}, true);
+    Tensor w_adam({1}, std::vector<float>{0.0f}, true);
     optim::Adam adam({w_adam}, 0.1f);
     minimize(adam, w_adam, 300);
     check_close(w_adam.data()[0], 3.0f, "Adam converge al minimo", 1e-3f);
 
     // La corrección de sesgo hace que el primer paso de Adam valga ~lr
-    Tensor w_first({1}, {0.0f}, true);
+    Tensor w_first({1}, std::vector<float>{0.0f}, true);
     optim::Adam adam_first({w_first}, 0.1f);
     adam_first.zero_grad();
     Tensor l = (w_first * 2.0f).sum();
@@ -471,6 +539,8 @@ int main() {
     test_broadcast_add();
     test_autograd_scalar();
     test_autograd_numeric();
+    test_repeated_backward();
+    test_row_indexing_and_batches();
     test_no_grad_and_errors();
     test_graph_is_released();
     test_nn_layers();

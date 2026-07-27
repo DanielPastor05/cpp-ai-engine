@@ -1,5 +1,7 @@
 # C++ AI Engine desde Cero
 
+[![CI](https://github.com/DanielPastor05/cpp-ai-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/DanielPastor05/cpp-ai-engine/actions/workflows/ci.yml)
+
 Un motor de Inteligencia Artificial y Aprendizaje Profundo (Deep Learning) avanzado construido desde cero en **C++17**, sin dependencias externas, con backend de aceleración GPU en **CUDA** planificado.
 
 ## 🚀 Hoja de Ruta del Proyecto
@@ -19,6 +21,7 @@ Un motor de Inteligencia Artificial y Aprendizaje Profundo (Deep Learning) avanz
   - Abstracción `nn::Module` (`Linear`, `ReLU`, `Softmax`, `Sequential`).
   - Pérdidas `cross_entropy_loss` (log-softmax + NLL fusionados) y `mse_loss`.
   - Optimizadores `SGD` (con momento y *weight decay*) y `Adam` (con corrección de sesgo).
+  - Entrenamiento por mini-lotes mediante `Tensor::select_rows`.
   - Inicialización Xavier/Glorot y semilla reproducible (`engine::manual_seed`).
 - [ ] **Fase 4: Redes Convolucionales (CNN)**
   - Transformación `im2col` / `col2im`.
@@ -43,6 +46,7 @@ include/engine/
 src/              Implementación de la librería
 examples/         main.cpp (Fase 1), autograd_demo.cpp (Fase 2), nn_demo.cpp (Fase 3)
 tests/            Suite de pruebas con verificación numérica de gradientes
+.github/workflows/ci.yml   Compila y ejecuta las pruebas en GCC, Clang y MSVC
 ```
 
 ---
@@ -141,7 +145,29 @@ clases entrelazadas y compara el resultado con un clasificador lineal:
 ```
 Clasificador lineal : 52.67% de exactitud
 MLP + Adam          : 99.33% de exactitud
-MLP + SGD/momento   : 99.33% de exactitud
+MLP + SGD mini-lotes: 98.00% de exactitud
+```
+
+### Mini-lotes
+
+`Tensor::select_rows` recoge un subconjunto de filas, que es lo que hace
+"estocástico" al descenso de gradiente estocástico: cada paso usa una muestra
+distinta en lugar del conjunto entero.
+
+```cpp
+std::vector<size_t> order(N);
+std::iota(order.begin(), order.end(), 0);
+std::shuffle(order.begin(), order.end(), engine::global_rng());
+
+for (size_t start = 0; start < N; start += batch_size) {
+    const size_t end = std::min(start + batch_size, N);
+    const std::vector<size_t> idx(order.begin() + start, order.begin() + end);
+
+    opt.zero_grad();
+    Tensor loss = nn::cross_entropy_loss(model(X.select_rows(idx)), labels_de(idx));
+    loss.backward();
+    opt.step();
+}
 ```
 
 ---
@@ -169,15 +195,18 @@ del proceso en grafos profundos.
 `cross_entropy_loss` fusiona log-softmax y NLL en un solo nodo cuyo gradiente se
 reduce a `(softmax(logits) - one_hot) / N`.
 
-**Los gradientes se acumulan.** `add_grad` suma en lugar de sobrescribir, así que
-hay que llamar a `zero_grad()` en cada iteración (igual que en PyTorch).
+**Solo las hojas acumulan gradiente.** `add_grad` suma en lugar de sobrescribir,
+así que hay que llamar a `zero_grad()` en cada iteración (igual que en PyTorch).
+Los nodos intermedios, en cambio, se reinician al empezar cada `backward()`: su
+gradiente es un valor temporal del recorrido, y conservarlo haría que un segundo
+`backward()` sobre el mismo grafo propagase la suma de ambos recorridos.
 
 ---
 
 ## ✅ Pruebas
 
-`tests/test_engine.cpp` cubre tensores, autograd, capas y optimizadores con 83
-comprobaciones. El grueso de la verificación de autograd es una **comprobación
+`tests/test_engine.cpp` cubre tensores, autograd, capas y optimizadores con 103
+comprobaciones, y se ejecutan en CI sobre GCC, Clang y MSVC. El grueso de la verificación de autograd es una **comprobación
 numérica de gradientes** por diferencias centradas, que compara cada derivada
 analítica con `(f(x+h) - f(x-h)) / 2h`; también se verifica que los nodos
 intermedios del grafo se liberen al salir de ámbito y que un MLP resuelva el XOR

@@ -179,7 +179,7 @@ Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targe
     }
 
     const bool req_g = logits.requires_grad() && autograd::grad_enabled();
-    Tensor loss({1}, {total_loss / static_cast<float>(N)}, req_g);
+    Tensor loss({1}, std::vector<float>{total_loss / static_cast<float>(N)}, req_g);
 
     if (req_g) {
         loss.get_impl()->parents = { logits.get_impl() };

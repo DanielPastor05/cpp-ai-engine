@@ -86,7 +86,19 @@ void backward(Tensor& root_tensor) {
     // 1. Obtener el ordenamiento topológico del grafo
     std::vector<std::shared_ptr<TensorImpl>> topo_order = topological_sort(root_impl);
 
-    // 2. Ejecutar las funciones de gradiente en orden topológico inverso
+    // 2. Descartar el gradiente de los nodos intermedios de una llamada previa.
+    //    Un nodo con backward_fn es el resultado de una operación, no una hoja:
+    //    su gradiente es un valor temporal de este recorrido. Si se conservase
+    //    entre llamadas, un segundo backward sobre el mismo grafo propagaría la
+    //    suma de ambos recorridos y multiplicaría los gradientes de las hojas.
+    //    Solo las hojas (sin backward_fn) acumulan, igual que en PyTorch.
+    for (const auto& node : topo_order) {
+        if (node != root_impl && node->backward_fn) {
+            node->grad = nullptr;
+        }
+    }
+
+    // 3. Ejecutar las funciones de gradiente en orden topológico inverso
     for (auto it = topo_order.rbegin(); it != topo_order.rend(); ++it) {
         const auto& node = *it;
         // Un nodo sin gradiente acumulado no propaga nada (rama muerta del grafo).
