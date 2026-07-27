@@ -3,6 +3,10 @@
 
 #include <limits>
 
+#include <algorithm>
+#include <cmath>
+#include <stdexcept>
+
 namespace engine {
 namespace nn {
 
@@ -195,6 +199,11 @@ Tensor Conv2d::forward(const Tensor& input) {
     // im2col reduce la convolución a un producto matricial (M, K) x (K, outC).
     // Los pesos ya están guardados como outC filas contiguas de K valores, así
     // que el producto se hace leyendo cada fila directamente.
+    //
+    // Las columnas NO se guardan para el backward: ocupan kH*kW veces la
+    // entrada (con un kernel 3x3, nueve veces), así que sale mucho más barato
+    // guardar la entrada y recalcularlas. Es el mismo compromiso que hace
+    // PyTorch: un 5% más de tiempo a cambio de un orden de magnitud de memoria.
     Tensor cols = im2col(input, window_);
 
     Tensor out({N, out_channels_, oH, oW}, 0.0f, false);
@@ -236,9 +245,10 @@ Tensor Conv2d::forward(const Tensor& input) {
     const std::vector<size_t> in_shape = input.shape();
 
     out.get_impl()->backward_fn =
-        [input_copy, weight_copy, bias_copy, cols, win, in_shape,
+        [input_copy, weight_copy, bias_copy, win, in_shape,
          M, K, spatial, out_channels, use_bias](const Tensor& grad_out) mutable {
             const std::vector<float>& g = grad_out.data();
+            const Tensor cols = im2col(input_copy, win); // recalculadas, no guardadas
             const std::vector<float>& c = cols.data();
             const std::vector<float>& w = weight_copy.data();
 

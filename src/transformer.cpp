@@ -1,6 +1,10 @@
 #include "engine/transformer.hpp"
 #include "engine/autograd.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <stdexcept>
+
 namespace engine {
 namespace nn {
 
@@ -271,7 +275,8 @@ Tensor MultiHeadAttention::forward(const Tensor& input, const Tensor* mask) {
     Tensor k = split_heads(w_key_(input));
     Tensor v = split_heads(w_value_(input));
 
-    Tensor attended = scaled_dot_product_attention(q, k, v, mask, &last_attention_);
+    Tensor attended = scaled_dot_product_attention(
+        q, k, v, mask, keep_attention_ ? &last_attention_ : nullptr);
 
     // Deshacer la separación en cabezas: (B, H, S, hd) -> (B, S, d_model)
     Tensor merged = attended.permute({0, 2, 1, 3}).reshape({batch, seq, d_model_});

@@ -3,6 +3,8 @@
 
 #include <utility>
 
+#include <stdexcept>
+
 namespace engine {
 namespace autograd {
 
@@ -98,12 +100,19 @@ void backward(Tensor& root_tensor) {
         }
     }
 
-    // 3. Ejecutar las funciones de gradiente en orden topológico inverso
+    // 3. Ejecutar las funciones de gradiente en orden topológico inverso.
+    //
+    //    El gradiente de un nodo intermedio se libera en cuanto se ha
+    //    consumido. En orden inverso, al llegar a un nodo ya han pasado todos
+    //    sus hijos, así que su gradiente está completo y, una vez propagado a
+    //    los padres, nadie más lo necesita. Conservarlo hasta que muera el
+    //    grafo multiplicaba por más de veinte la memoria de un backward.
     for (auto it = topo_order.rbegin(); it != topo_order.rend(); ++it) {
         const auto& node = *it;
         // Un nodo sin gradiente acumulado no propaga nada (rama muerta del grafo).
         if (node->backward_fn && node->grad) {
             node->backward_fn(Tensor::from_impl(node->grad));
+            if (node != root_impl) node->grad = nullptr;
         }
     }
 }

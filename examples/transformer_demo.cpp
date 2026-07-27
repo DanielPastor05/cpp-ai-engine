@@ -1,4 +1,5 @@
 #include "engine/tensor.hpp"
+#include "engine/random.hpp"
 #include "engine/autograd.hpp"
 #include "engine/nn.hpp"
 #include "engine/transformer.hpp"
@@ -84,7 +85,11 @@ struct TransformerClassifier {
           block2(d_model, heads, ff),
           norm(d_model),
           head(d_model, kNumValues),
-          pos_encoding(nn::positional_encoding(kSeqLen, d_model)) {}
+          pos_encoding(nn::positional_encoding(kSeqLen, d_model)) {
+        // Solo el segundo bloque guarda los pesos, y solo para inspeccionarlos
+        // al final: durante el entrenamiento seria una copia inutil por paso.
+        block2.attention().keep_attention(true);
+    }
 
     Tensor forward(const Tensor& ids) {
         const size_t batch = ids.shape()[0];

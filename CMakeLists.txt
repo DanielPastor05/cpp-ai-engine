@@ -53,6 +53,13 @@ target_link_libraries(transformer_demo PRIVATE engine)
 
 # Suite de pruebas
 enable_testing()
-add_executable(test_engine tests/test_engine.cpp)
+add_executable(test_engine
+    tests/test_main.cpp
+    tests/test_tensor.cpp
+    tests/test_autograd.cpp
+    tests/test_nn.cpp
+    tests/test_conv.cpp
+    tests/test_transformer.cpp)
+target_include_directories(test_engine PRIVATE tests)
 target_link_libraries(test_engine PRIVATE engine)
 add_test(NAME engine_tests COMMAND test_engine)

@@ -1,6 +1,9 @@
 #include "engine/optim.hpp"
 #include "engine/autograd.hpp"
 
+#include <cmath>
+#include <stdexcept>
+
 namespace engine {
 namespace optim {
 
