@@ -1,4 +1,5 @@
 #include "engine/tensor.hpp"
+#include "engine/autograd.hpp"
 #include <iostream>
 #include <iomanip>
 
@@ -59,9 +60,10 @@ int main() {
     std::cout << "--- 3. Optimización por Descenso de Gradiente (Regresion Lineal) ---\n";
     std::cout << "Objetivo: Aprender y = W * x + b donde W_real = 2.5, b_real = 1.0\n\n";
 
-    // Parámetros a optimizar
-    Tensor W({1}, {0.0f}, true); // Inicializar peso en 0
-    Tensor bias({1}, {0.0f}, true); // Inicializar sesgo en 0
+    // Parámetros a optimizar. W es (1, 1) para poder usarse en matmul y bias es
+    // un vector fila (1, 1) que se difunde sobre las 4 filas del lote.
+    Tensor W({1, 1}, {0.0f}, true);    // Inicializar peso en 0
+    Tensor bias({1, 1}, {0.0f}, true); // Inicializar sesgo en 0
 
     // Datos de entrenamiento (x e y)
     Tensor x({4, 1}, {1.0f, 2.0f, 3.0f, 4.0f}, false);
@@ -71,9 +73,12 @@ int main() {
 
     std::cout << "Inicio del entrenamiento (100 iteraciones):\n";
     for (int epoch = 1; epoch <= 100; ++epoch) {
+        // 0. Limpiar los gradientes de la iteración anterior (se acumulan)
+        W.zero_grad();
+        bias.zero_grad();
+
         // 1. Forward Pass: pred = x * W + bias
-        Tensor W_matrix({1, 1}, {W.data()[0]}, true); // Auxiliar para matmul
-        Tensor pred = x.matmul(W_matrix) + bias.data()[0];
+        Tensor pred = x.matmul(W) + bias;
 
         // 2. Compute Loss: MSE = mean((pred - y_target)^2)
         Tensor diff = pred - y_target;
@@ -82,13 +87,10 @@ int main() {
         // 3. Backward Pass
         loss.backward();
 
-        // 4. Update Parameters (Gradient Descent)
-        W.data()[0] -= learning_rate * W_matrix.grad().data()[0];
+        // 4. Update Parameters (Gradient Descent). Sin construir grafo.
+        engine::autograd::NoGradGuard no_grad;
+        W.data()[0] -= learning_rate * W.grad().data()[0];
         bias.data()[0] -= learning_rate * bias.grad().data()[0];
-
-        // 5. Reset Gradients
-        W_matrix.zero_grad();
-        bias.zero_grad();
 
         if (epoch % 20 == 0 || epoch == 1) {
             std::cout << "Epoch " << std::setw(3) << epoch 
