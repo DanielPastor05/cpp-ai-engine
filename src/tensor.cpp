@@ -24,13 +24,60 @@ inline bool track(bool requires_grad) {
     return requires_grad && autograd::grad_enabled();
 }
 
-// Devuelve true si `other` es un vector fila difundible sobre `base`:
-// base (M, N) con other (1, N) o (N,).
-bool is_row_broadcast(const std::vector<size_t>& base, const std::vector<size_t>& other) {
-    if (base.size() != 2) return false;
-    if (other.size() == 1) return other[0] == base[1];
-    if (other.size() == 2) return other[0] == 1 && other[1] == base[1];
-    return false;
+size_t product(const std::vector<size_t>& dims, size_t from = 0, size_t to = 0) {
+    const size_t end = (to == 0) ? dims.size() : to;
+    size_t total = 1;
+    for (size_t i = from; i < end; ++i) total *= dims[i];
+    return total;
+}
+
+// Difusión por sufijo: `other` se difunde sobre `base` si, tras descartar sus
+// unos iniciales, su forma es un sufijo de la de `base`. Cubre el sesgo de una
+// capa densa (1, N) sobre (M, N), la codificación posicional (S, D) sobre
+// (B, S, D) y la máscara (S, S) sobre (B, H, S, S).
+//
+// Como el tensor es contiguo en orden C, la difusión sobre los ejes iniciales
+// se reduce a repetir el bloque final: base[i] + other[i % inner].
+struct BroadcastPlan {
+    bool valid = false;
+    size_t inner = 1;   // tamaño del bloque que se repite
+    size_t repeat = 1;  // cuántas veces se repite
+};
+
+BroadcastPlan plan_broadcast(const std::vector<size_t>& base, const std::vector<size_t>& other) {
+    BroadcastPlan plan;
+
+    size_t first = 0;
+    while (first < other.size() && other[first] == 1) ++first;
+    const size_t core = other.size() - first;
+
+    if (core > base.size()) return plan;
+
+    const size_t offset = base.size() - core;
+    for (size_t i = 0; i < core; ++i) {
+        if (base[offset + i] != other[first + i]) return plan;
+    }
+
+    plan.valid = true;
+    plan.inner = product(base, offset);
+    plan.repeat = product(base, 0, offset);
+    return plan;
+}
+
+// Suma los ejes iniciales de `full` hasta dejar la forma `target`. Es el
+// adjunto de difundir un operando sobre un lote, y lo usan tanto la suma
+// difundida como el matmul con un operando compartido.
+Tensor fold_leading(const Tensor& full, const std::vector<size_t>& target) {
+    const size_t inner = product(target);
+    const size_t repeat = full.size() / inner;
+
+    Tensor folded(target, 0.0f, false);
+    for (size_t r = 0; r < repeat; ++r) {
+        for (size_t j = 0; j < inner; ++j) {
+            folded.data()[j] += full.data()[r * inner + j];
+        }
+    }
+    return folded;
 }
 
 } // namespace
@@ -250,12 +297,16 @@ Tensor Tensor::detach() const {
 // resultado formaría un ciclo de shared_ptr y el grafo nunca se liberaría.
 // ---------------------------------------------------------
 
-// Suma de tensores (con difusión de vector fila para el sesgo)
+// Suma de tensores, con difusión por sufijo del operando derecho
 Tensor Tensor::operator+(const Tensor& other) const {
     const bool broadcast = shape() != other.shape();
-    if (broadcast && !is_row_broadcast(shape(), other.shape())) {
-        throw std::invalid_argument("Formas incompatibles para suma de tensores: " +
-                                    shape_str() + " y " + other.shape_str() + ".");
+    BroadcastPlan plan;
+    if (broadcast) {
+        plan = plan_broadcast(shape(), other.shape());
+        if (!plan.valid) {
+            throw std::invalid_argument("Formas incompatibles para suma de tensores: " +
+                                        shape_str() + " y " + other.shape_str() + ".");
+        }
     }
 
     bool req_g = track(requires_grad() || other.requires_grad());
@@ -266,12 +317,8 @@ Tensor Tensor::operator+(const Tensor& other) const {
             res.data()[i] = data()[i] + other.data()[i];
         }
     } else {
-        const size_t rows = shape()[0];
-        const size_t cols = shape()[1];
-        for (size_t i = 0; i < rows; ++i) {
-            for (size_t j = 0; j < cols; ++j) {
-                res.data()[i * cols + j] = data()[i * cols + j] + other.data()[j];
-            }
+        for (size_t i = 0; i < size(); ++i) {
+            res.data()[i] = data()[i] + other.data()[i % plan.inner];
         }
     }
 
@@ -280,20 +327,18 @@ Tensor Tensor::operator+(const Tensor& other) const {
         Tensor self_copy = *this;
         Tensor other_copy = other;
 
-        res.impl_->backward_fn = [self_copy, other_copy, broadcast](const Tensor& grad_out) mutable {
+        res.impl_->backward_fn = [self_copy, other_copy, broadcast, plan](const Tensor& grad_out) mutable {
             if (self_copy.requires_grad()) self_copy.add_grad(grad_out);
             if (!other_copy.requires_grad()) return;
             if (!broadcast) {
                 other_copy.add_grad(grad_out);
             } else {
-                // La difusión replica el vector fila en cada fila, así que su
-                // gradiente es la suma por columnas del gradiente de salida.
-                const size_t rows = grad_out.shape()[0];
-                const size_t cols = grad_out.shape()[1];
+                // El operando difundido se repitió `repeat` veces, así que su
+                // gradiente es la suma de todas esas copias.
                 Tensor db(other_copy.shape(), 0.0f, false);
-                for (size_t i = 0; i < rows; ++i) {
-                    for (size_t j = 0; j < cols; ++j) {
-                        db.data()[j] += grad_out.data()[i * cols + j];
+                for (size_t r = 0; r < plan.repeat; ++r) {
+                    for (size_t j = 0; j < plan.inner; ++j) {
+                        db.data()[j] += grad_out.data()[r * plan.inner + j];
                     }
                 }
                 other_copy.add_grad(db);
@@ -431,19 +476,32 @@ Tensor Tensor::operator/(float scalar) const {
     return (*this) * (1.0f / scalar);
 }
 
-// Transposición 2D (Swap de filas y columnas)
+// Transposición: intercambia los dos últimos ejes.
+// Para un tensor 2D es la transposición de toda la vida; para (B, ..., M, N)
+// transpone cada matriz del lote, que es lo que necesita la atención.
 Tensor Tensor::transpose() const {
-    if (ndim() != 2) {
-        throw std::invalid_argument("Transpose solo esta implementado para tensores 2D (matrices).");
+    if (ndim() < 2) {
+        throw std::invalid_argument("Transpose requiere al menos 2 dimensiones, este tensor es " +
+                                    shape_str() + ".");
     }
-    size_t rows = shape()[0];
-    size_t cols = shape()[1];
-    bool req_g = track(requires_grad());
-    Tensor res({cols, rows}, 0.0f, req_g);
+    const size_t nd = ndim();
+    const size_t rows = shape()[nd - 2];
+    const size_t cols = shape()[nd - 1];
+    const size_t batch = size() / (rows * cols);
 
-    for (size_t i = 0; i < rows; ++i) {
-        for (size_t j = 0; j < cols; ++j) {
-            res.data()[j * rows + i] = data()[i * cols + j];
+    std::vector<size_t> out_shape = shape();
+    std::swap(out_shape[nd - 2], out_shape[nd - 1]);
+
+    bool req_g = track(requires_grad());
+    Tensor res(out_shape, 0.0f, req_g);
+
+    for (size_t b = 0; b < batch; ++b) {
+        const float* src = data().data() + b * rows * cols;
+        float* dst = res.data().data() + b * rows * cols;
+        for (size_t i = 0; i < rows; ++i) {
+            for (size_t j = 0; j < cols; ++j) {
+                dst[j * rows + i] = src[i * cols + j];
+            }
         }
     }
 
@@ -457,34 +515,120 @@ Tensor Tensor::transpose() const {
     return res;
 }
 
-// Multiplicación Matricial (MatMul) 2D
-Tensor Tensor::matmul(const Tensor& B) const {
-    if (ndim() != 2 || B.ndim() != 2) {
-        throw std::invalid_argument("MatMul solo esta implementado para tensores 2D.");
+// Permutación general de ejes: order[i] indica qué eje de la entrada pasa a
+// ocupar la posición i. Es lo que reordena (B, S, H, d) a (B, H, S, d) para
+// que cada cabeza de atención opere sobre su propia secuencia.
+Tensor Tensor::permute(const std::vector<size_t>& order) const {
+    const size_t nd = ndim();
+    if (order.size() != nd) {
+        throw std::invalid_argument("permute necesita un orden de " + std::to_string(nd) +
+                                    " ejes para un tensor " + shape_str() + ".");
     }
-    size_t M = shape()[0];
-    size_t K = shape()[1];
-    size_t K2 = B.shape()[0];
-    size_t N = B.shape()[1];
+    std::vector<bool> seen(nd, false);
+    for (size_t axis : order) {
+        if (axis >= nd || seen[axis]) {
+            throw std::invalid_argument("permute necesita una permutacion valida de los ejes.");
+        }
+        seen[axis] = true;
+    }
+
+    std::vector<size_t> out_shape(nd);
+    for (size_t i = 0; i < nd; ++i) out_shape[i] = shape()[order[i]];
+
+    bool req_g = track(requires_grad());
+    Tensor res(out_shape, 0.0f, req_g);
+
+    // Strides del tensor de salida expresados sobre la memoria de la entrada
+    std::vector<size_t> src_strides(nd);
+    for (size_t i = 0; i < nd; ++i) src_strides[i] = strides()[order[i]];
+
+    std::vector<size_t> idx(nd, 0);
+    for (size_t flat = 0; flat < size(); ++flat) {
+        size_t src = 0;
+        for (size_t i = 0; i < nd; ++i) src += idx[i] * src_strides[i];
+        res.data()[flat] = data()[src];
+
+        for (size_t i = nd; i-- > 0;) {
+            if (++idx[i] < out_shape[i]) break;
+            idx[i] = 0;
+        }
+    }
+
+    if (req_g) {
+        res.impl_->parents = { impl_ };
+        Tensor self_copy = *this;
+        // La derivada es la permutación inversa
+        std::vector<size_t> inverse(nd);
+        for (size_t i = 0; i < nd; ++i) inverse[order[i]] = i;
+
+        res.impl_->backward_fn = [self_copy, inverse](const Tensor& grad_out) mutable {
+            self_copy.add_grad(grad_out.permute(inverse));
+        };
+    }
+    return res;
+}
+
+// Multiplicación matricial, con lotes sobre los ejes iniciales.
+// (M, K) x (K, N) -> (M, N) y (B..., M, K) x (B..., K, N) -> (B..., M, N).
+Tensor Tensor::matmul(const Tensor& B) const {
+    if (ndim() < 2 || B.ndim() < 2) {
+        throw std::invalid_argument("MatMul requiere al menos 2 dimensiones en ambos operandos.");
+    }
+    const size_t nd_a = ndim();
+    const size_t nd_b = B.ndim();
+
+    const std::vector<size_t> batch_a(shape().begin(), shape().end() - 2);
+    const std::vector<size_t> batch_b(B.shape().begin(), B.shape().end() - 2);
+
+    // Un operando 2D se comparte con todas las matrices del lote del otro:
+    // (B, M, K) x (K, N) aplica la misma matriz a cada elemento del lote.
+    const bool a_batched = !batch_a.empty();
+    const bool b_batched = !batch_b.empty();
+    if (a_batched && b_batched && batch_a != batch_b) {
+        throw std::invalid_argument("MatMul por lotes necesita ejes de lote identicos: " +
+                                    shape_str() + " y " + B.shape_str() + ".");
+    }
+    const std::vector<size_t>& batch_dims = a_batched ? batch_a : batch_b;
+
+    const size_t M = shape()[nd_a - 2];
+    const size_t K = shape()[nd_a - 1];
+    const size_t K2 = B.shape()[nd_b - 2];
+    const size_t N = B.shape()[nd_b - 1];
 
     if (K != K2) {
         throw std::invalid_argument("Dimensiones incompatibles para MatMul: " +
                                     shape_str() + " y " + B.shape_str() + ".");
     }
 
-    bool req_g = track(requires_grad() || B.requires_grad());
-    Tensor C({M, N}, 0.0f, req_g);
+    const size_t batch = product(batch_dims);
+    std::vector<size_t> out_shape = batch_dims;
+    out_shape.push_back(M);
+    out_shape.push_back(N);
 
-    // Bucle optimizado para la memoria caché (i -> k -> j)
+    bool req_g = track(requires_grad() || B.requires_grad());
+    Tensor C(out_shape, 0.0f, req_g);
+
     const std::vector<float>& a_data = data();
     const std::vector<float>& b_data = B.data();
     std::vector<float>& c_data = C.data();
-    for (size_t i = 0; i < M; ++i) {
-        for (size_t k = 0; k < K; ++k) {
-            float a_ik = a_data[i * K + k];
-            if (a_ik == 0.0f) continue;
-            for (size_t j = 0; j < N; ++j) {
-                c_data[i * N + j] += a_ik * b_data[k * N + j];
+
+    // Bucle optimizado para la memoria caché (i -> k -> j)
+    // Un operando no lotificado usa paso 0: se reutiliza en cada iteración
+    const size_t a_stride = a_batched ? M * K : 0;
+    const size_t b_stride = b_batched ? K * N : 0;
+
+    for (size_t b = 0; b < batch; ++b) {
+        const float* a = a_data.data() + b * a_stride;
+        const float* bm = b_data.data() + b * b_stride;
+        float* c = c_data.data() + b * M * N;
+
+        for (size_t i = 0; i < M; ++i) {
+            for (size_t k = 0; k < K; ++k) {
+                const float a_ik = a[i * K + k];
+                if (a_ik == 0.0f) continue;
+                for (size_t j = 0; j < N; ++j) {
+                    c[i * N + j] += a_ik * bm[k * N + j];
+                }
             }
         }
     }
@@ -495,13 +639,21 @@ Tensor Tensor::matmul(const Tensor& B) const {
         Tensor B_copy = B;
 
         C.impl_->backward_fn = [self_copy, B_copy](const Tensor& grad_out) mutable {
-            // dL/dA = dL/dC x B^T
+            // Las mismas formulas que en 2D, aplicadas a cada matriz del lote:
+            // dL/dA = dL/dC x B^T   y   dL/dB = A^T x dL/dC.
+            // Si un operando se compartió con todo el lote, su gradiente es la
+            // suma de las contribuciones de cada elemento.
             if (self_copy.requires_grad()) {
-                self_copy.add_grad(grad_out.matmul(B_copy.transpose()));
+                Tensor dA = grad_out.matmul(B_copy.transpose());
+                self_copy.add_grad(dA.shape() == self_copy.shape()
+                                       ? dA
+                                       : fold_leading(dA, self_copy.shape()));
             }
-            // dL/dB = A^T x dL/dC
             if (B_copy.requires_grad()) {
-                B_copy.add_grad(self_copy.transpose().matmul(grad_out));
+                Tensor dB = self_copy.transpose().matmul(grad_out);
+                B_copy.add_grad(dB.shape() == B_copy.shape()
+                                    ? dB
+                                    : fold_leading(dB, B_copy.shape()));
             }
         };
     }
@@ -531,14 +683,15 @@ Tensor Tensor::relu() const {
     return res;
 }
 
-// Softmax por filas (estable numéricamente: se resta el máximo de cada fila).
-// Acepta un vector 1D (N,) o una matriz 2D (batch, clases).
+// Softmax sobre el último eje (estable numéricamente: se resta el máximo).
 Tensor Tensor::softmax() const {
-    if (ndim() != 1 && ndim() != 2) {
-        throw std::invalid_argument("Softmax solo esta implementado para tensores 1D o 2D.");
+    if (ndim() == 0 || size() == 0) {
+        throw std::invalid_argument("Softmax necesita un tensor no vacio.");
     }
-    const size_t rows = (ndim() == 1) ? 1 : shape()[0];
-    const size_t cols = (ndim() == 1) ? shape()[0] : shape()[1];
+    // Siempre normaliza sobre el ultimo eje: para (N, C) son las filas y para
+    // (B, H, S, S) son las puntuaciones de atencion de cada consulta.
+    const size_t cols = shape().back();
+    const size_t rows = size() / cols;
 
     bool req_g = track(requires_grad());
     Tensor res(shape(), 0.0f, req_g);

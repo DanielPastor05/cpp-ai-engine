@@ -27,9 +27,12 @@ Un motor de Inteligencia Artificial y Aprendizaje Profundo (Deep Learning) avanz
   - Transformación `im2col` / `col2im` (col2im es el adjunto exacto de im2col).
   - Capas `Conv2d`, `MaxPool2d` y `Flatten`, con relleno y paso configurables.
   - Mini-lotes sobre volúmenes 4D `(N, C, H, W)`.
-- [ ] **Fase 5: Arquitectura Transformer**
-  - *Scaled Dot-Product Attention* y *Multi-Head Attention (MHA)*.
-  - Codificación posicional y `LayerNorm`.
+- [x] **Fase 5: Arquitectura Transformer**
+  - *Scaled Dot-Product Attention* con máscara causal y *Multi-Head Attention*.
+  - Codificación posicional sinusoidal, `LayerNorm` y `Embedding`.
+  - `TransformerBlock` pre-norm con conexiones residuales.
+  - Soporte N-dimensional en el tensor: `permute`, `matmul` por lotes,
+    `softmax` sobre el último eje y difusión por sufijo.
 - [ ] **Fase 6: Backend GPU & CUDA**
   - Gestión de memoria Host/Device (`cudaMalloc`, `cudaMemcpy`).
   - Custom CUDA Kernels y optimización con *Shared Memory Tiling*.
@@ -44,9 +47,11 @@ include/engine/
   autograd.hpp    backward(), grad_enabled(), NoGradGuard
   nn.hpp          Module, Linear, ReLU, Softmax, Sequential, pérdidas, métricas
   conv.hpp        Window2d, im2col/col2im, Conv2d, MaxPool2d, Flatten
+  transformer.hpp LayerNorm, Embedding, atención, MultiHeadAttention, TransformerBlock
   optim.hpp       Optimizer, SGD, Adam
 src/              Implementación de la librería
-examples/         main.cpp (F1), autograd_demo.cpp (F2), nn_demo.cpp (F3), cnn_demo.cpp (F4)
+examples/         main.cpp (F1), autograd_demo.cpp (F2), nn_demo.cpp (F3),
+                  cnn_demo.cpp (F4), transformer_demo.cpp (F5)
 tests/            Suite de pruebas con verificación numérica de gradientes
 .github/workflows/ci.yml   Compila y ejecuta las pruebas en GCC, Clang y MSVC
 ```
@@ -72,6 +77,7 @@ cmake --build build
 ./build/autograd_demo   # Fase 2: backpropagation y regresión lineal
 ./build/nn_demo         # Fase 3: MLP que clasifica una espiral de 3 clases
 ./build/cnn_demo        # Fase 4: CNN que clasifica formas en imágenes
+./build/transformer_demo # Fase 5: Transformer sobre una tarea que exige orden
 
 # 4. Ejecutar las pruebas
 ctest --test-dir build --output-on-failure
@@ -203,6 +209,40 @@ CNN (1683 parametros) : 100.00% sobre el conjunto de prueba
 MLP (1779 parametros) :  73.33% sobre el conjunto de prueba
 ```
 
+### Transformer
+
+```cpp
+#include "engine/transformer.hpp"
+
+nn::Embedding embedding(vocab, 32);
+nn::TransformerBlock block(/*d_model=*/32, /*heads=*/4, /*ff_hidden=*/64);
+Tensor pe = nn::positional_encoding(seq_len, 32);
+
+Tensor h = embedding(ids) + pe;   // (B, S, 32); la suma difunde (S, 32)
+h = block(h);                     // atención + red densa, con residuales
+
+// Con máscara causal, para que ninguna posición vea el futuro:
+Tensor mask = nn::causal_mask(seq_len);
+h = block.forward(h, &mask);
+```
+
+`transformer_demo` resuelve la tarea *«¿qué token viene después de la marca?»*.
+Cada secuencia contiene una permutación de los seis valores más una marca, así
+que **el multiconjunto de tokens es siempre el mismo**: promediar la secuencia
+no deja ninguna información y un modelo sin atención está en el azar por
+construcción.
+
+```
+Transformer (2 bloques)   : 99.25% sobre prueba
+Promedio de embeddings    : 17.50% sobre prueba
+Azar (1 de 6 valores)     : 16.67%
+```
+
+Hacen falta **dos** bloques porque la tarea es de dos saltos: uno marca cada
+posición con «mi anterior es la marca» y el otro recoge esa posición desde el
+`[CLS]`. El demo imprime los pesos de atención aprendidos, donde se ve una
+cabeza concentrando ~0.9 sobre la posición que contiene la respuesta.
+
 ---
 
 ## 🧠 Notas de Diseño
@@ -236,6 +276,15 @@ donde las ventanas se solapan; por eso col2im no es la inversa de im2col sino
 su adjunto, y las pruebas lo comprueban con la identidad
 `<im2col(x), y> == <x, col2im(y)>`.
 
+**La atención se compone de operaciones existentes.** `scaled_dot_product_attention`
+no necesita nodo propio en el grafo: es `matmul` por lotes, `transpose`,
+`softmax` y una suma. Lo que hizo falta fue generalizar el tensor —`permute`
+para reordenar ejes, `matmul` con lotes (y con un operando 2D compartido),
+`softmax` sobre el último eje y difusión por sufijo— y la atención salió de ahí
+sin escribir una sola derivada nueva. `LayerNorm`, en cambio, sí es un nodo
+fusionado: su derivada arrastra dos términos de corrección porque la media y la
+varianza dependen de todo el vector.
+
 **Solo las hojas acumulan gradiente.** `add_grad` suma en lugar de sobrescribir,
 así que hay que llamar a `zero_grad()` en cada iteración (igual que en PyTorch).
 Los nodos intermedios, en cambio, se reinician al empezar cada `backward()`: su
@@ -246,9 +295,15 @@ gradiente es un valor temporal del recorrido, y conservarlo haría que un segund
 
 ## ✅ Pruebas
 
-`tests/test_engine.cpp` cubre tensores, autograd, capas densas, convoluciones y
-optimizadores con 155 comprobaciones, y se ejecutan en CI sobre GCC, Clang y MSVC. El grueso de la verificación de autograd es una **comprobación
+`tests/test_engine.cpp` cubre tensores, autograd, capas densas, convoluciones,
+atención y optimizadores con 250 comprobaciones, y se ejecutan en CI sobre GCC, Clang y MSVC. El grueso de la verificación de autograd es una **comprobación
 numérica de gradientes** por diferencias centradas, que compara cada derivada
 analítica con `(f(x+h) - f(x-h)) / 2h`; también se verifica que los nodos
 intermedios del grafo se liberen al salir de ámbito, que `col2im` sea el adjunto
 exacto de `im2col`, y que un MLP resuelva el XOR donde un modelo lineal no puede.
+
+Un detalle sobre la comprobación numérica: el tensor de ponderación de la
+pérdida debe construirse **fuera** del closure. Si se genera dentro con
+`randn`, cada evaluación usa pesos distintos y la comprobación deja de comparar
+la misma función consigo misma —da errores enormes que parecen fallos del
+motor.
