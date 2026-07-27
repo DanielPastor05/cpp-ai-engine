@@ -50,10 +50,10 @@ jobs:
           # Los generadores multi-configuración (MSVC) anidan los binarios en Release/
           BIN=build
           [ -d build/Release ] && BIN=build/Release
-          for demo in cpp_ai_engine autograd_demo nn_demo cnn_demo transformer_demo; do
+          for demo in cpp_ai_engine autograd_demo nn_demo cnn_demo transformer_demo mnist_demo; do
             "$BIN/$demo" > /dev/null
           done
-          echo "Los cinco ejemplos terminaron correctamente."
+          echo "Los seis ejemplos terminaron correctamente."
 
   sanitizers:
     name: Linux / ASan + UBSan

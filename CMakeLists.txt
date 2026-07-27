@@ -20,6 +20,7 @@ set(SOURCES
     src/transformer.cpp
     src/optim.cpp
     src/serialize.cpp
+    src/data.cpp
 )
 
 # Librería del motor, compartida por los ejemplos y las pruebas
@@ -51,6 +52,10 @@ target_link_libraries(cnn_demo PRIVATE engine)
 add_executable(transformer_demo examples/transformer_demo.cpp)
 target_link_libraries(transformer_demo PRIVATE engine)
 
+# Ejemplo con datos reales (MNIST)
+add_executable(mnist_demo examples/mnist_demo.cpp)
+target_link_libraries(mnist_demo PRIVATE engine)
+
 # Banco de pruebas de rendimiento (no se ejecuta en CI: mide, no verifica)
 add_executable(bench bench/bench.cpp)
 target_link_libraries(bench PRIVATE engine)
@@ -68,7 +73,8 @@ add_executable(test_engine
 target_include_directories(test_engine PRIVATE tests)
 # Los ficheros de referencia se leen del arbol de fuentes, no del de compilacion
 target_compile_definitions(test_engine PRIVATE
-    ENGINE_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    ENGINE_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+    ENGINE_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_engine PRIVATE engine)
 add_test(NAME engine_tests COMMAND test_engine)
 
