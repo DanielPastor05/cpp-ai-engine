@@ -13,6 +13,12 @@ namespace nn {
 
 namespace {
 
+// Constantes de la aproximación de GELU. Van en ámbito de fichero y no dentro
+// de la función: MSVC exige capturarlas explícitamente si son locales y se usan
+// desde una lambda sin captura por defecto, aunque sean expresiones constantes.
+constexpr float kGeluAlpha = 0.7978845608f; // sqrt(2/pi)
+constexpr float kGeluBeta = 0.044715f;
+
 // Registra una activación elemento a elemento cuya derivada se puede escribir
 // en función de la entrada y de la salida: d/dx = f(x, y).
 template <typename Derivative>
@@ -157,18 +163,16 @@ Tensor Tanh::forward(const Tensor& input) {
 
 Tensor GELU::forward(const Tensor& input) {
     // 0.5x(1 + tanh(sqrt(2/pi)(x + 0.044715x^3)))
-    constexpr float kAlpha = 0.7978845608f; // sqrt(2/pi)
-    constexpr float kBeta = 0.044715f;
-
     Tensor out(input.shape(), 0.0f, false);
     for (size_t i = 0; i < input.size(); ++i) {
         const float x = input.data()[i];
-        out.data()[i] = 0.5f * x * (1.0f + std::tanh(kAlpha * (x + kBeta * x * x * x)));
+        out.data()[i] =
+            0.5f * x * (1.0f + std::tanh(kGeluAlpha * (x + kGeluBeta * x * x * x)));
     }
     return unary_with_grad(input, out, [](float x, float) {
-        const float inner = kAlpha * (x + kBeta * x * x * x);
+        const float inner = kGeluAlpha * (x + kGeluBeta * x * x * x);
         const float t = std::tanh(inner);
-        const float dinner = kAlpha * (1.0f + 3.0f * kBeta * x * x);
+        const float dinner = kGeluAlpha * (1.0f + 3.0f * kGeluBeta * x * x);
         return 0.5f * (1.0f + t) + 0.5f * x * (1.0f - t * t) * dinner;
     });
 }
