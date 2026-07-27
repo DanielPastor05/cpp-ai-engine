@@ -1,6 +1,7 @@
 #include "test_support.hpp"
 
 #include "engine/serialize.hpp"
+#include "engine/data.hpp"
 
 #include <cstdio>
 #include <fstream>
@@ -486,6 +487,57 @@ void test_serialization() {
     std::remove("not_weights.bin");
 }
 
+
+void test_idx_reader() {
+    section("data: lector del formato IDX");
+
+    // El subconjunto que viene en el repositorio
+    engine::data::MnistPaths paths;
+    bool found = true;
+    try {
+        paths = engine::data::find_mnist(ENGINE_DATA_DIR "/mnist");
+    } catch (const std::exception&) {
+        found = false;
+    }
+    check(found, "find_mnist localiza el conjunto del repositorio");
+    if (!found) return;
+
+    engine::data::Dataset train = engine::data::load_mnist_train(paths, 64);
+    check(train.images.shape() == std::vector<size_t>({64, 1, 28, 28}),
+          "las imagenes salen como (N, 1, 28, 28), listas para Conv2d");
+    check(train.labels.size() == 64, "se leen tantas etiquetas como imagenes");
+
+    // Normalizacion a [0, 1]: con 0-255 los gradientes de la primera capa
+    // serian dos ordenes de magnitud mayores
+    float min_v = 1e9f, max_v = -1e9f;
+    for (float v : train.images.data()) {
+        min_v = std::min(min_v, v);
+        max_v = std::max(max_v, v);
+    }
+    check(min_v >= 0.0f && max_v <= 1.0f, "los pixeles quedan normalizados en [0, 1]");
+    check(max_v > 0.9f, "y llegan hasta el maximo (hay pixeles saturados)");
+
+    for (size_t label : train.labels) {
+        if (label > 9) { check(false, "las etiquetas caen fuera de 0-9"); return; }
+    }
+    check(true, "todas las etiquetas estan en el rango 0-9");
+
+    // El primer digito de MNIST es un 5: si el orden de bytes big-endian
+    // estuviera mal, ni las dimensiones ni las etiquetas cuadrarian
+    check(train.labels[0] == 5, "la primera etiqueta de MNIST es un 5");
+
+    // max_samples recorta
+    engine::data::Dataset small = engine::data::load_mnist_test(paths, 10);
+    check(small.size() == 10, "max_samples limita cuantas muestras se leen");
+
+    check_throws([&] { engine::data::load_idx_images("no_existe.idx"); },
+                 "un fichero inexistente lanza excepcion");
+    check_throws([&] { engine::data::load_idx_images(paths.train_labels); },
+                 "leer etiquetas como imagenes lanza excepcion (magic distinto)");
+    check_throws([&] { engine::data::find_mnist("directorio_inexistente"); },
+                 "un directorio sin datos lanza excepcion");
+}
+
 } // namespace
 
 void run_nn_tests() {
@@ -498,4 +550,5 @@ void run_nn_tests() {
     test_named_parameters();
     test_clip_and_schedulers();
     test_serialization();
+    test_idx_reader();
 }
