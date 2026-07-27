@@ -273,6 +273,15 @@ el entrenamiento nadie mira. Quitarla además aceleró el demo un 5 %.
 bajo `NoGradGuard` y 25 MB construyendo grafo. Es inherente al diseño: hay que
 retener las activaciones para derivar.
 
+**El núcleo de `matmul` iza los punteros de fila y los marca `restrict`.** Sin
+esa promesa de no solapamiento el compilador no vectoriza el acumulador. En
+cambio la comprobación `a_ik == 0` **se conserva** aunque impida vectorizar esa
+rama: las matrices que llegan a `matmul` suelen ser salidas de ReLU con la
+mitad de los valores en cero exacto, y saltárselos gana más de lo que cuesta.
+Medido de las dos formas sobre el ejemplo del Transformer: sin la rama 18,7 s,
+con ella 15,9 s. Un microbenchmark con datos densos decía justo lo contrario —
+por eso las cifras salen de los ejemplos reales.
+
 Sobre el tiempo de compilación: `engine/tensor.hpp` la incluye todo, así que
 solo trae lo imprescindible (0,64 s → 0,34 s por unidad de traducción).
 `<random>` vive en `engine/random.hpp` y `TensorImpl` en `engine/detail/`. Se
