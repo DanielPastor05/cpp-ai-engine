@@ -1,6 +1,7 @@
 #ifndef ENGINE_TENSOR_HPP
 #define ENGINE_TENSOR_HPP
 
+#include <algorithm>
 #include <vector>
 #include <iostream>
 #include <iomanip>
@@ -15,6 +16,11 @@
 namespace engine {
 
 struct TensorImpl;
+
+// Fija la semilla del generador global usado por rand()/randn() y por la
+// inicializacion de las capas, para poder reproducir un entrenamiento.
+void manual_seed(uint64_t seed);
+std::mt19937& global_rng();
 
 class Tensor {
 private:
@@ -36,6 +42,7 @@ public:
     static Tensor zeros(const std::vector<size_t>& shape, bool requires_grad = false);
     static Tensor ones(const std::vector<size_t>& shape, bool requires_grad = false);
     static Tensor rand(const std::vector<size_t>& shape, float min_val = -1.0f, float max_val = 1.0f, bool requires_grad = false);
+    static Tensor randn(const std::vector<size_t>& shape, float mean = 0.0f, float stddev = 1.0f, bool requires_grad = false);
 
     // Métodos Autograd y Gradientes
     bool requires_grad() const;
@@ -45,6 +52,7 @@ public:
     void zero_grad();
     void add_grad(const Tensor& g);
     void backward();
+    void backward(const Tensor& grad_output);
 
     // Obtener implementación compartida interna
     std::shared_ptr<TensorImpl> get_impl() const { return impl_; }
@@ -62,8 +70,11 @@ public:
     std::vector<float>& data();
     size_t size() const;
     size_t ndim() const;
+    std::string shape_str() const;
 
     // Operaciones matemáticas con soporte para Autograd
+    // La suma admite difusión (broadcasting) de un vector fila (1, N) o (N,)
+    // sobre una matriz (M, N), necesaria para el sesgo de las capas densas.
     Tensor operator+(const Tensor& other) const;
     Tensor operator-(const Tensor& other) const;
     Tensor operator*(const Tensor& other) const;
@@ -77,15 +88,25 @@ public:
     Tensor matmul(const Tensor& other) const;
     Tensor transpose() const;
     Tensor relu() const;
+    Tensor softmax() const;
     Tensor reshape(const std::vector<size_t>& new_shape) const;
     Tensor sum() const;
     Tensor mean() const;
+
+    // Copia desligada del grafo (comparte forma y valores, no el historial)
+    Tensor detach() const;
 
     // Formateo e impresión
     void print(const std::string& name = "") const;
 };
 
-// Estructura interna para almacenar el estado y los nodos del grafo Autograd
+// Estructura interna para almacenar el estado y los nodos del grafo Autograd.
+//
+// Nota sobre la propiedad de la memoria: un nodo referencia a sus padres con
+// shared_ptr (aristas hijo -> padre) y nunca a sus hijos, de modo que el grafo
+// es acíclico también en el conteo de referencias. Por eso backward_fn recibe
+// el gradiente de salida como argumento en lugar de capturar su propio tensor:
+// capturarlo crearía un ciclo y el grafo jamás se liberaría.
 struct TensorImpl {
     std::vector<float> data;
     std::vector<size_t> shape;
@@ -95,7 +116,7 @@ struct TensorImpl {
     std::shared_ptr<TensorImpl> grad = nullptr;
 
     std::vector<std::shared_ptr<TensorImpl>> parents;
-    std::function<void()> backward_fn = nullptr;
+    std::function<void(const Tensor&)> backward_fn = nullptr;
 
     TensorImpl() = default;
     TensorImpl(const std::vector<size_t>& s, float fill_val = 0.0f, bool req_grad = false);
