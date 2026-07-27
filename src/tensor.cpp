@@ -632,15 +632,19 @@ Tensor Tensor::reshape(const std::vector<size_t>& new_shape) const {
 
 // Selección de filas (recogida de un mini-lote)
 Tensor Tensor::select_rows(const std::vector<size_t>& indices) const {
-    if (ndim() != 2) {
-        throw std::invalid_argument("select_rows requiere un tensor 2D, este es " + shape_str() + ".");
+    if (ndim() < 2) {
+        throw std::invalid_argument("select_rows requiere al menos 2 dimensiones, este tensor es " +
+                                    shape_str() + ".");
     }
     if (indices.empty()) {
         throw std::invalid_argument("select_rows recibió una lista de índices vacía.");
     }
 
     const size_t rows = shape()[0];
-    const size_t cols = shape()[1];
+    // Todo lo que hay tras el primer eje viaja junto: para (N, C, H, W) cada
+    // "fila" es una imagen completa de C*H*W valores contiguos.
+    const size_t row_size = (rows == 0) ? 0 : size() / rows;
+
     for (size_t idx : indices) {
         if (idx >= rows) {
             throw std::out_of_range("select_rows: la fila " + std::to_string(idx) +
@@ -648,10 +652,14 @@ Tensor Tensor::select_rows(const std::vector<size_t>& indices) const {
         }
     }
 
+    std::vector<size_t> out_shape = shape();
+    out_shape[0] = indices.size();
+
     bool req_g = track(requires_grad());
-    Tensor res({indices.size(), cols}, 0.0f, req_g);
+    Tensor res(out_shape, 0.0f, req_g);
     for (size_t i = 0; i < indices.size(); ++i) {
-        std::copy_n(data().begin() + indices[i] * cols, cols, res.data().begin() + i * cols);
+        std::copy_n(data().begin() + indices[i] * row_size, row_size,
+                    res.data().begin() + i * row_size);
     }
 
     if (req_g) {
@@ -659,13 +667,13 @@ Tensor Tensor::select_rows(const std::vector<size_t>& indices) const {
         Tensor self_copy = *this;
         std::vector<size_t> idx_copy = indices;
 
-        res.impl_->backward_fn = [self_copy, idx_copy, cols](const Tensor& grad_out) mutable {
+        res.impl_->backward_fn = [self_copy, idx_copy, row_size](const Tensor& grad_out) mutable {
             // Dispersión inversa: cada fila devuelve su gradiente a la fila de
             // origen. El += es necesario porque un índice puede repetirse.
             Tensor dX(self_copy.shape(), 0.0f, false);
             for (size_t i = 0; i < idx_copy.size(); ++i) {
-                for (size_t j = 0; j < cols; ++j) {
-                    dX.data()[idx_copy[i] * cols + j] += grad_out.data()[i * cols + j];
+                for (size_t j = 0; j < row_size; ++j) {
+                    dX.data()[idx_copy[i] * row_size + j] += grad_out.data()[i * row_size + j];
                 }
             }
             self_copy.add_grad(dX);

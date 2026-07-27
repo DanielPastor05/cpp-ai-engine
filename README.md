@@ -23,9 +23,10 @@ Un motor de Inteligencia Artificial y Aprendizaje Profundo (Deep Learning) avanz
   - Optimizadores `SGD` (con momento y *weight decay*) y `Adam` (con corrección de sesgo).
   - Entrenamiento por mini-lotes mediante `Tensor::select_rows`.
   - Inicialización Xavier/Glorot y semilla reproducible (`engine::manual_seed`).
-- [ ] **Fase 4: Redes Convolucionales (CNN)**
-  - Transformación `im2col` / `col2im`.
-  - Capas `Conv2d`, `MaxPool2d` y `Flatten`.
+- [x] **Fase 4: Redes Convolucionales (CNN)**
+  - Transformación `im2col` / `col2im` (col2im es el adjunto exacto de im2col).
+  - Capas `Conv2d`, `MaxPool2d` y `Flatten`, con relleno y paso configurables.
+  - Mini-lotes sobre volúmenes 4D `(N, C, H, W)`.
 - [ ] **Fase 5: Arquitectura Transformer**
   - *Scaled Dot-Product Attention* y *Multi-Head Attention (MHA)*.
   - Codificación posicional y `LayerNorm`.
@@ -42,9 +43,10 @@ include/engine/
   tensor.hpp      Tensor (handle) + TensorImpl (nodo del grafo)
   autograd.hpp    backward(), grad_enabled(), NoGradGuard
   nn.hpp          Module, Linear, ReLU, Softmax, Sequential, pérdidas, métricas
+  conv.hpp        Window2d, im2col/col2im, Conv2d, MaxPool2d, Flatten
   optim.hpp       Optimizer, SGD, Adam
 src/              Implementación de la librería
-examples/         main.cpp (Fase 1), autograd_demo.cpp (Fase 2), nn_demo.cpp (Fase 3)
+examples/         main.cpp (F1), autograd_demo.cpp (F2), nn_demo.cpp (F3), cnn_demo.cpp (F4)
 tests/            Suite de pruebas con verificación numérica de gradientes
 .github/workflows/ci.yml   Compila y ejecuta las pruebas en GCC, Clang y MSVC
 ```
@@ -69,6 +71,7 @@ cmake --build build
 ./build/cpp_ai_engine   # Fase 1: tensores, strides y MatMul
 ./build/autograd_demo   # Fase 2: backpropagation y regresión lineal
 ./build/nn_demo         # Fase 3: MLP que clasifica una espiral de 3 clases
+./build/cnn_demo        # Fase 4: CNN que clasifica formas en imágenes
 
 # 4. Ejecutar las pruebas
 ctest --test-dir build --output-on-failure
@@ -170,6 +173,36 @@ for (size_t start = 0; start < N; start += batch_size) {
 }
 ```
 
+### Redes convolucionales
+
+```cpp
+#include "engine/conv.hpp"
+
+nn::Sequential cnn{
+    nn::make<nn::Conv2d>(1, 8, nn::Window2d(3, 3, 1, 1)),   // (N,1,12,12) -> (N,8,12,12)
+    nn::make<nn::ReLU>(),
+    nn::make<nn::MaxPool2d>(2, 2),                          // -> (N,8,6,6)
+    nn::make<nn::Conv2d>(8, 16, nn::Window2d(3, 3, 1, 1)),  // -> (N,16,6,6)
+    nn::make<nn::ReLU>(),
+    nn::make<nn::MaxPool2d>(2, 2),                          // -> (N,16,3,3)
+    nn::make<nn::Flatten>(),                                // -> (N,144)
+    nn::make<nn::Linear>(144, 3)
+};
+```
+
+`Window2d(kernel_h, kernel_w, stride, padding)` describe la ventana deslizante;
+el tamaño de salida es `(dim + 2*padding - kernel) / stride + 1`.
+
+`cnn_demo` clasifica tres formas (barra horizontal, barra vertical y cruz)
+dibujadas en posiciones aleatorias sobre fondo con ruido. La posición varía a
+propósito: es donde la invariancia a la traslación de una convolución se
+separa de una capa densa, con un número de parámetros comparable.
+
+```
+CNN (1683 parametros) : 100.00% sobre el conjunto de prueba
+MLP (1779 parametros) :  73.33% sobre el conjunto de prueba
+```
+
 ---
 
 ## 🧠 Notas de Diseño
@@ -195,6 +228,14 @@ del proceso en grafos profundos.
 `cross_entropy_loss` fusiona log-softmax y NLL en un solo nodo cuyo gradiente se
 reduce a `(softmax(logits) - one_hot) / N`.
 
+**La convolución es un producto matricial.** `im2col` aplana cada ventana del
+volumen de entrada en una fila, de modo que `Conv2d` se reduce a `(M, K) x (K,
+outC)` en lugar de siete bucles anidados. Su derivada es `col2im`, que reparte
+el gradiente de cada ventana a los píxeles que la formaron **sumando** allí
+donde las ventanas se solapan; por eso col2im no es la inversa de im2col sino
+su adjunto, y las pruebas lo comprueban con la identidad
+`<im2col(x), y> == <x, col2im(y)>`.
+
 **Solo las hojas acumulan gradiente.** `add_grad` suma en lugar de sobrescribir,
 así que hay que llamar a `zero_grad()` en cada iteración (igual que en PyTorch).
 Los nodos intermedios, en cambio, se reinician al empezar cada `backward()`: su
@@ -205,9 +246,9 @@ gradiente es un valor temporal del recorrido, y conservarlo haría que un segund
 
 ## ✅ Pruebas
 
-`tests/test_engine.cpp` cubre tensores, autograd, capas y optimizadores con 103
-comprobaciones, y se ejecutan en CI sobre GCC, Clang y MSVC. El grueso de la verificación de autograd es una **comprobación
+`tests/test_engine.cpp` cubre tensores, autograd, capas densas, convoluciones y
+optimizadores con 155 comprobaciones, y se ejecutan en CI sobre GCC, Clang y MSVC. El grueso de la verificación de autograd es una **comprobación
 numérica de gradientes** por diferencias centradas, que compara cada derivada
 analítica con `(f(x+h) - f(x-h)) / 2h`; también se verifica que los nodos
-intermedios del grafo se liberen al salir de ámbito y que un MLP resuelva el XOR
-donde un modelo lineal no puede.
+intermedios del grafo se liberen al salir de ámbito, que `col2im` sea el adjunto
+exacto de `im2col`, y que un MLP resuelva el XOR donde un modelo lineal no puede.

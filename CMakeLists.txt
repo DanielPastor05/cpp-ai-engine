@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(cpp_ai_engine VERSION 0.3 LANGUAGES CXX)
+project(cpp_ai_engine VERSION 0.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,6 +16,7 @@ set(SOURCES
     src/tensor.cpp
     src/autograd.cpp
     src/nn.cpp
+    src/conv.cpp
     src/optim.cpp
 )
 
@@ -40,6 +41,10 @@ target_link_libraries(autograd_demo PRIVATE engine)
 # Ejecutable de la Fase 3 (Capas y Optimizadores)
 add_executable(nn_demo examples/nn_demo.cpp)
 target_link_libraries(nn_demo PRIVATE engine)
+
+# Ejecutable de la Fase 4 (Redes Convolucionales)
+add_executable(cnn_demo examples/cnn_demo.cpp)
+target_link_libraries(cnn_demo PRIVATE engine)
 
 # Suite de pruebas
 enable_testing()
