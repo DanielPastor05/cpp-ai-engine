@@ -13,6 +13,11 @@ namespace optim {
 // ---------------------------------------------------------
 class Optimizer {
 public:
+    // Los parámetros se capturan aquí y se guardan por valor. Como Tensor es
+    // un handle, escribir en ellos actualiza los pesos de la capa; pero si se
+    // *reasigna* un parámetro después (capa.weight() = otro_tensor), el
+    // optimizador seguirá apuntando al tensor viejo. Configura los pesos antes
+    // de construir el optimizador.
     explicit Optimizer(std::vector<Tensor> parameters);
     virtual ~Optimizer() = default;
 

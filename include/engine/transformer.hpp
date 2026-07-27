@@ -100,8 +100,12 @@ public:
     std::string name() const override;
 
     // Pesos de atención (batch, heads, seq, seq) del último forward, útiles
-    // para inspeccionar en qué se fija el modelo.
+    // para inspeccionar en qué se fija el modelo. Hay que activarlos con
+    // keep_attention(true): guardarlos cuesta una copia de (B, H, S, S) en
+    // cada paso, y durante el entrenamiento no se miran.
     const Tensor& last_attention() const { return last_attention_; }
+    void keep_attention(bool keep) { keep_attention_ = keep; }
+    bool keeps_attention() const { return keep_attention_; }
 
 private:
     size_t d_model_;
@@ -112,6 +116,7 @@ private:
     Linear w_value_;
     Linear w_out_;
     Tensor last_attention_;
+    bool keep_attention_ = false;
 };
 
 // ---------------------------------------------------------

@@ -49,10 +49,13 @@ include/engine/
   conv.hpp        Window2d, im2col/col2im, Conv2d, MaxPool2d, Flatten
   transformer.hpp LayerNorm, Embedding, atención, MultiHeadAttention, TransformerBlock
   optim.hpp       Optimizer, SGD, Adam
+  random.hpp      global_rng() (aparte, porque <random> es cara de compilar)
+  detail/         TensorImpl, la representación interna de un nodo del grafo
 src/              Implementación de la librería
 examples/         main.cpp (F1), autograd_demo.cpp (F2), nn_demo.cpp (F3),
                   cnn_demo.cpp (F4), transformer_demo.cpp (F5)
-tests/            Suite de pruebas con verificación numérica de gradientes
+tests/            Suite de pruebas con verificación numérica de gradientes,
+                  repartida por áreas (tensor, autograd, nn, conv, transformer)
 .github/workflows/ci.yml   Compila y ejecuta las pruebas en GCC, Clang y MSVC
 ```
 
@@ -69,8 +72,9 @@ tests/            Suite de pruebas con verificación numérica de gradientes
 # 1. Configurar CMake
 cmake -B build -S .
 
-# 2. Compilar el proyecto
-cmake --build build
+# 2. Compilar el proyecto (--parallel importa: la suite está repartida
+#    en varias unidades de traducción precisamente para aprovecharlo)
+cmake --build build --parallel
 
 # 3. Ejecutar los ejemplos
 ./build/cpp_ai_engine   # Fase 1: tensores, strides y MatMul
@@ -245,6 +249,38 @@ cabeza concentrando ~0.9 sobre la posición que contiene la respuesta.
 
 ---
 
+## ⚡ Notas de Rendimiento
+
+Todas estas decisiones salieron de medir, no de suponer.
+
+**El backward libera los gradientes intermedios según los consume.** En orden
+topológico inverso, al llegar a un nodo su gradiente ya está completo; una vez
+propagado a los padres nadie más lo necesita. Conservarlos hasta que muriese el
+grafo multiplicaba por **24** la memoria de un backward (+27,6 MB frente a
++1,1 MB en un `TransformerBlock` de prueba).
+
+**`Conv2d` guarda la entrada, no las columnas.** Las columnas de `im2col` ocupan
+`kH*kW` veces la entrada — nueve veces con un kernel 3×3. Recalcularlas en el
+backward cuesta un **+5 % de tiempo** y ahorra un **10×** de memoria (20 MB → 2 MB
+en una convolución 16→16 sobre un lote de 32 imágenes de 32×32). Es el mismo
+compromiso que hace PyTorch.
+
+**Los pesos de atención no se guardan salvo que se pidan** con
+`keep_attention(true)`: es una copia de `(B, H, S, S)` en cada paso que durante
+el entrenamiento nadie mira. Quitarla además aceleró el demo un 5 %.
+
+**El grafo cuesta unas 6 veces la inferencia.** El mismo forward ocupa 3,9 MB
+bajo `NoGradGuard` y 25 MB construyendo grafo. Es inherente al diseño: hay que
+retener las activaciones para derivar.
+
+Sobre el tiempo de compilación: `engine/tensor.hpp` la incluye todo, así que
+solo trae lo imprescindible (0,64 s → 0,34 s por unidad de traducción).
+`<random>` vive en `engine/random.hpp` y `TensorImpl` en `engine/detail/`. Se
+probaron también *unity build* y cabeceras precompiladas: **ambos empeoran** la
+compilación en paralelo en un proyecto de este tamaño, y se descartaron.
+
+---
+
 ## 🧠 Notas de Diseño
 
 **`Tensor` es un handle, `TensorImpl` es el nodo.** `Tensor` guarda solo un
@@ -295,8 +331,8 @@ gradiente es un valor temporal del recorrido, y conservarlo haría que un segund
 
 ## ✅ Pruebas
 
-`tests/test_engine.cpp` cubre tensores, autograd, capas densas, convoluciones,
-atención y optimizadores con 250 comprobaciones, y se ejecutan en CI sobre GCC, Clang y MSVC. El grueso de la verificación de autograd es una **comprobación
+La suite cubre tensores, autograd, capas densas, convoluciones,
+atención y optimizadores con 257 comprobaciones, y se ejecutan en CI sobre GCC, Clang y MSVC. El grueso de la verificación de autograd es una **comprobación
 numérica de gradientes** por diferencias centradas, que compara cada derivada
 analítica con `(f(x+h) - f(x-h)) / 2h`; también se verifica que los nodos
 intermedios del grafo se liberen al salir de ámbito, que `col2im` sea el adjunto

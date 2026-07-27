@@ -1,6 +1,13 @@
 #include "engine/tensor.hpp"
 #include "engine/autograd.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <iostream>
+#include <stdexcept>
+#include "engine/random.hpp"
+
 namespace engine {
 
 // ---------------------------------------------------------

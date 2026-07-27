@@ -1,4 +1,5 @@
 #include "engine/tensor.hpp"
+#include "engine/random.hpp"
 #include "engine/autograd.hpp"
 #include "engine/nn.hpp"
 #include "engine/optim.hpp"

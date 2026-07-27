@@ -1,6 +1,12 @@
 #include "engine/nn.hpp"
 #include "engine/autograd.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <iostream>
+#include <stdexcept>
+
 namespace engine {
 namespace nn {
 
