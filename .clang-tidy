@@ -1,6 +1,13 @@
-# Comprobaciones de análisis estático. Se excluyen las que chocan con las
-# convenciones del proyecto (nombres con guion bajo final, aritmética de
-# punteros en los núcleos numéricos, números "mágicos" en las fórmulas).
+# Comprobaciones de análisis estático.
+#
+# Se excluyen las que chocan con las convenciones del proyecto: nombres con
+# guion bajo final, aritmética de punteros en los núcleos numéricos y números
+# "mágicos" en las fórmulas.
+#
+# readability-braces-around-statements queda fuera a propósito. Los bucles de
+# reducción se escriben en una línea —`for (size_t j = 0; j < D; ++j) mean +=
+# row[j];`— y envolverlos en llaves triplicaría las líneas de las fórmulas sin
+# hacerlas más claras.
 Checks: >
   bugprone-*,
   clang-analyzer-*,
@@ -8,7 +15,6 @@ Checks: >
   modernize-use-override,
   modernize-use-nullptr,
   modernize-use-emplace,
-  readability-braces-around-statements,
   -bugprone-easily-swappable-parameters,
   -bugprone-narrowing-conversions,
   -performance-avoid-endl

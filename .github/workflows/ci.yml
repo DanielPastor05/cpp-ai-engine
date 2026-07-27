@@ -85,6 +85,28 @@ jobs:
             ./build/$demo > /dev/null
           done
 
+  thread-sanitizer:
+    name: Linux / ThreadSanitizer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # El motor reparte matmul y las operaciones elemento a elemento entre
+      # varios hilos, asi que conviene comprobar que no hay carreras de datos.
+      - name: Configurar con ThreadSanitizer
+        run: >
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
+
+      - name: Compilar
+        run: cmake --build build --parallel
+
+      - name: Pruebas bajo ThreadSanitizer
+        env:
+          ENGINE_NUM_THREADS: 4
+          TSAN_OPTIONS: halt_on_error=1
+        run: ctest --test-dir build --output-on-failure
+
   debug:
     name: Linux / Debug
     runs-on: ubuntu-latest

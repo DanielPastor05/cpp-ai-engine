@@ -118,7 +118,63 @@ There is no leak: RSS is flat across 60 training iterations.
 
 ---
 
-## Build time
+## CPU parallelism
+
+`matmul` and the element-wise operators are split across a persistent thread
+pool. Threads are created once and reused: creating one costs tens of
+microseconds, more than many of the engine's operations, so spawning per call
+would be a regression rather than an improvement.
+
+**The split is deterministic by construction.** Each row of the output is
+computed start to finish by a single thread, so no reduction crosses a chunk
+boundary and the accumulation order never changes. Results are **identical bit
+for bit** with one thread or with eight — asserted in the test suite, not just
+claimed.
+
+Measured on 4 cores:
+
+| Threads | matmul 512³ | Speedup | Element-wise, 4M | Speedup |
+|---|---|---|---|---|
+| 1 | 18.97 ms | 1.00× | 4.60 ms | 1.00× |
+| 2 | 9.87 ms | 1.92× | 2.83 ms | 1.62× |
+| 3 | 7.08 ms | 2.68× | 2.86 ms | 1.61× |
+| 4 | 6.16 ms | **3.08×** | 2.60 ms | **1.77×** |
+
+Element-wise operations scale much worse, and that is expected: they are
+limited by memory bandwidth, not by arithmetic. Adding cores does not add
+bandwidth.
+
+End to end on the flagship example — full MNIST, 60 000 images, six epochs:
+
+| | Time | Test accuracy |
+|---|---|---|
+| 1 thread | 587 s | 99.35% |
+| 4 threads | **329 s** (1.78×) | 99.35% |
+
+The per-epoch losses are identical to the last digit across both runs, which is
+the determinism guarantee holding in practice rather than in a unit test.
+
+`Conv2d` had to be parallelised separately: it has its own hand-written loop and
+does not go through `Tensor::matmul`. The first threaded build left it alone and
+MNIST gained **nothing** — 589 s against 587 s — because the convolutions
+dominate that workload. Its backward pass is now split into two passes over
+disjoint axes (`m` for `dcols`, output channel for `dW` and `db`) rather than one
+pass with shared accumulators, which keeps it both race-free and deterministic.
+
+### The thresholds matter more than the parallelism
+
+The first attempt used thresholds ten times lower and made the examples
+**slower** — `transformer_demo` went from 15.9 s to 22.6 s. That example chains
+many small matrix products, and each one was paying for synchronisation without
+gaining anything.
+
+Dispatching a parallel region costs about **7.8 µs with four threads**,
+measured directly. The thresholds are derived from that number: a matmul is only
+split above ~1M multiply-adds (~130 µs of work), so the overhead stays under 6%.
+Below that it runs inline, and nested parallel regions always run inline.
+
+The lesson generalises: for a threaded fast path, the interesting engineering is
+in deciding *when not to use it*.
 
 | Configuration | `-j1` | `-j4` |
 |---|---|---|

@@ -171,7 +171,11 @@ StepLR::StepLR(Optimizer& optimizer, size_t step_size, float gamma)
 }
 
 float StepLR::compute(size_t epoch) const {
-    return base_lr_ * std::pow(gamma_, static_cast<float>(epoch / step_size_));
+    // La división entera es intencionada: el learning rate baja a escalones,
+    // no de forma continua. Con step_size = 2, las épocas 0 y 1 dan escalón 0,
+    // las 2 y 3 el escalón 1, y así. Se calcula aparte para dejarlo explícito.
+    const size_t completed_steps = epoch / step_size_;
+    return base_lr_ * std::pow(gamma_, static_cast<float>(completed_steps));
 }
 
 CosineAnnealingLR::CosineAnnealingLR(Optimizer& optimizer, size_t total_epochs, float min_lr)

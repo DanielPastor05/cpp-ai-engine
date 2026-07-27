@@ -1,5 +1,7 @@
 #include "test_support.hpp"
 
+#include "engine/parallel.hpp"
+
 using namespace testing;
 
 namespace {
@@ -363,6 +365,91 @@ void test_broadcast_all_operators() {
     check_gradient("gradiente del divisor difundido", d, [&](Tensor& t) { return ((G / t) * w).sum(); });
 }
 
+
+void test_parallelism() {
+    section("parallel: reparto de trabajo");
+
+    namespace par = engine::parallel;
+    const size_t original = par::num_threads();
+
+    check(par::num_threads() >= 1, "el pool arranca con al menos un hilo");
+    check(!par::inside_parallel_region(), "el hilo principal no esta dentro de una region");
+
+    // Cobertura: cada indice se visita exactamente una vez
+    for (size_t threads : {size_t(1), size_t(2), size_t(4)}) {
+        par::set_num_threads(threads);
+        const size_t n = 100000;
+        std::vector<int> visits(n, 0);
+        par::parallel_for(n, 1000, [&](size_t from, size_t to) {
+            for (size_t i = from; i < to; ++i) visits[i]++;
+        });
+        bool exactly_once = true;
+        for (int v : visits) if (v != 1) exactly_once = false;
+        check(exactly_once, "con " + std::to_string(threads) +
+                            " hilos cada indice se visita exactamente una vez");
+    }
+
+    // Determinismo: el reparto por filas no altera el orden de acumulacion,
+    // asi que el resultado debe ser identico BIT A BIT, no solo parecido.
+    engine::manual_seed(7);
+    Tensor A = Tensor::randn({200, 150});
+    Tensor B = Tensor::randn({150, 120});
+    Tensor E1 = Tensor::randn({400, 400});
+    Tensor E2 = Tensor::randn({400, 400});
+
+    par::set_num_threads(1);
+    Tensor mm_serial = A.matmul(B);
+    Tensor add_serial = E1 + E2;
+
+    par::set_num_threads(4);
+    Tensor mm_par = A.matmul(B);
+    Tensor add_par = E1 + E2;
+
+    bool identical = true;
+    for (size_t i = 0; i < mm_serial.size(); ++i) {
+        if (mm_serial.data()[i] != mm_par.data()[i]) identical = false;
+    }
+    check(identical, "matmul da un resultado identico bit a bit con 1 y con 4 hilos");
+
+    identical = true;
+    for (size_t i = 0; i < add_serial.size(); ++i) {
+        if (add_serial.data()[i] != add_par.data()[i]) identical = false;
+    }
+    check(identical, "la suma da un resultado identico bit a bit con 1 y con 4 hilos");
+
+    // Las regiones anidadas se ejecutan en linea: multiplicar hilos dentro de
+    // un hilo solo anade contencion
+    par::set_num_threads(4);
+    bool nested_inline = true;
+    par::parallel_for(10000, 100, [&](size_t, size_t) {
+        if (!par::inside_parallel_region()) nested_inline = false;
+        size_t calls = 0;
+        par::parallel_for(10000, 100, [&](size_t, size_t) { ++calls; });
+        if (calls != 1) nested_inline = false;  // un solo trozo = ejecutado en linea
+    });
+    check(nested_inline, "una region anidada se ejecuta en linea");
+
+    // Una excepcion en un trabajador llega al hilo que reparte
+    check_throws([&] {
+        par::parallel_for(100000, 1000, [](size_t from, size_t) {
+            if (from > 0) throw std::runtime_error("fallo en un trabajador");
+        });
+    }, "una excepcion en un trabajador se propaga al que reparte");
+
+    // Un rango vacio no hace nada
+    size_t calls = 0;
+    par::parallel_for(0, 10, [&](size_t, size_t) { ++calls; });
+    check(calls == 0, "un rango vacio no ejecuta el cuerpo");
+
+    par::set_num_threads(1);
+    check(par::num_threads() == 1, "set_num_threads(1) deja solo el hilo llamante");
+    calls = 0;
+    par::parallel_for(1000000, 1, [&](size_t, size_t) { ++calls; });
+    check(calls == 1, "con un hilo el cuerpo se ejecuta una sola vez, en linea");
+
+    par::set_num_threads(original);
+}
+
 } // namespace
 
 void run_tensor_tests() {
@@ -373,4 +460,5 @@ void run_tensor_tests() {
     test_reductions();
     test_slice_concat_stack();
     test_broadcast_all_operators();
+    test_parallelism();
 }

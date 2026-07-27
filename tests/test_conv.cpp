@@ -1,5 +1,9 @@
 #include "test_support.hpp"
 
+#include "engine/parallel.hpp"
+
+#include <tuple>
+
 using namespace testing;
 
 namespace {
@@ -260,6 +264,73 @@ void test_cnn_training() {
     check_close(batch.data()[0], X.data()[0], "el mini-lote 4D copia los datos correctos");
 }
 
+
+void test_conv_determinism() {
+    section("conv: determinismo con varios hilos");
+
+    namespace par = engine::parallel;
+    const size_t original = par::num_threads();
+
+    engine::manual_seed(13);
+    Tensor x = Tensor::randn({8, 4, 16, 16}, 0.0f, 1.0f, true);
+    Tensor upstream = Tensor::randn({8, 6, 16, 16});
+
+    auto run = [&](size_t threads) {
+        par::set_num_threads(threads);
+        engine::manual_seed(13);
+        nn::Conv2d conv(4, 6, nn::Window2d(3, 3, 1, 1));
+        Tensor input = x.detach();
+        input.set_requires_grad(true);
+        Tensor out = conv(input);
+        out.backward(upstream);
+        return std::make_tuple(out, input.grad(), conv.weight().grad(), conv.bias().grad());
+    };
+
+    auto serial = run(1);
+    auto parallel = run(4);
+
+    // El backward de Conv2d se reparte en dos pasadas con ejes disjuntos
+    // precisamente para que el orden de acumulacion no dependa de los hilos.
+    // Aqui se exige igualdad BIT A BIT, no aproximada.
+    const char* names[] = {"la salida", "el gradiente de la entrada",
+                           "el gradiente del kernel", "el gradiente del sesgo"};
+    const Tensor* s_all[] = {&std::get<0>(serial), &std::get<1>(serial),
+                             &std::get<2>(serial), &std::get<3>(serial)};
+    const Tensor* p_all[] = {&std::get<0>(parallel), &std::get<1>(parallel),
+                             &std::get<2>(parallel), &std::get<3>(parallel)};
+
+    for (size_t i = 0; i < 4; ++i) {
+        bool identical = s_all[i]->size() == p_all[i]->size();
+        for (size_t j = 0; identical && j < s_all[i]->size(); ++j) {
+            if (s_all[i]->data()[j] != p_all[i]->data()[j]) identical = false;
+        }
+        check(identical, std::string("Conv2d: ") + names[i] +
+                         " es identico bit a bit con 1 y con 4 hilos");
+    }
+
+    // im2col y col2im tambien
+    par::set_num_threads(1);
+    Tensor cols_serial = nn::im2col(x, nn::Window2d(3, 3, 1, 1));
+    Tensor back_serial = nn::col2im(cols_serial, x.shape(), nn::Window2d(3, 3, 1, 1));
+    par::set_num_threads(4);
+    Tensor cols_par = nn::im2col(x, nn::Window2d(3, 3, 1, 1));
+    Tensor back_par = nn::col2im(cols_par, x.shape(), nn::Window2d(3, 3, 1, 1));
+
+    bool cols_same = true;
+    for (size_t i = 0; i < cols_serial.size(); ++i) {
+        if (cols_serial.data()[i] != cols_par.data()[i]) cols_same = false;
+    }
+    check(cols_same, "im2col es identico bit a bit con 1 y con 4 hilos");
+
+    bool back_same = true;
+    for (size_t i = 0; i < back_serial.size(); ++i) {
+        if (back_serial.data()[i] != back_par.data()[i]) back_same = false;
+    }
+    check(back_same, "col2im es identico bit a bit con 1 y con 4 hilos");
+
+    par::set_num_threads(original);
+}
+
 } // namespace
 
 void run_conv_tests() {
@@ -267,4 +338,5 @@ void run_conv_tests() {
     test_conv_layers();
     test_conv_gradients();
     test_cnn_training();
+    test_conv_determinism();
 }

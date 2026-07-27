@@ -14,6 +14,7 @@
 #include "engine/conv.hpp"
 #include "engine/transformer.hpp"
 #include "engine/optim.hpp"
+#include "engine/parallel.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -170,6 +171,35 @@ int main() {
         row("TransformerBlock construyendo grafo", with_graph);
         row("TransformerBlock bajo NoGradGuard", without,
             "x" + std::to_string(with_graph / without).substr(0, 4) + " mas rapido");
+    }
+
+    section("escalado por numero de hilos");
+    {
+        // El reparto es por filas de la salida, asi que el resultado es
+        // identico bit a bit sea cual sea el numero de hilos.
+        Tensor A = Tensor::randn({512, 512});
+        Tensor B = Tensor::randn({512, 512});
+        Tensor E1 = Tensor::randn({2000, 2000});
+        Tensor E2 = Tensor::randn({2000, 2000});
+
+        const size_t original = engine::parallel::num_threads();
+        double base_mm = 0.0;
+        double base_add = 0.0;
+
+        for (size_t threads = 1; threads <= original; ++threads) {
+            engine::parallel::set_num_threads(threads);
+            const double mm = time_op([&] { Tensor C = A.matmul(B); });
+            const double add = time_op([&] { Tensor C = E1 + E2; });
+            if (threads == 1) { base_mm = mm; base_add = add; }
+
+            char note[96];
+            snprintf(note, sizeof(note), "matmul %.2fx   suma %.2fx  (%s)",
+                     base_mm / mm, base_add / add, gflops(mm, 2.0 * 512 * 512 * 512).c_str());
+            row(std::to_string(threads) + " hilo(s): matmul 512^3", mm, note);
+        }
+        engine::parallel::set_num_threads(original);
+        printf("\n  La suma escala peor: esta limitada por el ancho de banda de\n"
+               "  memoria, no por el calculo.\n");
     }
 
     printf("\n");

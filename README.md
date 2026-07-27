@@ -6,7 +6,7 @@ PyTorch**.
 
 [![CI](https://github.com/DanielPastor05/cpp-ai-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/DanielPastor05/cpp-ai-engine/actions/workflows/ci.yml)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)
-![tests](https://img.shields.io/badge/tests-491%20checks-brightgreen)
+![tests](https://img.shields.io/badge/tests-509%20checks-brightgreen)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
 No dependencies. No BLAS. The point is to implement it, not to call it.
@@ -24,6 +24,8 @@ No dependencies. No BLAS. The point is to implement it, not to call it.
 | Interleaved 3-class spiral | **99.3%** (MLP) | 52.7% (linear) | non-linear separability |
 | "Token after the marker" | **99.3%** (Transformer) | 17.5% (mean pooling) | chance is 16.7% |
 | **Gradient agreement with PyTorch** | **~1e-7** | — | 23 fixtures, single ops to full blocks |
+| MNIST training on 4 cores | **1.78×** (329 s vs 587 s) | 1 core | identical loss to the last digit |
+| matmul 512³ on 4 cores | **3.08×** | 1 core | bit-identical regardless of thread count |
 
 Each baseline is a control that *provably cannot* solve its task. If one ever
 starts succeeding, the experiment is broken — not the model.
@@ -49,6 +51,13 @@ are ReLU outputs that are half zeros. Both results are in
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md), including the optimisations I
 measured and discarded.
 
+**Multi-threading that does not change the answer.** `matmul` and the
+element-wise operators split across a persistent thread pool, and the split is
+by output row — so the accumulation order never changes and results are
+**identical bit for bit** whatever the thread count. The first attempt at this
+made the examples *slower*; the thresholds are derived from a measured 7.8 µs
+dispatch cost. Set with `ENGINE_NUM_THREADS` or `parallel::set_num_threads`.
+
 **Real bugs, found and fixed.** A `shared_ptr` cycle that leaked the entire
 computation graph. A repeated `backward()` that multiplied gradients. A heap
 overflow that AddressSanitizer caught and every test missed. Each is written up
@@ -61,7 +70,7 @@ and each has a regression test.
 
 ```bash
 cmake -B build -S . && cmake --build build --parallel
-ctest --test-dir build --output-on-failure     # 491 checks
+ctest --test-dir build --output-on-failure     # 509 checks
 ./build/mnist_demo                             # trains a CNN on real data
 ```
 
@@ -81,10 +90,11 @@ include/engine/
   conv.hpp         im2col/col2im, Conv2d, MaxPool2d, Flatten
   transformer.hpp  LayerNorm, Embedding, attention, MultiHeadAttention, blocks
   optim.hpp        SGD, Adam, gradient clipping, LR schedulers
+  parallel.hpp     Deterministic multi-threading over the hot loops
   serialize.hpp    Save and load weights
   data.hpp         IDX/MNIST reader
 examples/          Six runnable demos, one per phase plus MNIST
-tests/             491 checks across six translation units + PyTorch fixtures
+tests/             509 checks across six translation units + PyTorch fixtures
 bench/             Reproducible performance benchmarks
 tools/             PyTorch fixture generator, MNIST downloader
 ```
@@ -224,10 +234,10 @@ Attention from [CLS] in the second block:
 
 ## Testing
 
-491 checks over six translation units, run on every push against **GCC, Clang,
+509 checks over six translation units, run on every push against **GCC, Clang,
 AppleClang and MSVC**, plus a job under **AddressSanitizer and
-UndefinedBehaviorSanitizer** and one in **Debug** with standard-library
-assertions enabled.
+UndefinedBehaviorSanitizer** one under **ThreadSanitizer**, and one in
+**Debug** with standard-library assertions enabled.
 
 Three layers of verification:
 
