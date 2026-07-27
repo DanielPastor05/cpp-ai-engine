@@ -55,6 +55,11 @@ size_t load_parameters(std::vector<std::pair<std::string, Tensor>>& params,
 // Útil para inspeccionar un checkpoint antes de cargarlo.
 std::vector<std::pair<std::string, std::vector<size_t>>> inspect_parameters(const std::string& path);
 
+// Lee todos los tensores creando Tensor nuevos, sin necesitar un modelo previo
+// con las formas correctas. Es lo que permite cargar ficheros de referencia
+// generados fuera del motor, donde las formas no se conocen de antemano.
+std::vector<std::pair<std::string, Tensor>> load_tensors(const std::string& path);
+
 } // namespace engine
 
 #endif // ENGINE_SERIALIZE_HPP

@@ -10,6 +10,7 @@ int main() {
     run_nn_tests();
     run_conv_tests();
     run_transformer_tests();
+    run_reference_tests();
 
     std::cout << "\n====================================================\n";
     if (testing::g_failures == 0) {
