@@ -1,0 +1,16 @@
+# Comprobaciones de análisis estático. Se excluyen las que chocan con las
+# convenciones del proyecto (nombres con guion bajo final, aritmética de
+# punteros en los núcleos numéricos, números "mágicos" en las fórmulas).
+Checks: >
+  bugprone-*,
+  clang-analyzer-*,
+  performance-*,
+  modernize-use-override,
+  modernize-use-nullptr,
+  modernize-use-emplace,
+  readability-braces-around-statements,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -performance-avoid-endl
+WarningsAsErrors: ''
+HeaderFilterRegex: 'include/engine/.*'

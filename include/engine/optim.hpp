@@ -85,6 +85,86 @@ private:
     std::vector<std::vector<float>> v_; // segundo momento
 };
 
+// ---------------------------------------------------------
+// Recorte de gradiente por norma global
+//
+// Si la norma L2 de todos los gradientes juntos supera max_norm, se escalan
+// todos por el mismo factor. Es lo que evita que un lote atípico dé un paso
+// enorme y descarrile el entrenamiento; en Transformers es práctica estándar.
+// Devuelve la norma que había ANTES de recortar, para poder monitorizarla.
+// ---------------------------------------------------------
+float clip_grad_norm(const std::vector<Tensor>& parameters, float max_norm);
+
+// ---------------------------------------------------------
+// Planificadores de learning rate
+//
+// Envuelven un optimizador y le ajustan el learning rate. La llamada a step()
+// del planificador se hace una vez por época, después de las de la optimización.
+// ---------------------------------------------------------
+class Scheduler {
+public:
+    explicit Scheduler(Optimizer& optimizer);
+    virtual ~Scheduler() = default;
+
+    // Avanza una época y aplica el nuevo learning rate
+    void step();
+
+    size_t epoch() const { return epoch_; }
+    float base_learning_rate() const { return base_lr_; }
+
+protected:
+    // Learning rate que corresponde a la época dada (0 es la inicial)
+    virtual float compute(size_t epoch) const = 0;
+
+    Optimizer& optimizer_;
+    float base_lr_;
+    size_t epoch_ = 0;
+};
+
+// Multiplica el learning rate por gamma cada step_size épocas.
+class StepLR : public Scheduler {
+public:
+    StepLR(Optimizer& optimizer, size_t step_size, float gamma = 0.1f);
+
+protected:
+    float compute(size_t epoch) const override;
+
+private:
+    size_t step_size_;
+    float gamma_;
+};
+
+// Desciende siguiendo un coseno desde el learning rate inicial hasta min_lr a
+// lo largo de total_epochs. Baja despacio al principio y al final, que es lo
+// que suele funcionar mejor que un descenso lineal.
+class CosineAnnealingLR : public Scheduler {
+public:
+    CosineAnnealingLR(Optimizer& optimizer, size_t total_epochs, float min_lr = 0.0f);
+
+protected:
+    float compute(size_t epoch) const override;
+
+private:
+    size_t total_epochs_;
+    float min_lr_;
+};
+
+// Sube linealmente desde casi cero durante warmup_epochs y luego desciende en
+// coseno. Es la receta habitual para entrenar Transformers.
+class WarmupCosineLR : public Scheduler {
+public:
+    WarmupCosineLR(Optimizer& optimizer, size_t warmup_epochs, size_t total_epochs,
+                   float min_lr = 0.0f);
+
+protected:
+    float compute(size_t epoch) const override;
+
+private:
+    size_t warmup_epochs_;
+    size_t total_epochs_;
+    float min_lr_;
+};
+
 } // namespace optim
 } // namespace engine
 

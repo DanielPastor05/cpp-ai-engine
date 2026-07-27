@@ -123,6 +123,10 @@ Tensor LayerNorm::forward(const Tensor& input) {
 
 std::vector<Tensor> LayerNorm::parameters() { return { gamma_, beta_ }; }
 
+std::vector<std::pair<std::string, Tensor>> LayerNorm::named_parameters(const std::string& prefix) {
+    return { {prefix + "layernorm.gamma", gamma_}, {prefix + "layernorm.beta", beta_} };
+}
+
 std::string LayerNorm::name() const {
     return "LayerNorm(" + std::to_string(normalized_size_) + ")";
 }
@@ -166,6 +170,10 @@ Tensor Embedding::forward(const Tensor& ids) {
 }
 
 std::vector<Tensor> Embedding::parameters() { return { weight_ }; }
+
+std::vector<std::pair<std::string, Tensor>> Embedding::named_parameters(const std::string& prefix) {
+    return { {prefix + "embedding.weight", weight_} };
+}
 
 std::string Embedding::name() const {
     return "Embedding(" + std::to_string(num_embeddings_) + " x " + std::to_string(dim_) + ")";
@@ -292,6 +300,19 @@ std::vector<Tensor> MultiHeadAttention::parameters() {
     return params;
 }
 
+std::vector<std::pair<std::string, Tensor>> MultiHeadAttention::named_parameters(
+    const std::string& prefix) {
+    std::vector<std::pair<std::string, Tensor>> named;
+    const char* tags[] = {"query", "key", "value", "out"};
+    Linear* layers[] = {&w_query_, &w_key_, &w_value_, &w_out_};
+    for (size_t i = 0; i < 4; ++i) {
+        std::vector<std::pair<std::string, Tensor>> sub =
+            layers[i]->named_parameters(prefix + "attn." + tags[i] + ".");
+        named.insert(named.end(), sub.begin(), sub.end());
+    }
+    return named;
+}
+
 std::string MultiHeadAttention::name() const {
     return "MultiHeadAttention(d_model=" + std::to_string(d_model_) +
            ", heads=" + std::to_string(num_heads_) +
@@ -332,6 +353,33 @@ std::vector<Tensor> TransformerBlock::parameters() {
         params.insert(params.end(), sub.begin(), sub.end());
     }
     return params;
+}
+
+std::vector<std::pair<std::string, Tensor>> TransformerBlock::named_parameters(
+    const std::string& prefix) {
+    std::vector<std::pair<std::string, Tensor>> named;
+    const std::pair<const char*, Module*> parts[] = {
+        {"norm1.", static_cast<Module*>(&norm1_)},
+        {"norm2.", static_cast<Module*>(&norm2_)},
+        {"", static_cast<Module*>(&attention_)},
+        {"ff1.", static_cast<Module*>(&ff1_)},
+        {"ff2.", static_cast<Module*>(&ff2_)},
+    };
+    for (const auto& part : parts) {
+        std::vector<std::pair<std::string, Tensor>> sub =
+            part.second->named_parameters(prefix + part.first);
+        named.insert(named.end(), sub.begin(), sub.end());
+    }
+    return named;
+}
+
+void TransformerBlock::train(bool mode) {
+    Module::train(mode);
+    norm1_.train(mode);
+    norm2_.train(mode);
+    attention_.train(mode);
+    ff1_.train(mode);
+    ff2_.train(mode);
 }
 
 std::string TransformerBlock::name() const {

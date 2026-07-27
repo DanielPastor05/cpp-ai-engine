@@ -4,6 +4,7 @@
 #include "engine/nn.hpp"
 
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace engine {
@@ -23,6 +24,8 @@ public:
 
     Tensor forward(const Tensor& input) override;
     std::vector<Tensor> parameters() override;
+    std::vector<std::pair<std::string, Tensor>> named_parameters(
+        const std::string& prefix = "") override;
     std::string name() const override;
 
     Tensor& gamma() { return gamma_; }
@@ -46,6 +49,8 @@ public:
 
     Tensor forward(const Tensor& ids) override;
     std::vector<Tensor> parameters() override;
+    std::vector<std::pair<std::string, Tensor>> named_parameters(
+        const std::string& prefix = "") override;
     std::string name() const override;
 
     Tensor& weight() { return weight_; }
@@ -97,6 +102,8 @@ public:
     Tensor forward(const Tensor& input, const Tensor* mask);
 
     std::vector<Tensor> parameters() override;
+    std::vector<std::pair<std::string, Tensor>> named_parameters(
+        const std::string& prefix = "") override;
     std::string name() const override;
 
     // Pesos de atención (batch, heads, seq, seq) del último forward, útiles
@@ -137,6 +144,9 @@ public:
     Tensor forward(const Tensor& input, const Tensor* mask);
 
     std::vector<Tensor> parameters() override;
+    std::vector<std::pair<std::string, Tensor>> named_parameters(
+        const std::string& prefix = "") override;
+    void train(bool mode = true) override;
     std::string name() const override;
 
     MultiHeadAttention& attention() { return attention_; }

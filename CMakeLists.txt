@@ -19,11 +19,11 @@ set(SOURCES
     src/conv.cpp
     src/transformer.cpp
     src/optim.cpp
+    src/serialize.cpp
 )
 
 # Librería del motor, compartida por los ejemplos y las pruebas
 add_library(engine STATIC ${SOURCES})
-target_include_directories(engine PUBLIC include)
 
 if(MSVC)
     target_compile_options(engine PRIVATE /W4)
@@ -51,6 +51,10 @@ target_link_libraries(cnn_demo PRIVATE engine)
 add_executable(transformer_demo examples/transformer_demo.cpp)
 target_link_libraries(transformer_demo PRIVATE engine)
 
+# Banco de pruebas de rendimiento (no se ejecuta en CI: mide, no verifica)
+add_executable(bench bench/bench.cpp)
+target_link_libraries(bench PRIVATE engine)
+
 # Suite de pruebas
 enable_testing()
 add_executable(test_engine
@@ -63,3 +67,35 @@ add_executable(test_engine
 target_include_directories(test_engine PRIVATE tests)
 target_link_libraries(test_engine PRIVATE engine)
 add_test(NAME engine_tests COMMAND test_engine)
+
+# ---------------------------------------------------------
+# Instalación: permite consumir la librería desde otro proyecto con
+#   find_package(cpp_ai_engine) ; target_link_libraries(app PRIVATE engine::engine)
+# ---------------------------------------------------------
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
+target_include_directories(engine PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+
+install(TARGETS engine EXPORT cpp_ai_engineTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(EXPORT cpp_ai_engineTargets
+        FILE cpp_ai_engineTargets.cmake
+        NAMESPACE engine::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cpp_ai_engine)
+
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/cpp_ai_engineConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion)
+
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/cpp_ai_engineConfig.cmake"
+     "include(\"\${CMAKE_CURRENT_LIST_DIR}/cpp_ai_engineTargets.cmake\")\n")
+
+install(FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/cpp_ai_engineConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/cpp_ai_engineConfigVersion.cmake"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cpp_ai_engine)
