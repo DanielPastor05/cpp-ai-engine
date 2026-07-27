@@ -302,7 +302,15 @@ std::string Conv2d::name() const {
 // MaxPool2d
 // ---------------------------------------------------------
 
-MaxPool2d::MaxPool2d(const Window2d& window) : window_(window) {}
+MaxPool2d::MaxPool2d(const Window2d& window) : window_(window) {
+    // Con relleno >= kernel habría ventanas enteramente dentro de la zona
+    // rellenada, sin ningún valor real que maximizar: la salida sería -infinito.
+    if (window_.padding >= window_.kernel_h || window_.padding >= window_.kernel_w) {
+        throw std::invalid_argument(
+            "MaxPool2d requiere un relleno menor que el kernel; con " +
+            std::to_string(window_.padding) + " habría ventanas sin ningún valor real.");
+    }
+}
 
 MaxPool2d::MaxPool2d(size_t kernel, size_t stride)
     : window_(kernel, kernel, stride, 0) {}
