@@ -174,6 +174,25 @@ void test_broadcast_add() {
 
     Tensor bad({1, 4}, 0.0f);
     check_throws([&] { X + bad; }, "una difusion con anchura distinta lanza excepcion");
+
+    // Regresión: con más ejes que la base pero unos iniciales, el número de
+    // repeticiones se calculaba con un producto sobre un rango vacío que se
+    // confundía con el producto completo, y el backward leía fuera del búfer.
+    Tensor same_rank({3, 4}, 1.0f, false);
+    Tensor leading_one({1, 3, 4}, 2.0f, true);
+    Tensor bc = same_rank + leading_one;
+    check(bc.shape() == std::vector<size_t>({3, 4}), "difundir (1,3,4) sobre (3,4) conserva la forma");
+    check_close(bc.data()[0], 3.0f, "difundir con un eje inicial de tamano 1 suma bien");
+    bc.sum().backward();
+    check_close(leading_one.grad().data()[0], 1.0f,
+                "su gradiente es 1, no la suma de repeticiones inexistentes");
+
+    // Un escalar tambien se difunde sobre cualquier forma
+    Tensor scalar({1}, std::vector<float>{5.0f}, true);
+    Tensor plus_scalar = X + scalar;
+    check_close(plus_scalar.data()[0], 6.0f, "un tensor de un elemento se difunde como escalar");
+    plus_scalar.sum().backward();
+    check_close(scalar.grad().data()[0], 6.0f, "el escalar acumula el gradiente de los 6 elementos");
 }
 
 void test_autograd_scalar() {
@@ -600,6 +619,9 @@ void test_conv_layers() {
     check_close(pooled.data()[2], 14.0f, "maximo del bloque inferior izquierdo");
     check_close(pooled.data()[3], 16.0f, "maximo del bloque inferior derecho");
     check_throws([&] { pool(Tensor({4, 4}, 1.0f)); }, "MaxPool2d con una entrada 2D lanza excepcion");
+    // Con relleno >= kernel habria ventanas sin ningun valor real que maximizar
+    check_throws([&] { nn::MaxPool2d(nn::Window2d(2, 2, 1, 2)); },
+                 "MaxPool2d con relleno mayor o igual que el kernel lanza excepcion");
 
     // El gradiente va solo a la posición ganadora
     Tensor pool_grad({1, 1, 2, 2}, {1.0f, 2.0f, 3.0f, 4.0f}, true);

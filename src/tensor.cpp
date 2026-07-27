@@ -60,7 +60,10 @@ BroadcastPlan plan_broadcast(const std::vector<size_t>& base, const std::vector<
 
     plan.valid = true;
     plan.inner = product(base, offset);
-    plan.repeat = product(base, 0, offset);
+    // El número de repeticiones se deduce del total, no de un producto parcial:
+    // con offset == 0 (mismo rango tras descartar unos iniciales) un producto
+    // sobre el rango vacío se confundiría con el producto completo.
+    plan.repeat = (plan.inner == 0) ? 0 : product(base) / plan.inner;
     return plan;
 }
 
