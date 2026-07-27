@@ -177,6 +177,15 @@ std::vector<std::pair<std::string, std::vector<size_t>>> inspect_parameters(cons
     return summary;
 }
 
+std::vector<std::pair<std::string, Tensor>> load_tensors(const std::string& path) {
+    std::vector<std::pair<std::string, Tensor>> tensors;
+    for (auto& entry : read_file(path)) {
+        tensors.emplace_back(entry.first,
+                             Tensor(entry.second.shape, entry.second.data, false));
+    }
+    return tensors;
+}
+
 size_t load_parameters(std::vector<std::pair<std::string, Tensor>>& params,
                        const std::string& path, bool strict) {
     check_unique_names(params);

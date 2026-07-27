@@ -129,5 +129,6 @@ void run_autograd_tests();
 void run_nn_tests();
 void run_conv_tests();
 void run_transformer_tests();
+void run_reference_tests();
 
 #endif // ENGINE_TEST_SUPPORT_HPP

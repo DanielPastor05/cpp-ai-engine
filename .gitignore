@@ -23,3 +23,7 @@ Makefile
 .idea/
 *.user
 *.suo
+
+# Los ficheros de referencia de PyTorch SI se commitean: la CI los necesita
+# y solo ocupan 120 KB. tools/generate_reference.py los regenera.
+!tests/fixtures/*.bin
