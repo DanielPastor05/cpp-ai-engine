@@ -75,6 +75,15 @@ BroadcastPlan plan_broadcast(const std::vector<size_t>& base, const std::vector<
     return plan;
 }
 
+// Materializa el operando difundido con la forma de la base. Solo se usa en
+// las derivadas, donde tener ambas formas iguales simplifica las fórmulas.
+Tensor expand_operand(const Tensor& other, const std::vector<size_t>& base_shape,
+                      size_t total, size_t inner) {
+    Tensor full(base_shape, 0.0f, false);
+    for (size_t i = 0; i < total; ++i) full.data()[i] = other.data()[i % inner];
+    return full;
+}
+
 // Suma los ejes iniciales de `full` hasta dejar la forma `target`. Es el
 // adjunto de difundir un operando sobre un lote, y lo usan tanto la suma
 // difundida como el matmul con un operando compartido.
@@ -362,12 +371,18 @@ Tensor Tensor::operator+(const Tensor& other) const {
     return res;
 }
 
-// Resta de tensores
+// Resta de tensores, con difusión del operando derecho
 Tensor Tensor::operator-(const Tensor& other) const {
-    if (shape() != other.shape()) {
-        throw std::invalid_argument("Formas incompatibles para resta de tensores: " +
-                                    shape_str() + " y " + other.shape_str() + ".");
+    const bool broadcast = shape() != other.shape();
+    BroadcastPlan plan;
+    if (broadcast) {
+        plan = plan_broadcast(shape(), other.shape());
+        if (!plan.valid) {
+            throw std::invalid_argument("Formas incompatibles para resta de tensores: " +
+                                        shape_str() + " y " + other.shape_str() + ".");
+        }
     }
+
     bool req_g = track(requires_grad() || other.requires_grad());
     Tensor res(shape(), 0.0f, req_g);
 
@@ -376,7 +391,12 @@ Tensor Tensor::operator-(const Tensor& other) const {
         const float* ENGINE_RESTRICT lhs = data().data();
         const float* ENGINE_RESTRICT rhs = other.data().data();
         float* ENGINE_RESTRICT out = res.data().data();
-        for (size_t i = 0; i < n; ++i) out[i] = lhs[i] - rhs[i];
+        if (!broadcast) {
+            for (size_t i = 0; i < n; ++i) out[i] = lhs[i] - rhs[i];
+        } else {
+            const size_t inner = plan.inner;
+            for (size_t i = 0; i < n; ++i) out[i] = lhs[i] - rhs[i % inner];
+        }
     }
 
     if (req_g) {
@@ -384,20 +404,30 @@ Tensor Tensor::operator-(const Tensor& other) const {
         Tensor self_copy = *this;
         Tensor other_copy = other;
 
-        res.impl_->backward_fn = [self_copy, other_copy](const Tensor& grad_out) mutable {
-            if (self_copy.requires_grad()) self_copy.add_grad(grad_out);
-            if (other_copy.requires_grad()) other_copy.add_grad(grad_out * -1.0f);
-        };
+        res.impl_->backward_fn =
+            [self_copy, other_copy, broadcast, plan](const Tensor& grad_out) mutable {
+                if (self_copy.requires_grad()) self_copy.add_grad(grad_out);
+                if (!other_copy.requires_grad()) return;
+                // El operando difundido recoge la suma de todas sus copias
+                Tensor d = grad_out * -1.0f;
+                other_copy.add_grad(broadcast ? fold_leading(d, other_copy.shape()) : d);
+            };
     }
     return res;
 }
 
-// Multiplicación elemento a elemento (Hadamard)
+// Multiplicación elemento a elemento (Hadamard), con difusión del operando derecho
 Tensor Tensor::operator*(const Tensor& other) const {
-    if (shape() != other.shape()) {
-        throw std::invalid_argument("Formas incompatibles para multiplicación de tensores: " +
-                                    shape_str() + " y " + other.shape_str() + ".");
+    const bool broadcast = shape() != other.shape();
+    BroadcastPlan plan;
+    if (broadcast) {
+        plan = plan_broadcast(shape(), other.shape());
+        if (!plan.valid) {
+            throw std::invalid_argument("Formas incompatibles para multiplicación de tensores: " +
+                                        shape_str() + " y " + other.shape_str() + ".");
+        }
     }
+
     bool req_g = track(requires_grad() || other.requires_grad());
     Tensor res(shape(), 0.0f, req_g);
 
@@ -406,7 +436,12 @@ Tensor Tensor::operator*(const Tensor& other) const {
         const float* ENGINE_RESTRICT lhs = data().data();
         const float* ENGINE_RESTRICT rhs = other.data().data();
         float* ENGINE_RESTRICT out = res.data().data();
-        for (size_t i = 0; i < n; ++i) out[i] = lhs[i] * rhs[i];
+        if (!broadcast) {
+            for (size_t i = 0; i < n; ++i) out[i] = lhs[i] * rhs[i];
+        } else {
+            const size_t inner = plan.inner;
+            for (size_t i = 0; i < n; ++i) out[i] = lhs[i] * rhs[i % inner];
+        }
     }
 
     if (req_g) {
@@ -414,20 +449,33 @@ Tensor Tensor::operator*(const Tensor& other) const {
         Tensor self_copy = *this;
         Tensor other_copy = other;
 
-        res.impl_->backward_fn = [self_copy, other_copy](const Tensor& grad_out) mutable {
-            if (self_copy.requires_grad()) self_copy.add_grad(grad_out * other_copy);
-            if (other_copy.requires_grad()) other_copy.add_grad(grad_out * self_copy);
-        };
+        res.impl_->backward_fn =
+            [self_copy, other_copy, broadcast, plan](const Tensor& grad_out) mutable {
+                const Tensor rhs = broadcast
+                    ? expand_operand(other_copy, self_copy.shape(), self_copy.size(), plan.inner)
+                    : other_copy;
+                if (self_copy.requires_grad()) self_copy.add_grad(grad_out * rhs);
+                if (other_copy.requires_grad()) {
+                    Tensor d = grad_out * self_copy;
+                    other_copy.add_grad(broadcast ? fold_leading(d, other_copy.shape()) : d);
+                }
+            };
     }
     return res;
 }
 
-// División elemento a elemento
+// División elemento a elemento, con difusión del operando derecho
 Tensor Tensor::operator/(const Tensor& other) const {
-    if (shape() != other.shape()) {
-        throw std::invalid_argument("Formas incompatibles para división de tensores: " +
-                                    shape_str() + " y " + other.shape_str() + ".");
+    const bool broadcast = shape() != other.shape();
+    BroadcastPlan plan;
+    if (broadcast) {
+        plan = plan_broadcast(shape(), other.shape());
+        if (!plan.valid) {
+            throw std::invalid_argument("Formas incompatibles para división de tensores: " +
+                                        shape_str() + " y " + other.shape_str() + ".");
+        }
     }
+
     bool req_g = track(requires_grad() || other.requires_grad());
     Tensor res(shape(), 0.0f, req_g);
 
@@ -436,7 +484,12 @@ Tensor Tensor::operator/(const Tensor& other) const {
         const float* ENGINE_RESTRICT lhs = data().data();
         const float* ENGINE_RESTRICT rhs = other.data().data();
         float* ENGINE_RESTRICT out = res.data().data();
-        for (size_t i = 0; i < n; ++i) out[i] = lhs[i] / rhs[i];
+        if (!broadcast) {
+            for (size_t i = 0; i < n; ++i) out[i] = lhs[i] / rhs[i];
+        } else {
+            const size_t inner = plan.inner;
+            for (size_t i = 0; i < n; ++i) out[i] = lhs[i] / rhs[i % inner];
+        }
     }
 
     if (req_g) {
@@ -444,13 +497,18 @@ Tensor Tensor::operator/(const Tensor& other) const {
         Tensor self_copy = *this;
         Tensor other_copy = other;
 
-        res.impl_->backward_fn = [self_copy, other_copy](const Tensor& grad_out) mutable {
-            if (self_copy.requires_grad()) self_copy.add_grad(grad_out / other_copy);
-            if (other_copy.requires_grad()) {
-                Tensor grad_b = (grad_out * self_copy * -1.0f) / (other_copy * other_copy);
-                other_copy.add_grad(grad_b);
-            }
-        };
+        res.impl_->backward_fn =
+            [self_copy, other_copy, broadcast, plan](const Tensor& grad_out) mutable {
+                const Tensor rhs = broadcast
+                    ? expand_operand(other_copy, self_copy.shape(), self_copy.size(), plan.inner)
+                    : other_copy;
+                if (self_copy.requires_grad()) self_copy.add_grad(grad_out / rhs);
+                if (other_copy.requires_grad()) {
+                    // d/db (a/b) = -a/b^2
+                    Tensor d = (grad_out * self_copy * -1.0f) / (rhs * rhs);
+                    other_copy.add_grad(broadcast ? fold_leading(d, other_copy.shape()) : d);
+                }
+            };
     }
     return res;
 }
@@ -832,6 +890,258 @@ Tensor Tensor::reshape(const std::vector<size_t>& new_shape) const {
         };
     }
     return res;
+}
+
+
+// ---------------------------------------------------------
+// Reducciones por eje
+//
+// Un tensor contiguo se ve, respecto a un eje, como un bloque
+// (outer, axis_len, inner): outer son los ejes anteriores, inner los
+// posteriores. Con eso, reducir es recorrer axis_len para cada (outer, inner).
+// ---------------------------------------------------------
+
+namespace {
+
+struct AxisView {
+    size_t outer;
+    size_t axis_len;
+    size_t inner;
+};
+
+AxisView axis_view(const std::vector<size_t>& shape, size_t axis) {
+    AxisView v{1, shape[axis], 1};
+    for (size_t i = 0; i < axis; ++i) v.outer *= shape[i];
+    for (size_t i = axis + 1; i < shape.size(); ++i) v.inner *= shape[i];
+    return v;
+}
+
+std::vector<size_t> reduced_shape(const std::vector<size_t>& shape, size_t axis, bool keepdim) {
+    std::vector<size_t> out = shape;
+    if (keepdim) {
+        out[axis] = 1;
+    } else {
+        out.erase(out.begin() + static_cast<long>(axis));
+        if (out.empty()) out.push_back(1); // reducir un tensor 1D deja un escalar {1}
+    }
+    return out;
+}
+
+void check_axis(size_t axis, size_t ndim, const std::string& what, const std::string& shape_txt) {
+    if (axis >= ndim) {
+        throw std::out_of_range(what + ": el eje " + std::to_string(axis) +
+                                " no existe en un tensor " + shape_txt + ".");
+    }
+}
+
+} // namespace
+
+Tensor Tensor::sum(size_t axis, bool keepdim) const {
+    check_axis(axis, ndim(), "sum", shape_str());
+    const AxisView v = axis_view(shape(), axis);
+
+    bool req_g = track(requires_grad());
+    Tensor res(reduced_shape(shape(), axis, keepdim), 0.0f, req_g);
+
+    for (size_t o = 0; o < v.outer; ++o) {
+        for (size_t a = 0; a < v.axis_len; ++a) {
+            const float* src = data().data() + (o * v.axis_len + a) * v.inner;
+            float* dst = res.data().data() + o * v.inner;
+            for (size_t i = 0; i < v.inner; ++i) dst[i] += src[i];
+        }
+    }
+
+    if (req_g) {
+        res.impl_->parents = { impl_ };
+        Tensor self_copy = *this;
+        res.impl_->backward_fn = [self_copy, v](const Tensor& grad_out) mutable {
+            // Cada elemento contribuyó una vez, así que recibe el gradiente entero
+            Tensor dX(self_copy.shape(), 0.0f, false);
+            for (size_t o = 0; o < v.outer; ++o) {
+                const float* g = grad_out.data().data() + o * v.inner;
+                for (size_t a = 0; a < v.axis_len; ++a) {
+                    float* d = dX.data().data() + (o * v.axis_len + a) * v.inner;
+                    for (size_t i = 0; i < v.inner; ++i) d[i] = g[i];
+                }
+            }
+            self_copy.add_grad(dX);
+        };
+    }
+    return res;
+}
+
+Tensor Tensor::mean(size_t axis, bool keepdim) const {
+    check_axis(axis, ndim(), "mean", shape_str());
+    const float n = static_cast<float>(shape()[axis]);
+    return sum(axis, keepdim) * (1.0f / n);
+}
+
+Tensor Tensor::max(size_t axis, bool keepdim) const {
+    check_axis(axis, ndim(), "max", shape_str());
+    if (size() == 0) throw std::invalid_argument("max sobre un tensor vacío.");
+    const AxisView v = axis_view(shape(), axis);
+
+    bool req_g = track(requires_grad());
+    Tensor res(reduced_shape(shape(), axis, keepdim), 0.0f, req_g);
+    // Posición ganadora de cada reducción, para repartir el gradiente
+    std::vector<size_t> argmax(res.size(), 0);
+
+    for (size_t o = 0; o < v.outer; ++o) {
+        for (size_t i = 0; i < v.inner; ++i) {
+            float best = data()[o * v.axis_len * v.inner + i];
+            size_t best_a = 0;
+            for (size_t a = 1; a < v.axis_len; ++a) {
+                const float value = data()[(o * v.axis_len + a) * v.inner + i];
+                if (value > best) { best = value; best_a = a; }
+            }
+            res.data()[o * v.inner + i] = best;
+            argmax[o * v.inner + i] = (o * v.axis_len + best_a) * v.inner + i;
+        }
+    }
+
+    if (req_g) {
+        res.impl_->parents = { impl_ };
+        Tensor self_copy = *this;
+        res.impl_->backward_fn = [self_copy, argmax](const Tensor& grad_out) mutable {
+            // Solo el máximo influyó en la salida
+            Tensor dX(self_copy.shape(), 0.0f, false);
+            for (size_t k = 0; k < argmax.size(); ++k) {
+                dX.data()[argmax[k]] += grad_out.data()[k];
+            }
+            self_copy.add_grad(dX);
+        };
+    }
+    return res;
+}
+
+// ---------------------------------------------------------
+// Rebanado, concatenación y apilado
+// ---------------------------------------------------------
+
+Tensor Tensor::slice(size_t axis, size_t start, size_t count) const {
+    check_axis(axis, ndim(), "slice", shape_str());
+    if (count == 0) throw std::invalid_argument("slice necesita al menos un elemento.");
+    if (start + count > shape()[axis]) {
+        throw std::out_of_range("slice [" + std::to_string(start) + ", " +
+                                std::to_string(start + count) + ") se sale del eje " +
+                                std::to_string(axis) + " de un tensor " + shape_str() + ".");
+    }
+
+    const AxisView v = axis_view(shape(), axis);
+    std::vector<size_t> out_shape = shape();
+    out_shape[axis] = count;
+
+    bool req_g = track(requires_grad());
+    Tensor res(out_shape, 0.0f, req_g);
+
+    for (size_t o = 0; o < v.outer; ++o) {
+        const float* src = data().data() + (o * v.axis_len + start) * v.inner;
+        float* dst = res.data().data() + o * count * v.inner;
+        std::copy_n(src, count * v.inner, dst);
+    }
+
+    if (req_g) {
+        res.impl_->parents = { impl_ };
+        Tensor self_copy = *this;
+        res.impl_->backward_fn = [self_copy, v, start, count](const Tensor& grad_out) mutable {
+            // El gradiente vuelve a su hueco; el resto del tensor recibe cero
+            Tensor dX(self_copy.shape(), 0.0f, false);
+            for (size_t o = 0; o < v.outer; ++o) {
+                const float* g = grad_out.data().data() + o * count * v.inner;
+                float* d = dX.data().data() + (o * v.axis_len + start) * v.inner;
+                std::copy_n(g, count * v.inner, d);
+            }
+            self_copy.add_grad(dX);
+        };
+    }
+    return res;
+}
+
+Tensor Tensor::concat(const std::vector<Tensor>& parts, size_t axis) {
+    if (parts.empty()) throw std::invalid_argument("concat necesita al menos un tensor.");
+    const std::vector<size_t>& first = parts[0].shape();
+    check_axis(axis, first.size(), "concat", parts[0].shape_str());
+
+    size_t total_axis = 0;
+    bool req_g = false;
+    for (const Tensor& t : parts) {
+        if (t.ndim() != first.size()) {
+            throw std::invalid_argument("concat necesita el mismo número de ejes en todas las partes.");
+        }
+        for (size_t d = 0; d < first.size(); ++d) {
+            if (d != axis && t.shape()[d] != first[d]) {
+                throw std::invalid_argument("concat: las partes solo pueden diferir en el eje " +
+                                            std::to_string(axis) + "; " + parts[0].shape_str() +
+                                            " frente a " + t.shape_str() + ".");
+            }
+        }
+        total_axis += t.shape()[axis];
+        req_g = req_g || t.requires_grad();
+    }
+    req_g = track(req_g);
+
+    std::vector<size_t> out_shape = first;
+    out_shape[axis] = total_axis;
+    Tensor res(out_shape, 0.0f, req_g);
+
+    const AxisView out_view = axis_view(out_shape, axis);
+    size_t offset = 0;
+    for (const Tensor& t : parts) {
+        const size_t len = t.shape()[axis];
+        const AxisView v = axis_view(t.shape(), axis);
+        for (size_t o = 0; o < v.outer; ++o) {
+            std::copy_n(t.data().data() + o * len * v.inner, len * v.inner,
+                        res.data().data() + (o * out_view.axis_len + offset) * v.inner);
+        }
+        offset += len;
+    }
+
+    if (req_g) {
+        std::vector<std::shared_ptr<TensorImpl>> parents;
+        std::vector<Tensor> copies = parts;
+        for (const Tensor& t : parts) parents.push_back(t.get_impl());
+        res.impl_->parents = parents;
+
+        res.impl_->backward_fn = [copies, axis, out_view](const Tensor& grad_out) mutable {
+            // Cada parte recibe la franja del gradiente que aportó
+            size_t off = 0;
+            for (Tensor& t : copies) {
+                const size_t len = t.shape()[axis];
+                const AxisView v = axis_view(t.shape(), axis);
+                if (t.requires_grad()) {
+                    Tensor d(t.shape(), 0.0f, false);
+                    for (size_t o = 0; o < v.outer; ++o) {
+                        std::copy_n(grad_out.data().data() + (o * out_view.axis_len + off) * v.inner,
+                                    len * v.inner, d.data().data() + o * len * v.inner);
+                    }
+                    t.add_grad(d);
+                }
+                off += len;
+            }
+        };
+    }
+    return res;
+}
+
+Tensor Tensor::stack(const std::vector<Tensor>& parts, size_t axis) {
+    if (parts.empty()) throw std::invalid_argument("stack necesita al menos un tensor.");
+    if (axis > parts[0].ndim()) {
+        throw std::out_of_range("stack: el eje " + std::to_string(axis) +
+                                " no cabe en un tensor " + parts[0].shape_str() + ".");
+    }
+    // Apilar es concatenar tras insertar un eje de tamaño 1 en cada parte
+    std::vector<Tensor> expanded;
+    expanded.reserve(parts.size());
+    for (const Tensor& t : parts) {
+        if (t.shape() != parts[0].shape()) {
+            throw std::invalid_argument("stack necesita que todas las partes tengan la misma forma: " +
+                                        parts[0].shape_str() + " frente a " + t.shape_str() + ".");
+        }
+        std::vector<size_t> s = t.shape();
+        s.insert(s.begin() + static_cast<long>(axis), 1);
+        expanded.push_back(t.reshape(s));
+    }
+    return concat(expanded, axis);
 }
 
 // Selección de filas (recogida de un mini-lote)
