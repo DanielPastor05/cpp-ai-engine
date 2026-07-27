@@ -48,7 +48,8 @@ include/engine/
   nn.hpp          Module, Linear, ReLU, Softmax, Sequential, pérdidas, métricas
   conv.hpp        Window2d, im2col/col2im, Conv2d, MaxPool2d, Flatten
   transformer.hpp LayerNorm, Embedding, atención, MultiHeadAttention, TransformerBlock
-  optim.hpp       Optimizer, SGD, Adam
+  optim.hpp       Optimizer, SGD, Adam, recorte de gradiente, planificadores de lr
+  serialize.hpp   Guardar y cargar pesos
   random.hpp      global_rng() (aparte, porque <random> es cara de compilar)
   detail/         TensorImpl, la representación interna de un nodo del grafo
 src/              Implementación de la librería
@@ -56,6 +57,7 @@ examples/         main.cpp (F1), autograd_demo.cpp (F2), nn_demo.cpp (F3),
                   cnn_demo.cpp (F4), transformer_demo.cpp (F5)
 tests/            Suite de pruebas con verificación numérica de gradientes,
                   repartida por áreas (tensor, autograd, nn, conv, transformer)
+bench/            Banco de pruebas de rendimiento (no se ejecuta en CI)
 .github/workflows/ci.yml   Compila y ejecuta las pruebas en GCC, Clang y MSVC
 ```
 
@@ -87,6 +89,20 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 # o directamente:
 ./build/test_engine
+
+# 5. Medir el rendimiento
+cmake --build build --target bench --parallel && ./build/bench
+```
+
+### Usar la librería desde otro proyecto
+
+```bash
+cmake --install build --prefix /donde/quieras
+```
+
+```cmake
+find_package(cpp_ai_engine REQUIRED)
+target_link_libraries(mi_app PRIVATE engine::engine)
 ```
 
 ---
@@ -247,6 +263,67 @@ posición con «mi anterior es la marca» y el otro recoge esa posición desde e
 `[CLS]`. El demo imprime los pesos de atención aprendidos, donde se ve una
 cabeza concentrando ~0.9 sobre la posición que contiene la respuesta.
 
+### Guardar y cargar un modelo
+
+```cpp
+#include "engine/serialize.hpp"
+
+engine::save_parameters(model, "modelo.bin");
+// ... en otra ejecución, sobre la misma arquitectura:
+engine::load_parameters(model, "modelo.bin");
+```
+
+Los tensores se casan **por nombre**, no por posición, y la forma se comprueba
+al cargar: un fichero de otro modelo se rechaza en vez de dejar la red
+silenciosamente rota. `inspect_parameters(ruta)` enumera lo que hay dentro sin
+tocar ningún modelo.
+
+### Regularización y control del entrenamiento
+
+```cpp
+nn::Sequential model{
+    nn::make<nn::Linear>(128, 256),
+    nn::make<nn::GELU>(),        // también Sigmoid, Tanh y ReLU
+    nn::make<nn::Dropout>(0.1f),
+    nn::make<nn::Linear>(256, 10)
+};
+
+optim::Adam opt(model.parameters(), 0.001f);
+optim::WarmupCosineLR scheduler(opt, /*calentamiento=*/5, /*total=*/50);
+
+for (size_t epoch = 0; epoch < 50; ++epoch) {
+    model.train();                                  // Dropout activo
+    for (/* cada mini-lote */) {
+        opt.zero_grad();
+        loss.backward();
+        optim::clip_grad_norm(model.parameters(), 1.0f);
+        opt.step();
+    }
+    scheduler.step();
+
+    model.eval();                                   // Dropout desactivado
+    // ... evaluar
+}
+```
+
+`clip_grad_norm` recorta por la norma **global** de todos los gradientes
+juntos, así que limita la longitud del paso sin cambiar su dirección.
+
+### Manipulación de tensores
+
+```cpp
+Tensor s = x.sum(1);           // reduce el eje 1
+Tensor m = x.mean(0, true);    // keepdim deja el eje a 1
+Tensor mx = x.max(2);          // el gradiente va solo al ganador
+
+Tensor parte = x.slice(0, 2, 3);              // filas [2, 5)
+Tensor junto = Tensor::concat({a, b}, 1);     // por columnas
+Tensor pila  = Tensor::stack({a, b});         // eje nuevo al principio
+```
+
+Los cuatro operadores aritméticos admiten difusión por sufijo, y un tensor de
+un elemento actúa como escalar sobre cualquier forma.
+
 ---
 
 ## ⚡ Notas de Rendimiento
@@ -281,6 +358,15 @@ mitad de los valores en cero exacto, y saltárselos gana más de lo que cuesta.
 Medido de las dos formas sobre el ejemplo del Transformer: sin la rama 18,7 s,
 con ella 15,9 s. Un microbenchmark con datos densos decía justo lo contrario —
 por eso las cifras salen de los ejemplos reales.
+
+**La difusión recorre por bloques, no con un módulo por elemento.** `rhs[i %
+inner]` en el bucle interno impide vectorizar: la suma difundida costaba 3,44 ms
+sobre un millón de valores frente a 0,56 ms de la suma normal. Recorriendo el
+bloque repetido baja a 0,40 ms, **8,6× más rápido**.
+
+`bench/bench.cpp` reproduce todas estas cifras (`cmake --build build --target
+bench && ./build/bench`). No se ejecuta en CI: los tiempos de un runner
+compartido no son comparables entre ejecuciones.
 
 Sobre el tiempo de compilación: `engine/tensor.hpp` la incluye todo, así que
 solo trae lo imprescindible (0,64 s → 0,34 s por unidad de traducción).
@@ -341,7 +427,7 @@ gradiente es un valor temporal del recorrido, y conservarlo haría que un segund
 ## ✅ Pruebas
 
 La suite cubre tensores, autograd, capas densas, convoluciones,
-atención y optimizadores con 257 comprobaciones, y se ejecutan en CI sobre GCC, Clang y MSVC. El grueso de la verificación de autograd es una **comprobación
+atención y optimizadores con 368 comprobaciones, y se ejecutan en CI sobre GCC, Clang y MSVC. El grueso de la verificación de autograd es una **comprobación
 numérica de gradientes** por diferencias centradas, que compara cada derivada
 analítica con `(f(x+h) - f(x-h)) / 2h`; también se verifica que los nodos
 intermedios del grafo se liberen al salir de ámbito, que `col2im` sea el adjunto

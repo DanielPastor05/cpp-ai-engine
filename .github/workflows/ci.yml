@@ -50,7 +50,56 @@ jobs:
           # Los generadores multi-configuración (MSVC) anidan los binarios en Release/
           BIN=build
           [ -d build/Release ] && BIN=build/Release
-          "$BIN/cpp_ai_engine" > /dev/null
-          "$BIN/autograd_demo" > /dev/null
-          "$BIN/nn_demo" > /dev/null
-          echo "Los tres ejemplos terminaron correctamente."
+          for demo in cpp_ai_engine autograd_demo nn_demo cnn_demo transformer_demo; do
+            "$BIN/$demo" > /dev/null
+          done
+          echo "Los cinco ejemplos terminaron correctamente."
+
+  sanitizers:
+    name: Linux / ASan + UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fue AddressSanitizer quien encontró un desbordamiento de heap en el
+      # gradiente de la difusión, así que se ejecuta en cada cambio.
+      - name: Configurar con sanitizers
+        run: >
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+
+      - name: Compilar
+        run: cmake --build build --parallel
+
+      - name: Pruebas bajo sanitizers
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Ejemplos bajo sanitizers
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          for demo in cpp_ai_engine autograd_demo nn_demo cnn_demo; do
+            ./build/$demo > /dev/null
+          done
+
+  debug:
+    name: Linux / Debug
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # En Debug la biblioteca estándar comprueba los índices de los
+      # contenedores, cosa que la compilación Release no hace.
+      - name: Configurar en Debug
+        run: >
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-D_GLIBCXX_ASSERTIONS"
+
+      - name: Compilar
+        run: cmake --build build --parallel
+
+      - name: Ejecutar las pruebas
+        run: ctest --test-dir build --output-on-failure

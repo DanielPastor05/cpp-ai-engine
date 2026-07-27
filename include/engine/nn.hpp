@@ -6,6 +6,7 @@
 #include <initializer_list>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace engine {
@@ -28,6 +29,18 @@ public:
     // escribir en ellos actualiza los pesos de la capa.
     virtual std::vector<Tensor> parameters() { return {}; }
 
+    // Parámetros con un nombre estable, para poder guardarlos y volver a
+    // cargarlos casando cada tensor con el suyo. El orden debe coincidir
+    // siempre con el de parameters().
+    virtual std::vector<std::pair<std::string, Tensor>> named_parameters(
+        const std::string& prefix = "");
+
+    // Modo de entrenamiento. Capas como Dropout se comportan distinto al
+    // entrenar y al inferir; el interruptor se propaga a las subcapas.
+    virtual void train(bool mode = true) { training_ = mode; }
+    void eval() { train(false); }
+    bool is_training() const { return training_; }
+
     virtual std::string name() const { return "Module"; }
 
     // Pone a cero los gradientes acumulados de todos los parámetros
@@ -35,6 +48,9 @@ public:
 
     // Número total de escalares entrenables
     size_t num_parameters();
+
+protected:
+    bool training_ = true;
 };
 
 // ---------------------------------------------------------
@@ -78,6 +94,43 @@ public:
     std::string name() const override { return "Softmax"; }
 };
 
+class Sigmoid : public Module {
+public:
+    Tensor forward(const Tensor& input) override;
+    std::string name() const override { return "Sigmoid"; }
+};
+
+class Tanh : public Module {
+public:
+    Tensor forward(const Tensor& input) override;
+    std::string name() const override { return "Tanh"; }
+};
+
+// GELU en su aproximación por tangente hiperbólica, la que usan GPT y BERT.
+// A diferencia de ReLU no tiene un pliegue en el origen, y deja pasar un poco
+// de señal negativa en lugar de anularla del todo.
+class GELU : public Module {
+public:
+    Tensor forward(const Tensor& input) override;
+    std::string name() const override { return "GELU"; }
+};
+
+// Anula cada activación con probabilidad p durante el entrenamiento y escala
+// el resto por 1/(1-p), de modo que la media se conserve. En modo eval() no
+// hace nada. Es regularización: obliga a la red a no depender de una neurona
+// concreta.
+class Dropout : public Module {
+public:
+    explicit Dropout(float p = 0.5f);
+
+    Tensor forward(const Tensor& input) override;
+    std::string name() const override;
+    float probability() const { return p_; }
+
+private:
+    float p_;
+};
+
 // ---------------------------------------------------------
 // Contenedor secuencial de capas
 // ---------------------------------------------------------
@@ -90,10 +143,14 @@ public:
 
     Tensor forward(const Tensor& input) override;
     std::vector<Tensor> parameters() override;
+    std::vector<std::pair<std::string, Tensor>> named_parameters(
+        const std::string& prefix = "") override;
+    void train(bool mode = true) override;
     std::string name() const override { return "Sequential"; }
 
     void summary() const;
     size_t size() const { return layers_.size(); }
+    Module& at(size_t index);
 
 private:
     std::vector<std::shared_ptr<Module>> layers_;

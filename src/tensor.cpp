@@ -342,7 +342,14 @@ Tensor Tensor::operator+(const Tensor& other) const {
     if (!broadcast) {
         for (size_t i = 0; i < n; ++i) out[i] = lhs[i] + rhs[i];
     } else {
-        for (size_t i = 0; i < n; ++i) out[i] = lhs[i] + rhs[i % plan.inner];
+        // Por bloques en lugar de con un módulo por elemento: el operando
+        // difundido se repite tal cual, y así el bucle interno vectoriza.
+        const size_t inner = plan.inner;
+        for (size_t r = 0; r < plan.repeat; ++r) {
+            const float* ENGINE_RESTRICT l = lhs + r * inner;
+            float* ENGINE_RESTRICT o = out + r * inner;
+            for (size_t j = 0; j < inner; ++j) o[j] = l[j] + rhs[j];
+        }
     }
 
     if (req_g) {
@@ -394,8 +401,14 @@ Tensor Tensor::operator-(const Tensor& other) const {
         if (!broadcast) {
             for (size_t i = 0; i < n; ++i) out[i] = lhs[i] - rhs[i];
         } else {
+            // Por bloques en lugar de con un módulo por elemento: el operando
+            // difundido se repite tal cual, y así el bucle interno vectoriza.
             const size_t inner = plan.inner;
-            for (size_t i = 0; i < n; ++i) out[i] = lhs[i] - rhs[i % inner];
+            for (size_t r = 0; r < plan.repeat; ++r) {
+                const float* ENGINE_RESTRICT l = lhs + r * inner;
+                float* ENGINE_RESTRICT o = out + r * inner;
+                for (size_t j = 0; j < inner; ++j) o[j] = l[j] - rhs[j];
+            }
         }
     }
 
@@ -405,10 +418,12 @@ Tensor Tensor::operator-(const Tensor& other) const {
         Tensor other_copy = other;
 
         res.impl_->backward_fn =
-            [self_copy, other_copy, broadcast, plan](const Tensor& grad_out) mutable {
+            [self_copy, other_copy, broadcast](const Tensor& grad_out) mutable {
                 if (self_copy.requires_grad()) self_copy.add_grad(grad_out);
                 if (!other_copy.requires_grad()) return;
-                // El operando difundido recoge la suma de todas sus copias
+                // El operando difundido recoge la suma de todas sus copias.
+                // La resta no necesita el plan: su derivada no depende de los
+                // valores del operando, solo de su forma.
                 Tensor d = grad_out * -1.0f;
                 other_copy.add_grad(broadcast ? fold_leading(d, other_copy.shape()) : d);
             };
@@ -439,8 +454,14 @@ Tensor Tensor::operator*(const Tensor& other) const {
         if (!broadcast) {
             for (size_t i = 0; i < n; ++i) out[i] = lhs[i] * rhs[i];
         } else {
+            // Por bloques en lugar de con un módulo por elemento: el operando
+            // difundido se repite tal cual, y así el bucle interno vectoriza.
             const size_t inner = plan.inner;
-            for (size_t i = 0; i < n; ++i) out[i] = lhs[i] * rhs[i % inner];
+            for (size_t r = 0; r < plan.repeat; ++r) {
+                const float* ENGINE_RESTRICT l = lhs + r * inner;
+                float* ENGINE_RESTRICT o = out + r * inner;
+                for (size_t j = 0; j < inner; ++j) o[j] = l[j] * rhs[j];
+            }
         }
     }
 
@@ -487,8 +508,14 @@ Tensor Tensor::operator/(const Tensor& other) const {
         if (!broadcast) {
             for (size_t i = 0; i < n; ++i) out[i] = lhs[i] / rhs[i];
         } else {
+            // Por bloques en lugar de con un módulo por elemento: el operando
+            // difundido se repite tal cual, y así el bucle interno vectoriza.
             const size_t inner = plan.inner;
-            for (size_t i = 0; i < n; ++i) out[i] = lhs[i] / rhs[i % inner];
+            for (size_t r = 0; r < plan.repeat; ++r) {
+                const float* ENGINE_RESTRICT l = lhs + r * inner;
+                float* ENGINE_RESTRICT o = out + r * inner;
+                for (size_t j = 0; j < inner; ++j) o[j] = l[j] / rhs[j];
+            }
         }
     }
 

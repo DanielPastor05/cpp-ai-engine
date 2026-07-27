@@ -1,6 +1,7 @@
 #include "engine/optim.hpp"
 #include "engine/autograd.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -119,6 +120,97 @@ void Adam::step() {
             w[j] -= lr_ * m_hat / (std::sqrt(v_hat) + eps_);
         }
     }
+}
+
+// ---------------------------------------------------------
+// Recorte de gradiente
+// ---------------------------------------------------------
+
+float clip_grad_norm(const std::vector<Tensor>& parameters, float max_norm) {
+    if (max_norm <= 0.0f) {
+        throw std::invalid_argument("clip_grad_norm necesita un max_norm positivo.");
+    }
+    autograd::NoGradGuard no_grad;
+
+    // La norma es global, sobre todos los parámetros juntos: recortar cada uno
+    // por separado cambiaría la dirección del paso, no solo su longitud.
+    double total = 0.0;
+    for (const Tensor& p : parameters) {
+        if (!p.has_grad()) continue;
+        for (float g : p.grad().data()) total += static_cast<double>(g) * g;
+    }
+    const float norm = static_cast<float>(std::sqrt(total));
+
+    if (norm > max_norm) {
+        const float scale = max_norm / (norm + 1e-6f);
+        for (const Tensor& p : parameters) {
+            if (!p.has_grad()) continue;
+            Tensor g = p.grad();
+            for (float& v : g.data()) v *= scale;
+        }
+    }
+    return norm;
+}
+
+// ---------------------------------------------------------
+// Planificadores
+// ---------------------------------------------------------
+
+Scheduler::Scheduler(Optimizer& optimizer)
+    : optimizer_(optimizer), base_lr_(optimizer.learning_rate()) {}
+
+void Scheduler::step() {
+    ++epoch_;
+    optimizer_.set_learning_rate(compute(epoch_));
+}
+
+StepLR::StepLR(Optimizer& optimizer, size_t step_size, float gamma)
+    : Scheduler(optimizer), step_size_(step_size), gamma_(gamma) {
+    if (step_size == 0) throw std::invalid_argument("StepLR necesita un step_size positivo.");
+    if (gamma <= 0.0f) throw std::invalid_argument("StepLR necesita un gamma positivo.");
+}
+
+float StepLR::compute(size_t epoch) const {
+    return base_lr_ * std::pow(gamma_, static_cast<float>(epoch / step_size_));
+}
+
+CosineAnnealingLR::CosineAnnealingLR(Optimizer& optimizer, size_t total_epochs, float min_lr)
+    : Scheduler(optimizer), total_epochs_(total_epochs), min_lr_(min_lr) {
+    if (total_epochs == 0) {
+        throw std::invalid_argument("CosineAnnealingLR necesita al menos una época.");
+    }
+    if (min_lr < 0.0f) throw std::invalid_argument("CosineAnnealingLR necesita min_lr >= 0.");
+}
+
+float CosineAnnealingLR::compute(size_t epoch) const {
+    const float t = std::min(static_cast<float>(epoch) / static_cast<float>(total_epochs_), 1.0f);
+    const float cosine = 0.5f * (1.0f + std::cos(3.14159265358979f * t));
+    return min_lr_ + (base_lr_ - min_lr_) * cosine;
+}
+
+WarmupCosineLR::WarmupCosineLR(Optimizer& optimizer, size_t warmup_epochs,
+                               size_t total_epochs, float min_lr)
+    : Scheduler(optimizer), warmup_epochs_(warmup_epochs),
+      total_epochs_(total_epochs), min_lr_(min_lr) {
+    if (total_epochs == 0) {
+        throw std::invalid_argument("WarmupCosineLR necesita al menos una época.");
+    }
+    if (warmup_epochs >= total_epochs) {
+        throw std::invalid_argument("El calentamiento debe ser más corto que el total de épocas.");
+    }
+}
+
+float WarmupCosineLR::compute(size_t epoch) const {
+    if (epoch < warmup_epochs_) {
+        // Rampa lineal repartida en warmup_epochs pasos: tras el último, la
+        // época `warmup_epochs` ya cae en la rama del coseno con t = 0, que
+        // vale exactamente el learning rate base.
+        return base_lr_ * static_cast<float>(epoch) / static_cast<float>(warmup_epochs_);
+    }
+    const float t = static_cast<float>(epoch - warmup_epochs_) /
+                    static_cast<float>(total_epochs_ - warmup_epochs_);
+    const float cosine = 0.5f * (1.0f + std::cos(3.14159265358979f * std::min(t, 1.0f)));
+    return min_lr_ + (base_lr_ - min_lr_) * cosine;
 }
 
 } // namespace optim
