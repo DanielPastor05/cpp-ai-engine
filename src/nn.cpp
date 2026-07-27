@@ -42,18 +42,32 @@ Linear::Linear(size_t in_features, size_t out_features, bool use_bias)
 }
 
 Tensor Linear::forward(const Tensor& input) {
-    if (input.ndim() != 2) {
-        throw std::invalid_argument("Linear espera una entrada 2D (batch, in_features), recibió " +
+    if (input.ndim() < 2) {
+        throw std::invalid_argument("Linear espera al menos 2 dimensiones (..., in_features), recibió " +
                                     input.shape_str() + ".");
     }
-    if (input.shape()[1] != in_features_) {
+    if (input.shape().back() != in_features_) {
         throw std::invalid_argument("Linear con in_features=" + std::to_string(in_features_) +
                                     " recibió una entrada " + input.shape_str() + ".");
     }
 
-    Tensor out = input.matmul(weight_);
+    // La capa actúa sobre el último eje. Con entradas de más de 2 ejes —como
+    // (batch, secuencia, d_model) en un Transformer— se aplanan los ejes
+    // iniciales, se proyecta y se restaura la forma.
+    const bool needs_reshape = input.ndim() > 2;
+    Tensor flat = needs_reshape
+                      ? input.reshape({input.size() / in_features_, in_features_})
+                      : input;
+
+    Tensor out = flat.matmul(weight_);
     if (use_bias_) {
         out = out + bias_; // difusión del vector fila sobre todo el lote
+    }
+
+    if (needs_reshape) {
+        std::vector<size_t> out_shape = input.shape();
+        out_shape.back() = out_features_;
+        out = out.reshape(out_shape);
     }
     return out;
 }

@@ -77,8 +77,9 @@ public:
     std::string shape_str() const;
 
     // Operaciones matemáticas con soporte para Autograd
-    // La suma admite difusión (broadcasting) de un vector fila (1, N) o (N,)
-    // sobre una matriz (M, N), necesaria para el sesgo de las capas densas.
+    // La suma admite difusión (broadcasting) por sufijo del operando derecho:
+    // (N,) o (1, N) sobre (M, N) para el sesgo, (S, D) sobre (B, S, D) para la
+    // codificación posicional, (S, S) sobre (B, H, S, S) para la máscara.
     Tensor operator+(const Tensor& other) const;
     Tensor operator-(const Tensor& other) const;
     Tensor operator*(const Tensor& other) const;
@@ -89,10 +90,13 @@ public:
     Tensor operator*(float scalar) const;
     Tensor operator/(float scalar) const;
 
+    // matmul admite lotes: (B..., M, K) x (B..., K, N) -> (B..., M, N).
+    // transpose intercambia los dos últimos ejes; permute reordena todos.
     Tensor matmul(const Tensor& other) const;
     Tensor transpose() const;
+    Tensor permute(const std::vector<size_t>& order) const;
     Tensor relu() const;
-    Tensor softmax() const;
+    Tensor softmax() const;   // sobre el último eje
     Tensor reshape(const std::vector<size_t>& new_shape) const;
     Tensor sum() const;
     Tensor mean() const;

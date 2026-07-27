@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(cpp_ai_engine VERSION 0.4 LANGUAGES CXX)
+project(cpp_ai_engine VERSION 0.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,6 +17,7 @@ set(SOURCES
     src/autograd.cpp
     src/nn.cpp
     src/conv.cpp
+    src/transformer.cpp
     src/optim.cpp
 )
 
@@ -45,6 +46,10 @@ target_link_libraries(nn_demo PRIVATE engine)
 # Ejecutable de la Fase 4 (Redes Convolucionales)
 add_executable(cnn_demo examples/cnn_demo.cpp)
 target_link_libraries(cnn_demo PRIVATE engine)
+
+# Ejecutable de la Fase 5 (Transformer)
+add_executable(transformer_demo examples/transformer_demo.cpp)
+target_link_libraries(transformer_demo PRIVATE engine)
 
 # Suite de pruebas
 enable_testing()
