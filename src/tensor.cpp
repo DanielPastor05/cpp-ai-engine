@@ -198,6 +198,22 @@ const float& Tensor::operator()(const std::vector<size_t>& indices) const {
     return impl_->data[get_flat_index(indices)];
 }
 
+float& Tensor::operator()(size_t row, size_t col) {
+    return const_cast<float&>(static_cast<const Tensor&>(*this)(row, col));
+}
+
+const float& Tensor::operator()(size_t row, size_t col) const {
+    if (ndim() != 2) {
+        throw std::invalid_argument("La indexacion (fila, columna) requiere un tensor 2D, este es " +
+                                    shape_str() + ".");
+    }
+    if (row >= shape()[0] || col >= shape()[1]) {
+        throw std::out_of_range("Índice (" + std::to_string(row) + ", " + std::to_string(col) +
+                                ") fuera de rango para un tensor " + shape_str() + ".");
+    }
+    return impl_->data[row * shape()[1] + col];
+}
+
 float& Tensor::at(size_t flat_index) {
     return impl_->data.at(flat_index);
 }
@@ -572,7 +588,7 @@ Tensor Tensor::sum() const {
     float total = 0.0f;
     for (float v : data()) total += v;
     bool req_g = track(requires_grad());
-    Tensor res({1}, {total}, req_g);
+    Tensor res({1}, std::vector<float>{total}, req_g);
 
     if (req_g) {
         res.impl_->parents = { impl_ };
@@ -613,6 +629,58 @@ Tensor Tensor::reshape(const std::vector<size_t>& new_shape) const {
     }
     return res;
 }
+
+// Selección de filas (recogida de un mini-lote)
+Tensor Tensor::select_rows(const std::vector<size_t>& indices) const {
+    if (ndim() != 2) {
+        throw std::invalid_argument("select_rows requiere un tensor 2D, este es " + shape_str() + ".");
+    }
+    if (indices.empty()) {
+        throw std::invalid_argument("select_rows recibió una lista de índices vacía.");
+    }
+
+    const size_t rows = shape()[0];
+    const size_t cols = shape()[1];
+    for (size_t idx : indices) {
+        if (idx >= rows) {
+            throw std::out_of_range("select_rows: la fila " + std::to_string(idx) +
+                                    " no existe en un tensor " + shape_str() + ".");
+        }
+    }
+
+    bool req_g = track(requires_grad());
+    Tensor res({indices.size(), cols}, 0.0f, req_g);
+    for (size_t i = 0; i < indices.size(); ++i) {
+        std::copy_n(data().begin() + indices[i] * cols, cols, res.data().begin() + i * cols);
+    }
+
+    if (req_g) {
+        res.impl_->parents = { impl_ };
+        Tensor self_copy = *this;
+        std::vector<size_t> idx_copy = indices;
+
+        res.impl_->backward_fn = [self_copy, idx_copy, cols](const Tensor& grad_out) mutable {
+            // Dispersión inversa: cada fila devuelve su gradiente a la fila de
+            // origen. El += es necesario porque un índice puede repetirse.
+            Tensor dX(self_copy.shape(), 0.0f, false);
+            for (size_t i = 0; i < idx_copy.size(); ++i) {
+                for (size_t j = 0; j < cols; ++j) {
+                    dX.data()[idx_copy[i] * cols + j] += grad_out.data()[i * cols + j];
+                }
+            }
+            self_copy.add_grad(dX);
+        };
+    }
+    return res;
+}
+
+// ---------------------------------------------------------
+// Operadores con el escalar a la izquierda
+// ---------------------------------------------------------
+
+Tensor operator+(float scalar, const Tensor& t) { return t + scalar; }
+Tensor operator*(float scalar, const Tensor& t) { return t * scalar; }
+Tensor operator-(float scalar, const Tensor& t) { return (t * -1.0f) + scalar; }
 
 // Impresión por consola
 void Tensor::print(const std::string& name) const {

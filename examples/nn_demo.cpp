@@ -3,8 +3,10 @@
 #include "engine/nn.hpp"
 #include "engine/optim.hpp"
 
+#include <algorithm>
 #include <iomanip>
 #include <iostream>
+#include <numeric>
 #include <memory>
 #include <vector>
 
@@ -68,6 +70,59 @@ float train(const std::string& title, optim::Optimizer& opt, nn::Sequential& mod
                       << " | Exactitud = " << std::setprecision(2) << (acc * 100.0f) << "%\n";
         }
     }
+    std::cout << "\n";
+    return acc;
+}
+
+// Entrenamiento por mini-lotes: en cada época se baraja el conjunto y se
+// recorren trozos de `batch_size` filas. Es lo que hace "estocástico" al
+// descenso de gradiente estocástico: cada paso usa una muestra distinta.
+float train_minibatch(const std::string& title, optim::Optimizer& opt, nn::Sequential& model,
+                      const Tensor& X, const std::vector<size_t>& y,
+                      int epochs, size_t batch_size) {
+    std::cout << "--- " << title << " ---\n";
+
+    const size_t N = X.shape()[0];
+    std::vector<size_t> order(N);
+    std::iota(order.begin(), order.end(), 0);
+
+    for (int epoch = 1; epoch <= epochs; ++epoch) {
+        std::shuffle(order.begin(), order.end(), engine::global_rng());
+
+        float epoch_loss = 0.0f;
+        size_t num_batches = 0;
+
+        for (size_t start = 0; start < N; start += batch_size) {
+            const size_t end = std::min(start + batch_size, N);
+            const std::vector<size_t> idx(order.begin() + start, order.begin() + end);
+
+            std::vector<size_t> y_batch;
+            y_batch.reserve(idx.size());
+            for (size_t i : idx) y_batch.push_back(y[i]);
+
+            opt.zero_grad();
+            Tensor logits = model(X.select_rows(idx));
+            Tensor loss = nn::cross_entropy_loss(logits, y_batch);
+            loss.backward();
+            opt.step();
+
+            epoch_loss += loss.data()[0];
+            ++num_batches;
+        }
+
+        if (epoch == 1 || epoch % 20 == 0) {
+            // La exactitud se mide sobre todo el conjunto, sin construir grafo
+            engine::autograd::NoGradGuard no_grad;
+            std::cout << "  Epoch " << std::setw(4) << epoch
+                      << " | Loss media = " << std::fixed << std::setprecision(4)
+                      << (epoch_loss / static_cast<float>(num_batches))
+                      << " | Exactitud = " << std::setprecision(2)
+                      << (nn::accuracy(model(X), y) * 100.0f) << "%\n";
+        }
+    }
+
+    engine::autograd::NoGradGuard no_grad;
+    const float acc = nn::accuracy(model(X), y);
     std::cout << "\n";
     return acc;
 }
@@ -144,7 +199,8 @@ int main() {
     optim::Adam adam(mlp.parameters(), 0.02f);
     float mlp_acc = train("MLP 2-64-32-3 con Adam", adam, mlp, X, y, 500);
 
-    // El mismo modelo entrenado con SGD + momento, para comparar
+    // El mismo modelo con SGD + momento, entrenado por mini-lotes: 50 épocas
+    // de 10 pasos bastan donde el lote completo necesitaba 500 iteraciones.
     engine::manual_seed(42);
     nn::Sequential mlp_sgd{
         nn::make<nn::Linear>(2, 64),
@@ -153,8 +209,9 @@ int main() {
         nn::make<nn::ReLU>(),
         nn::make<nn::Linear>(32, num_classes)
     };
-    optim::SGD sgd(mlp_sgd.parameters(), 0.5f, 0.9f);
-    float sgd_acc = train("MLP 2-64-32-3 con SGD (lr=0.5, momento=0.9)", sgd, mlp_sgd, X, y, 500);
+    optim::SGD sgd(mlp_sgd.parameters(), 0.1f, 0.9f);
+    float sgd_acc = train_minibatch("MLP 2-64-32-3 con SGD por mini-lotes (lr=0.1, momento=0.9, lote=32)",
+                                    sgd, mlp_sgd, X, y, 60, 32);
 
     // ---------------------------------------------------------
     // 4. Resumen
@@ -163,7 +220,7 @@ int main() {
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "  Clasificador lineal : " << linear_acc * 100.0f << "% de exactitud\n";
     std::cout << "  MLP + Adam          : " << mlp_acc * 100.0f << "% de exactitud\n";
-    std::cout << "  MLP + SGD/momento   : " << sgd_acc * 100.0f << "% de exactitud\n";
+    std::cout << "  MLP + SGD mini-lotes: " << sgd_acc * 100.0f << "% de exactitud\n";
     std::cout << "\nEl modelo lineal se estanca porque la espiral no es separable\n"
               << "linealmente; las capas ocultas con ReLU si logran separarla.\n\n";
 

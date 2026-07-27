@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux / GCC
+            os: ubuntu-latest
+            cc: gcc
+            cxx: g++
+          - name: Linux / Clang
+            os: ubuntu-latest
+            cc: clang
+            cxx: clang++
+          - name: macOS / AppleClang
+            os: macos-latest
+            cc: clang
+            cxx: clang++
+          - name: Windows / MSVC
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar CMake
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compilar
+        run: cmake --build build --config Release --parallel
+
+      - name: Ejecutar las pruebas
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+      - name: Ejecutar los ejemplos
+        shell: bash
+        run: |
+          # Los generadores multi-configuración (MSVC) anidan los binarios en Release/
+          BIN=build
+          [ -d build/Release ] && BIN=build/Release
+          "$BIN/cpp_ai_engine" > /dev/null
+          "$BIN/autograd_demo" > /dev/null
+          "$BIN/nn_demo" > /dev/null
+          echo "Los tres ejemplos terminaron correctamente."

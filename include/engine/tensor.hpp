@@ -57,10 +57,14 @@ public:
     // Obtener implementación compartida interna
     std::shared_ptr<TensorImpl> get_impl() const { return impl_; }
 
-    // Indexación y propiedades
+    // Indexación y propiedades.
+    // La sobrecarga con vector es genérica pero reserva memoria dinámica en
+    // cada acceso; para recorrer una matriz conviene la sobrecarga (fila, col).
     size_t get_flat_index(const std::vector<size_t>& indices) const;
     float& operator()(const std::vector<size_t>& indices);
     const float& operator()(const std::vector<size_t>& indices) const;
+    float& operator()(size_t row, size_t col);
+    const float& operator()(size_t row, size_t col) const;
     float& at(size_t flat_index);
     const float& at(size_t flat_index) const;
 
@@ -93,12 +97,22 @@ public:
     Tensor sum() const;
     Tensor mean() const;
 
+    // Extrae las filas indicadas de una matriz (M, N) para formar un lote
+    // (indices.size(), N). Es la operación que permite el entrenamiento por
+    // mini-lotes. Los índices pueden repetirse: su gradiente se acumula.
+    Tensor select_rows(const std::vector<size_t>& indices) const;
+
     // Copia desligada del grafo (comparte forma y valores, no el historial)
     Tensor detach() const;
 
     // Formateo e impresión
     void print(const std::string& name = "") const;
 };
+
+// Operadores con el escalar a la izquierda, para poder escribir 2.0f * t
+Tensor operator+(float scalar, const Tensor& t);
+Tensor operator-(float scalar, const Tensor& t);
+Tensor operator*(float scalar, const Tensor& t);
 
 // Estructura interna para almacenar el estado y los nodos del grafo Autograd.
 //
