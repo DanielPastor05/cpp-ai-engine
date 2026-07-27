@@ -97,9 +97,10 @@ public:
     Tensor sum() const;
     Tensor mean() const;
 
-    // Extrae las filas indicadas de una matriz (M, N) para formar un lote
-    // (indices.size(), N). Es la operación que permite el entrenamiento por
-    // mini-lotes. Los índices pueden repetirse: su gradiente se acumula.
+    // Extrae los elementos indicados del primer eje para formar un mini-lote:
+    // de (M, N) toma filas y de (N, C, H, W) toma imágenes completas. Es la
+    // operación que permite el entrenamiento por mini-lotes. Los índices
+    // pueden repetirse: su gradiente se acumula en el elemento de origen.
     Tensor select_rows(const std::vector<size_t>& indices) const;
 
     // Copia desligada del grafo (comparte forma y valores, no el historial)
