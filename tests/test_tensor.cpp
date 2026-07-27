@@ -200,6 +200,169 @@ void test_nd_tensor_ops() {
     });
 }
 
+
+void test_reductions() {
+    section("Tensor: reducciones por eje");
+
+    Tensor A({2, 3}, {1, 2, 3,
+                      4, 5, 6});
+
+    Tensor s0 = A.sum(0);
+    check(s0.shape() == std::vector<size_t>({3}), "sum(0) elimina el primer eje");
+    check_close(s0.data()[0], 5.0f, "sum(0) suma por columnas: 1 + 4");
+    check_close(s0.data()[2], 9.0f, "sum(0) tercera columna: 3 + 6");
+
+    Tensor s1 = A.sum(1);
+    check(s1.shape() == std::vector<size_t>({2}), "sum(1) elimina el segundo eje");
+    check_close(s1.data()[0], 6.0f, "sum(1) suma por filas: 1+2+3");
+
+    Tensor sk = A.sum(1, true);
+    check(sk.shape() == std::vector<size_t>({2, 1}), "keepdim deja el eje reducido a 1");
+
+    Tensor m = A.mean(0);
+    check_close(m.data()[0], 2.5f, "mean(0) promedia por columnas");
+
+    Tensor mx = A.max(0);
+    check(mx.shape() == std::vector<size_t>({3}), "max(0) elimina el primer eje");
+    check_close(mx.data()[1], 5.0f, "max(0) toma el mayor de cada columna");
+
+    // Reducir un tensor 1D deja un escalar
+    Tensor v({4}, {1, 7, 3, 2});
+    check(v.sum(0).shape() == std::vector<size_t>({1}), "reducir un 1D da un escalar {1}");
+    check_close(v.max(0).data()[0], 7.0f, "max de un vector");
+
+    check_throws([&] { A.sum(5); }, "reducir un eje inexistente lanza excepcion");
+    check_throws([&] { A.max(2); }, "max sobre un eje inexistente lanza excepcion");
+
+    // Gradientes
+    Tensor G({2, 3, 4}, 0.0f);
+    for (size_t i = 0; i < G.size(); ++i) G.data()[i] = 0.37f * static_cast<float>(i) - 4.1f;
+    Tensor w_sum = Tensor::randn({2, 4});
+    check_gradient("gradiente de sum(axis)", G, [&](Tensor& t) {
+        return (t.sum(1) * w_sum).sum();
+    });
+    check_gradient("gradiente de mean(axis)", G, [&](Tensor& t) {
+        return (t.mean(1) * w_sum).sum();
+    });
+    // Valores bien separados: el maximo no es derivable en un empate
+    Tensor Gm({2, 3, 4}, 0.0f);
+    for (size_t i = 0; i < Gm.size(); ++i) Gm.data()[i] = static_cast<float>((i * 37) % 24) * 0.5f;
+    check_gradient("gradiente de max(axis)", Gm, [&](Tensor& t) {
+        return (t.max(1) * w_sum).sum();
+    });
+
+    // El gradiente del maximo va solo al ganador
+    Tensor mg({1, 3}, {1.0f, 9.0f, 2.0f}, true);
+    mg.max(1).sum().backward();
+    check_close(mg.grad().data()[1], 1.0f, "el maximo recibe todo el gradiente");
+    check_close(mg.grad().data()[0], 0.0f, "los demas no reciben nada");
+}
+
+void test_slice_concat_stack() {
+    section("Tensor: slice, concat y stack");
+
+    Tensor A({3, 4}, 0.0f);
+    for (size_t i = 0; i < A.size(); ++i) A.data()[i] = static_cast<float>(i);
+
+    Tensor r = A.slice(0, 1, 2);
+    check(r.shape() == std::vector<size_t>({2, 4}), "slice sobre el primer eje");
+    check_close(r(0, 0), 4.0f, "slice empieza en la fila pedida");
+
+    Tensor c = A.slice(1, 1, 2);
+    check(c.shape() == std::vector<size_t>({3, 2}), "slice sobre el segundo eje");
+    check_close(c(0, 0), 1.0f, "slice de columnas toma la columna correcta");
+    check_close(c(1, 1), 6.0f, "slice de columnas respeta las filas");
+
+    check_throws([&] { A.slice(0, 2, 5); }, "un slice que se sale lanza excepcion");
+    check_throws([&] { A.slice(0, 0, 0); }, "un slice vacio lanza excepcion");
+    check_throws([&] { A.slice(7, 0, 1); }, "un slice sobre un eje inexistente lanza excepcion");
+
+    // concat
+    Tensor P({2, 2}, {1, 2, 3, 4});
+    Tensor Q({1, 2}, {5, 6});
+    Tensor cc = Tensor::concat({P, Q}, 0);
+    check(cc.shape() == std::vector<size_t>({3, 2}), "concat sobre el primer eje suma las filas");
+    check_close(cc(2, 0), 5.0f, "concat coloca la segunda parte detras");
+
+    Tensor R({2, 3}, {7, 8, 9, 10, 11, 12});
+    Tensor cc2 = Tensor::concat({P, R}, 1);
+    check(cc2.shape() == std::vector<size_t>({2, 5}), "concat sobre el segundo eje suma las columnas");
+    check_close(cc2(0, 2), 7.0f, "concat por columnas intercala correctamente");
+    check_close(cc2(1, 0), 3.0f, "concat por columnas conserva las filas");
+
+    check_throws([&] { Tensor::concat({}, 0); }, "concat sin partes lanza excepcion");
+    check_throws([&] { Tensor::concat({P, Tensor({3, 3}, 1.0f)}, 0); },
+                 "concat con dimensiones incompatibles lanza excepcion");
+
+    // stack
+    Tensor st = Tensor::stack({P, P}, 0);
+    check(st.shape() == std::vector<size_t>({2, 2, 2}), "stack crea un eje nuevo");
+    Tensor st1 = Tensor::stack({P, P}, 1);
+    check(st1.shape() == std::vector<size_t>({2, 2, 2}), "stack admite el eje intermedio");
+    check_throws([&] { Tensor::stack({P, Q}, 0); },
+                 "stack con formas distintas lanza excepcion");
+
+    // Gradientes
+    Tensor G({3, 4}, 0.0f);
+    for (size_t i = 0; i < G.size(); ++i) G.data()[i] = 0.31f * static_cast<float>(i) - 2.0f;
+    Tensor w_sl = Tensor::randn({2, 4});
+    check_gradient("gradiente de slice()", G, [&](Tensor& t) {
+        return (t.slice(0, 1, 2) * w_sl).sum();
+    });
+
+    Tensor other({2, 4}, 1.5f);
+    Tensor w_cc = Tensor::randn({5, 4});
+    check_gradient("gradiente de concat() (primera parte)", G, [&](Tensor& t) {
+        return (Tensor::concat({t, other}, 0) * w_cc).sum();
+    });
+    check_gradient("gradiente de concat() (segunda parte)", other, [&](Tensor& t) {
+        return (Tensor::concat({G, t}, 0) * w_cc).sum();
+    });
+
+    // Concatenar un tensor consigo mismo acumula en ambas franjas
+    Tensor twice({1, 2}, {1.0f, 2.0f}, true);
+    Tensor::concat({twice, twice}, 0).sum().backward();
+    check_close(twice.grad().data()[0], 2.0f, "concatenar un tensor consigo mismo acumula");
+}
+
+void test_broadcast_all_operators() {
+    section("Tensor: difusion en los cuatro operadores");
+
+    Tensor X({2, 3}, {1, 2, 3, 4, 5, 6});
+    Tensor row({3}, {1.0f, 2.0f, 4.0f}, true);
+
+    check_close((X - row).data()[0], 0.0f, "la resta difunde: 1 - 1");
+    check_close((X - row).data()[4], 3.0f, "la resta difunde en la segunda fila: 5 - 2");
+    check_close((X * row).data()[2], 12.0f, "el producto difunde: 3 * 4");
+    check_close((X / row).data()[1], 1.0f, "la division difunde: 2 / 2");
+
+    // Un tensor de un elemento actua como escalar
+    Tensor k({1}, std::vector<float>{10.0f}, true);
+    check_close((X * k).data()[3], 40.0f, "un tensor {1} se difunde como escalar");
+
+    check_throws([&] { X - Tensor({4}, 1.0f); }, "una resta con sufijo incompatible lanza excepcion");
+    check_throws([&] { X * Tensor({5, 3}, 1.0f); }, "un producto incompatible lanza excepcion");
+
+    // Gradientes del operando difundido
+    Tensor base({2, 3}, {1, 2, 3, 4, 5, 6}, false);
+    Tensor b1({3}, {1.0f, 2.0f, 4.0f}, true);
+    (base * b1).sum().backward();
+    check_close(b1.grad().data()[0], 5.0f, "producto difundido: el gradiente suma la columna (1+4)");
+
+    Tensor b2({3}, {1.0f, 2.0f, 4.0f}, true);
+    (base - b2).sum().backward();
+    check_close(b2.grad().data()[0], -2.0f, "resta difundida: el gradiente es -1 por fila");
+
+    Tensor G({2, 3}, 0.0f);
+    for (size_t i = 0; i < G.size(); ++i) G.data()[i] = 0.5f * static_cast<float>(i) + 1.0f;
+    Tensor d({3}, {2.0f, 3.0f, 4.0f});
+    Tensor w = Tensor::randn({2, 3});
+    check_gradient("gradiente de la resta difundida", G, [&](Tensor& t) { return ((t - d) * w).sum(); });
+    check_gradient("gradiente del producto difundido", G, [&](Tensor& t) { return ((t * d) * w).sum(); });
+    check_gradient("gradiente de la division difundida", G, [&](Tensor& t) { return ((t / d) * w).sum(); });
+    check_gradient("gradiente del divisor difundido", d, [&](Tensor& t) { return ((G / t) * w).sum(); });
+}
+
 } // namespace
 
 void run_tensor_tests() {
@@ -207,4 +370,7 @@ void run_tensor_tests() {
     test_matmul();
     test_broadcast_add();
     test_nd_tensor_ops();
+    test_reductions();
+    test_slice_concat_stack();
+    test_broadcast_all_operators();
 }

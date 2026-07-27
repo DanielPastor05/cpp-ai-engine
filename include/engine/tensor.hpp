@@ -80,9 +80,10 @@ public:
     std::string shape_str() const;
 
     // Operaciones matemáticas con soporte para Autograd
-    // La suma admite difusión (broadcasting) por sufijo del operando derecho:
-    // (N,) o (1, N) sobre (M, N) para el sesgo, (S, D) sobre (B, S, D) para la
-    // codificación posicional, (S, S) sobre (B, H, S, S) para la máscara.
+    // Los cuatro operadores admiten difusión (broadcasting) por sufijo del
+    // operando derecho: (N,) o (1, N) sobre (M, N) para el sesgo, (S, D) sobre
+    // (B, S, D) para la codificación posicional, (S, S) sobre (B, H, S, S)
+    // para la máscara, y {1} como escalar sobre cualquier forma.
     Tensor operator+(const Tensor& other) const;
     Tensor operator-(const Tensor& other) const;
     Tensor operator*(const Tensor& other) const;
@@ -93,6 +94,11 @@ public:
     Tensor operator*(float scalar) const;
     Tensor operator/(float scalar) const;
 
+    // Concatena a lo largo de un eje; el resto de dimensiones debe coincidir.
+    static Tensor concat(const std::vector<Tensor>& parts, size_t axis);
+    // Apila creando un eje nuevo en la posición indicada.
+    static Tensor stack(const std::vector<Tensor>& parts, size_t axis = 0);
+
     // matmul admite lotes: (B..., M, K) x (B..., K, N) -> (B..., M, N).
     // transpose intercambia los dos últimos ejes; permute reordena todos.
     Tensor matmul(const Tensor& other) const;
@@ -101,8 +107,16 @@ public:
     Tensor relu() const;
     Tensor softmax() const;   // sobre el último eje
     Tensor reshape(const std::vector<size_t>& new_shape) const;
+    // Reducciones. Sin argumentos reducen a un escalar {1}; con un eje lo
+    // eliminan (o lo dejan a 1 con keepdim), igual que en NumPy o PyTorch.
     Tensor sum() const;
     Tensor mean() const;
+    Tensor sum(size_t axis, bool keepdim = false) const;
+    Tensor mean(size_t axis, bool keepdim = false) const;
+    Tensor max(size_t axis, bool keepdim = false) const;
+
+    // Sub-tensor contiguo a lo largo de un eje: [start, start + count).
+    Tensor slice(size_t axis, size_t start, size_t count) const;
 
     // Extrae los elementos indicados del primer eje para formar un mini-lote:
     // de (M, N) toma filas y de (N, C, H, W) toma imágenes completas. Es la
