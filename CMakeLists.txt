@@ -38,16 +38,27 @@ set(SOURCES
 option(ENGINE_CUDA "Compilar el backend CUDA (Fase 6)" OFF)
 
 if(ENGINE_CUDA)
+    # El valor por defecto tiene que fijarse ANTES de enable_language(CUDA).
+    #
+    # Desde CMake 3.18, enable_language(CUDA) ya inicializa
+    # CMAKE_CUDA_ARCHITECTURES con el valor por defecto del compilador, asi que
+    # un if(NOT DEFINED ...) posterior no se cumple nunca y el valor de aqui se
+    # ignora en silencio. El sintoma no es un error de compilacion: el binario
+    # sale con cubins de otra arquitectura, el driver no los puede usar, cae a
+    # compilar el PTX en tiempo de ejecucion, y ahi falla con
+    # "the provided PTX was compiled with an unsupported toolchain".
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        # 86 es la capacidad de computo de Ampere GA104 (RTX 30xx), que es la
+        # maquina donde se desarrollo. Se puede cambiar con
+        # -DCMAKE_CUDA_ARCHITECTURES=<xx>, o poner varias separadas por ';'
+        # para generar un binario que valga en mas tarjetas.
+        set(CMAKE_CUDA_ARCHITECTURES 86)
+    endif()
+
     enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-        # 86 es la capacidad de cómputo de Ampere GA104 (RTX 30xx), que es la
-        # máquina donde se desarrolló. Se puede cambiar con
-        # -DCMAKE_CUDA_ARCHITECTURES=<xx>, o poner varias separadas por ';'
-        # para generar un binario que valga en más tarjetas.
-        set(CMAKE_CUDA_ARCHITECTURES 86)
-    endif()
+
     list(APPEND SOURCES src/cuda/runtime.cu src/cuda/kernels.cu)
     message(STATUS "Backend CUDA activado (arquitecturas: ${CMAKE_CUDA_ARCHITECTURES})")
 endif()

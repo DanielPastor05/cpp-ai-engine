@@ -23,6 +23,12 @@ void set_enabled(bool) {}
 DeviceInfo device_info() { return DeviceInfo{}; }
 void synchronize() {}
 
+int runtime_version() { return 0; }
+int driver_version() { return 0; }
+size_t kernels_launched() { return 0; }
+size_t kernels_failed() { return 0; }
+void reset_kernel_counters() {}
+
 double peak_fp32_gflops() { return 0.0; }
 double peak_bandwidth_gbs() { return 0.0; }
 
@@ -55,6 +61,9 @@ namespace detail {
 // Storage sólo llama a estas cuando alguien pide el lado del dispositivo, y
 // sin ENGINE_CUDA ese código ni se compila. Llegar aquí sería un error de
 // programación, no una condición de ejecución.
+void note_kernel_launched() {}
+void note_kernel_failed() {}
+
 float* device_alloc(size_t) {
     throw std::logic_error("El motor se compilo sin CUDA: no hay memoria de dispositivo.");
 }

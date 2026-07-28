@@ -62,10 +62,45 @@ constexpr size_t kMaxInt = static_cast<size_t>(std::numeric_limits<int>::max());
 // devolvería basura en lugar de un resultado correcto más lento.
 bool launched_ok(const char* what, Storage& out) {
     const cudaError_t status = cudaGetLastError();
-    if (status == cudaSuccess) return true;
+    if (status == cudaSuccess) {
+        detail::note_kernel_launched();
+        return true;
+    }
+
     out.revert_device_write();
-    std::fprintf(stderr, "engine: el kernel %s no se pudo lanzar (%s); se calcula en CPU\n",
-                 what, cudaGetErrorString(status));
+    detail::note_kernel_failed();
+
+    // Sólo el primero, y con el diagnóstico completo. La versión anterior
+    // imprimía una línea por lanzamiento fallido: en una suite de pruebas eso
+    // son cientos de líneas identicas que tapan la salida real y no dicen la
+    // causa. El resto se cuenta y se consulta con cuda::kernels_failed().
+    static bool reported = false;
+    if (!reported) {
+        reported = true;
+        const int rt = runtime_version();
+        const int drv = driver_version();
+        std::fprintf(stderr,
+                     "\nengine: el kernel %s no se pudo lanzar (%s).\n"
+                     "  Se calcula en CPU, asi que los resultados son correctos pero lentos.\n"
+                     "  Compilado con CUDA %d.%d, driver instalado CUDA %d.%d.\n",
+                     what, cudaGetErrorString(status),
+                     rt / 1000, (rt % 1000) / 10, drv / 1000, (drv % 1000) / 10);
+        if (drv > 0 && rt > drv) {
+            std::fprintf(stderr,
+                         "  El driver es mas antiguo que el toolkit: actualiza el driver de\n"
+                         "  NVIDIA, o compila con una version de CUDA que el driver admita.\n");
+        } else if (status == cudaErrorUnsupportedPtxVersion ||
+                   status == cudaErrorNoKernelImageForDevice) {
+            const DeviceInfo info = device_info();
+            std::fprintf(stderr,
+                         "  El binario no lleva codigo nativo para esta tarjeta (cc %d.%d).\n"
+                         "  Reconfigura con -DCMAKE_CUDA_ARCHITECTURES=%d%d\n",
+                         info.compute_major, info.compute_minor,
+                         info.compute_major, info.compute_minor);
+        }
+        std::fprintf(stderr, "  Los siguientes fallos no se repiten aqui;"
+                             " se cuentan en cuda::kernels_failed().\n\n");
+    }
     return false;
 }
 

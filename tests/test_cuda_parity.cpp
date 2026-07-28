@@ -64,9 +64,23 @@ void compare(const std::string& what, const std::function<Tensor()>& compute,
     const std::vector<size_t> shape = on_cpu.shape();
 
     cuda::set_enabled(true);
+    const size_t launched_before = cuda::kernels_launched();
     const std::vector<float> got = compute().data();
+    const size_t launched = cuda::kernels_launched() - launched_before;
 
     ++testing::g_checks;
+
+    // Sin esto la prueba es una trampa. El motor cae al camino de CPU cuando un
+    // kernel no se puede lanzar —correcto en produccion—, de modo que la
+    // comparacion seria CPU contra CPU y pasaria con error exactamente cero sin
+    // haber tocado el dispositivo. Paso de verdad: toda la seccion salia en
+    // verde con 0.00e+00 mientras ningun kernel llegaba a ejecutarse.
+    if (launched == 0) {
+        ++testing::g_failures;
+        std::cout << "  [FAIL] " << what
+                  << " (no se lanzo ningun kernel: se comparo CPU contra CPU)\n";
+        return;
+    }
 
     if (got.size() != want.size()) {
         ++testing::g_failures;
@@ -128,9 +142,15 @@ void run_cuda_parity_tests() {
     }
 
     const cuda::DeviceInfo info = cuda::device_info();
+    const int rt = cuda::runtime_version();
+    const int drv = cuda::driver_version();
     std::cout << "  Dispositivo: " << info.name << " (cc " << info.compute_major << "."
               << info.compute_minor << ", " << info.multiprocessors << " SM, "
-              << (info.total_memory >> 20) << " MiB)\n";
+              << (info.total_memory >> 20) << " MiB)\n"
+              << "  Compilado con CUDA " << rt / 1000 << "." << (rt % 1000) / 10
+              << ", driver CUDA " << drv / 1000 << "." << (drv % 1000) / 10 << "\n";
+
+    cuda::reset_kernel_counters();
 
     // Los umbrales normales mandarían a la CPU todo lo que hay aquí, que es
     // justo lo contrario de lo que quiere una prueba de paridad: interesa
@@ -337,6 +357,13 @@ void run_cuda_parity_tests() {
         testing::check(chained.to_device_count == 0,
                        "una segunda operacion no resube operandos ya residentes");
     }
+
+    // Un resumen al final: cuantos kernels se ejecutaron de verdad. Si esta
+    // linea dice cero, todo lo de arriba se calculo en CPU y no significa nada.
+    testing::check(cuda::kernels_failed() == 0,
+                   "ningun kernel fallo al lanzarse (" +
+                       std::to_string(cuda::kernels_launched()) + " ejecutados, " +
+                       std::to_string(cuda::kernels_failed()) + " fallidos)");
 
     cuda::set_thresholds(saved_flops, saved_elements);
     cuda::set_enabled(true);

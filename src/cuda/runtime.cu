@@ -109,6 +109,8 @@ size_t g_min_elements = env_size("ENGINE_CUDA_MIN_ELEMENTS", size_t{1} << 20);
 MatmulKernel g_matmul_kernel = MatmulKernel::Auto;
 
 TransferStats g_stats;
+size_t g_launched = 0;
+size_t g_failed = 0;
 
 double seconds_since(const std::chrono::steady_clock::time_point& start) {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -134,6 +136,20 @@ void synchronize() {
     if (!context().usable) return;
     check(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
 }
+
+int runtime_version() {
+    int version = 0;
+    return (cudaRuntimeGetVersion(&version) == cudaSuccess) ? version : 0;
+}
+
+int driver_version() {
+    int version = 0;
+    return (cudaDriverGetVersion(&version) == cudaSuccess) ? version : 0;
+}
+
+size_t kernels_launched() { return g_launched; }
+size_t kernels_failed() { return g_failed; }
+void reset_kernel_counters() { g_launched = 0; g_failed = 0; }
 
 double peak_fp32_gflops() { return context().peak_gflops; }
 double peak_bandwidth_gbs() { return context().peak_bandwidth; }
@@ -180,6 +196,10 @@ TransferStats transfer_stats() { return g_stats; }
 void reset_transfer_stats() { g_stats = TransferStats{}; }
 
 namespace detail {
+
+// Las incrementa launched_ok(), en kernels.cu.
+void note_kernel_launched() { ++g_launched; }
+void note_kernel_failed() { ++g_failed; }
 
 float* device_alloc(size_t elements) {
     if (elements == 0) return nullptr;

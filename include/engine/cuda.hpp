@@ -40,6 +40,25 @@ DeviceInfo device_info();
 // corrección la garantizan las copias, que son sincronizantes.
 void synchronize();
 
+// Versiones del runtime con el que se compiló y del driver instalado, en el
+// formato de CUDA (12040 = 12.4). Si la primera es mayor que la segunda, los
+// kernels no se pueden ejecutar y hay que actualizar el driver: es la causa
+// mucho más común de que un backend recién compilado no arranque.
+int runtime_version();
+int driver_version();
+
+// ---------------------------------------------------------
+// Contadores de lanzamiento.
+//
+// El motor cae al camino de CPU cuando un kernel no se puede lanzar, que es lo
+// correcto en producción y una trampa en las pruebas: la paridad compararía
+// CPU contra CPU y pasaría con error cero sin haber tocado el dispositivo.
+// Una prueba en verde que no ejercitó nada es peor que una en rojo.
+// ---------------------------------------------------------
+size_t kernels_launched();
+size_t kernels_failed();
+void reset_kernel_counters();
+
 // ---------------------------------------------------------
 // Techo teórico del dispositivo.
 //
@@ -118,6 +137,10 @@ namespace detail {
 // Primitivas de memoria que usa Storage. No forman parte de la API pública:
 // se declaran aquí para que engine/detail/storage.hpp no tenga que incluir las
 // cabeceras de CUDA, que arrastrarían nvcc a todas las unidades de traducción.
+// Contabilidad de lanzamientos, que lleva el despachador de kernels.
+void note_kernel_launched();
+void note_kernel_failed();
+
 float* device_alloc(size_t elements);
 void device_free(float* ptr);
 void copy_to_device(float* dst, const float* src, size_t elements);
