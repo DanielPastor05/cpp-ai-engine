@@ -86,6 +86,7 @@ bool matmul(const Storage&, const Storage&, Storage&, size_t, size_t, size_t, si
 }
 bool relu(const Storage&, Storage&) { return false; }
 bool relu_backward(const Storage&, const Storage&, Storage&) { return false; }
+bool accumulate_grad(Storage&, const Storage&, bool) { return false; }
 bool softmax(const Storage&, Storage&, size_t, size_t) { return false; }
 bool softmax_backward(const Storage&, const Storage&, Storage&, size_t, size_t) { return false; }
 

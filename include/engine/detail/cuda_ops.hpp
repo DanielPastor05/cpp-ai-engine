@@ -39,6 +39,16 @@ bool matmul(const Storage& a, const Storage& b, Storage& out,
 bool relu(const Storage& x, Storage& out);
 bool relu_backward(const Storage& x, const Storage& grad_out, Storage& out);
 
+// El acumulador del backward: grad = g la primera vez, grad += g después.
+//
+// No puede ser binary(Add, grad, g, grad, ...) con la salida aliaseada a la
+// entrada: esa ruta pide la salida con device_write(), que da el búfer por
+// válido **sin subirlo**, y entonces el device() de la entrada ve que ya vale y
+// tampoco sube. El acumulado se perdería. Encima el orden de evaluación de los
+// argumentos del lanzamiento no está definido, así que dependería del
+// compilador. De ahí que tenga kernel propio en lugar de reutilizar binary().
+bool accumulate_grad(Storage& grad, const Storage& g, bool initialize);
+
 // Softmax sobre el último eje: `rows` filas de `cols` valores contiguos.
 bool softmax(const Storage& x, Storage& out, size_t rows, size_t cols);
 // y es la salida guardada del forward, no la entrada.

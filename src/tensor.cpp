@@ -262,9 +262,13 @@ bool Tensor::has_grad() const {
 }
 
 void Tensor::zero_grad() {
+    // assign() y no host_mut() + fill(): host_mut() sincroniza, o sea que se
+    // baja del dispositivo un gradiente que sólo vamos a machacar con ceros, una
+    // vez por parámetro y por paso. assign() marca host como bueno y dispositivo
+    // como obsoleto sin copiar nada, y conserva la reserva de GPU porque el
+    // tamaño no cambia.
     if (impl_->grad) {
-        std::vector<float>& g = impl_->grad->storage.host_mut();
-        std::fill(g.begin(), g.end(), 0.0f);
+        impl_->grad->storage.assign(impl_->grad->storage.size(), 0.0f);
     }
 }
 
@@ -274,12 +278,34 @@ void Tensor::add_grad(const Tensor& g) {
         throw std::invalid_argument("Forma del gradiente " + g.shape_str() +
                                     " incompatible con la del tensor " + shape_str() + ".");
     }
-    if (!impl_->grad) {
-        impl_->grad = std::make_shared<TensorImpl>(shape(), g.data(), false);
-    } else {
-        std::vector<float>& dst = impl_->grad->storage.host_mut();
-        const std::vector<float>& src = g.data();
-        for (size_t i = 0; i < dst.size(); ++i) dst[i] += src[i];
+    // Aquí se decidía toda la residencia del backward sin querer. Construir el
+    // gradiente desde g.data() lo bajaba del dispositivo, y autograd se lo pasa
+    // tal cual al siguiente backward_fn, que tenía que volver a subirlo: ni un
+    // solo nodo se quedaba en GPU, daba igual el tamaño y daban igual los
+    // umbrales. El forward lleva esta invariante bien resuelta desde la Fase 6;
+    // esto es aplicarle al gradiente la misma.
+    //
+    // La rama que importa es la primera escritura, no el +=: autograd descarta
+    // el gradiente de los nodos intermedios antes del recorrido y lo libera en
+    // cuanto se consume, así que un nodo con un solo consumidor —el caso
+    // normal— entra siempre por aquí y nunca por la acumulación.
+    const bool initialize = !impl_->grad;
+    // A ceros para que el camino de CPU sea un único bucle: sobre ceros, sumar
+    // es asignar. Copiar el Storage de g no valdría de atajo, porque su
+    // constructor de copia se lleva sólo el lado host y para eso sincroniza:
+    // sería exactamente la bajada que estamos quitando.
+    if (initialize) impl_->grad = std::make_shared<TensorImpl>(shape(), 0.0f, false);
+
+    Storage& acc = impl_->grad->storage;
+    if (!cuda::ops::accumulate_grad(acc, g.get_impl()->storage, initialize)) {
+        // g.data() se queda dentro del if a propósito: fuera, la bajada volvería
+        // por la puerta de atrás en el camino que sí acelera el dispositivo.
+        std::vector<float>& dst = acc.host_mut();
+        const float* ENGINE_RESTRICT src = g.data().data();
+        float* ENGINE_RESTRICT out = dst.data();
+        parallel::parallel_for(dst.size(), kElementsPerThread, [&](size_t from, size_t to) {
+            for (size_t i = from; i < to; ++i) out[i] += src[i];
+        });
     }
 }
 

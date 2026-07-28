@@ -56,18 +56,16 @@ constexpr size_t kMaxInt = static_cast<size_t>(std::numeric_limits<int>::max());
 // devuelve false, de modo que el resultado lo calcula la CPU. Un motor que se
 // cae porque la GPU está ocupada es peor que uno que va más lento.
 //
-// Hay que deshacer además el device_write() de la salida. Si no, el camino de
-// CPU pediría el búfer de host, Storage se lo bajaría del dispositivo sin
-// inicializar, y matmul —que acumula sobre una salida que supone a cero—
-// devolvería basura en lugar de un resultado correcto más lento.
-bool launched_ok(const char* what, Storage& out) {
+// Va aparte de launched_ok() porque no todo lanzamiento fallido se deshace
+// igual: quien pidió la salida con device_write() tiene que revertir, y quien
+// la pidió con device_mut() no debe hacerlo. Ver accumulate_grad().
+bool launch_ok(const char* what) {
     const cudaError_t status = cudaGetLastError();
     if (status == cudaSuccess) {
         detail::note_kernel_launched();
         return true;
     }
 
-    out.revert_device_write();
     detail::note_kernel_failed();
 
     // Sólo el primero, y con el diagnóstico completo. La versión anterior
@@ -110,6 +108,18 @@ bool launched_ok(const char* what, Storage& out) {
         std::fprintf(stderr, "  Los siguientes fallos no se repiten aqui;"
                              " se cuentan en cuda::kernels_failed().\n\n");
     }
+    return false;
+}
+
+// Lo mismo, para la salida que se pidió con device_write().
+//
+// Hay que deshacer ese device_write(). Si no, el camino de CPU pediría el búfer
+// de host, Storage se lo bajaría del dispositivo sin inicializar, y matmul —que
+// acumula sobre una salida que supone a cero— devolvería basura en lugar de un
+// resultado correcto más lento.
+bool launched_ok(const char* what, Storage& out) {
+    if (launch_ok(what)) return true;
+    out.revert_device_write();
     return false;
 }
 
@@ -164,6 +174,18 @@ __global__ void relu_grad(const float* __restrict__ x, const float* __restrict__
     const long long stride = (long long)blockDim.x * gridDim.x;
     for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
         out[i] = (x[i] > 0.0f) ? g[i] : 0.0f;
+    }
+}
+
+// El acumulador del backward: out = g la primera vez, out += g después.
+//
+// initialize es uniforme en toda la malla —lo decide el llamante mirando si el
+// tensor ya tenía gradiente—, así que la rama no divide ningún warp.
+__global__ void grad_accumulate(const float* __restrict__ g, float* __restrict__ out,
+                                long long n, bool initialize) {
+    const long long stride = (long long)blockDim.x * gridDim.x;
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
+        out[i] = initialize ? g[i] : out[i] + g[i];
     }
 }
 
@@ -640,6 +662,30 @@ bool relu_backward(const Storage& x, const Storage& grad_out, Storage& out) {
     const long long n = (long long)x.size();
     relu_grad<<<grid_for(n), kBlock>>>(x.device(), grad_out.device(), out.device_write(), n);
     return launched_ok("relu_grad", out);
+}
+
+bool accumulate_grad(Storage& grad, const Storage& g, bool initialize) {
+    if (!elementwise_worth_it(g.size())) return false;
+    if (grad.size() != g.size()) return false;
+    // Sólo si no cuesta ni una transferencia. El gradiente acaba leyéndose en
+    // host —el optimizador va por CPU—, así que subir algo para sumarlo aquí
+    // pagaría el viaje dos veces y saldría peor que no acelerar nada. Al
+    // inicializar, el destino se escribe entero y no hay nada que subir.
+    if (!g.resident_on_device()) return false;
+    if (!initialize && !grad.resident_on_device()) return false;
+
+    const long long n = (long long)g.size();
+    float* out = initialize ? grad.device_write() : grad.device_mut();
+    grad_accumulate<<<grid_for(n), kBlock>>>(g.device(), out, n, initialize);
+    if (launch_ok("grad_accumulate")) return true;
+
+    // Asimetría deliberada, y por eso este no usa launched_ok(). device_write()
+    // dio el búfer por válido sin subirlo, así que si el kernel no salió hay que
+    // deshacerlo. device_mut() sí subió: el dispositivo tiene el dato bueno y el
+    // host está marcado obsoleto, de modo que el camino de CPU lo bajará intacto.
+    // Revertir ahí ascendería a válido un host que no lo está.
+    if (initialize) grad.revert_device_write();
+    return false;
 }
 
 bool softmax(const Storage& x, Storage& out, size_t rows, size_t cols) {

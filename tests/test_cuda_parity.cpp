@@ -368,6 +368,114 @@ void run_cuda_parity_tests() {
                        "una segunda operacion no resube operandos ya residentes");
     }
 
+    // --- residencia del backward ---
+    //
+    // La otra mitad del modelo de residencia, y la que faltaba: el gradiente
+    // acumulado tampoco baja a host. Antes bajaba siempre, porque add_grad
+    // construia el gradiente desde g.data(); eso obligaba al siguiente
+    // backward_fn a resubirlo y ningun nodo se quedaba en la GPU.
+    //
+    // Se comprueba la invariante directamente y no un contador, que es lo que
+    // de verdad se quiere garantizar.
+    {
+        cuda::set_enabled(true);
+        Tensor A = Tensor::randn({64, 64}, 0.0f, 1.0f, true);
+        Tensor B = Tensor::randn({64, 64}, 0.0f, 1.0f, true);
+        A.data();
+        B.data();
+
+        cuda::reset_transfer_stats();
+        A.matmul(B).relu().sum().backward();
+
+        testing::check(A.grad().get_impl()->storage.resident_on_device(),
+                       "el gradiente acumulado se queda en el dispositivo");
+        testing::check(B.grad().get_impl()->storage.resident_on_device(),
+                       "el gradiente del segundo operando tambien");
+    }
+
+    // --- exactitud de la rama de acumulacion ---
+    //
+    // Un tensor consumido por dos ramas hace que add_grad entre por el +=, que
+    // es el camino que el caso normal no ejercita: autograd libera el gradiente
+    // de los nodos intermedios en cuanto se consume, asi que casi siempre se
+    // pasa por la primera escritura.
+    //
+    // Se compara con igualdad **exacta**, no con la tolerancia de compare(): una
+    // suma suelta no tiene multiplicacion que fundir en un FMA, asi que aqui la
+    // GPU y la CPU coinciden bit a bit. Si algun dia dejan de hacerlo, es que el
+    // kernel dejo de ser una suma y conviene enterarse.
+    {
+        engine::manual_seed(4242);
+        const Tensor X = Tensor::randn({128, 128});
+        const Tensor Wa = Tensor::randn({128, 128});
+        const Tensor Wb = Tensor::randn({128, 128});
+
+        std::vector<float> want;
+        std::vector<float> got;
+        for (const bool on : {false, true}) {
+            cuda::set_enabled(on);
+            // Un tensor nuevo cada vuelta, no `Tensor x = X`: Tensor es un asa
+            // sobre un TensorImpl compartido, asi que copiarlo compartiria el
+            // gradiente y la segunda vuelta acumularia sobre la primera.
+            Tensor x(X.shape(), X.data(), true);
+            ((x.relu() * Wa) + (x.relu() * Wb)).sum().backward();
+            (on ? got : want) = x.grad().data();
+        }
+        cuda::set_enabled(true);
+
+        bool identical = want.size() == got.size();
+        for (size_t i = 0; identical && i < want.size(); ++i) {
+            identical = (want[i] == got[i]);
+        }
+        testing::check(identical,
+                       "acumular dos gradientes da el mismo bit en CPU y en GPU");
+    }
+
+    // --- coste de un paso completo, en transferencias ---
+    //
+    // No es una comprobacion, es la cifra que justifica el cambio: cuantas veces
+    // baja algo a host un paso de entrenamiento entero. Se informa en lugar de
+    // fijarla porque depende de cuantas operaciones tengan kernel, y esa lista
+    // crece; lo que no puede es subir.
+    {
+        cuda::set_enabled(true);
+        engine::manual_seed(7);
+        nn::TransformerBlock block(32, 4, 64);
+        Tensor tokens = Tensor::randn({4, 12, 32}, 0.0f, 1.0f, true);
+        block(tokens).sum().backward();  // calienta: reserva parametros y espejos
+
+        block.zero_grad();
+        tokens.zero_grad();
+        cuda::reset_transfer_stats();
+        block(tokens).sum().backward();
+        const cuda::TransferStats step = cuda::transfer_stats();
+        std::cout << "  Un paso del TransformerBlock: " << step.to_host_count
+                  << " bajadas y " << step.to_device_count << " subidas\n";
+    }
+
+    // Y el mismo recuento sobre una cadena que sólo usa operaciones con kernel.
+    //
+    // La comparación entre las dos cifras es el mapa de lo que queda por hacer:
+    // en el TransformerBlock la residencia del gradiente apenas se nota, porque
+    // permute, reshape, transpose, LayerNorm y GELU siguen en CPU y bajan el
+    // tensor de todas formas. Donde toda la cadena tiene kernel, se ve.
+    {
+        cuda::set_enabled(true);
+        engine::manual_seed(11);
+        Tensor h0 = Tensor::randn({256, 256}, 0.0f, 0.05f, true);
+        Tensor W = Tensor::randn({256, 256}, 0.0f, 0.05f, true);
+        h0.data();
+        W.data();
+
+        cuda::reset_transfer_stats();
+        Tensor h = h0;
+        for (int i = 0; i < 4; ++i) h = h.matmul(W).relu();
+        h.sum().backward();
+        const cuda::TransferStats chain = cuda::transfer_stats();
+        std::cout << "  Cuatro capas matmul+relu:    " << chain.to_host_count
+                  << " bajadas y " << chain.to_device_count << " subidas\n";
+    }
+
     // Un resumen al final: cuantos kernels se ejecutaron de verdad. Si esta
     // linea dice cero, todo lo de arriba se calculo en CPU y no significa nada.
     testing::check(cuda::kernels_failed() == 0,
