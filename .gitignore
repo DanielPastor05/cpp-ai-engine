@@ -1,5 +1,5 @@
 # Archivos de compilación de CMake y binarios
-build/
+build*/
 bin/
 out/
 .vs/
