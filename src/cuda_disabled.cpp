@@ -23,6 +23,26 @@ void set_enabled(bool) {}
 DeviceInfo device_info() { return DeviceInfo{}; }
 void synchronize() {}
 
+double peak_fp32_gflops() { return 0.0; }
+double peak_bandwidth_gbs() { return 0.0; }
+
+MatmulKernel matmul_kernel() { return MatmulKernel::Auto; }
+void set_matmul_kernel(MatmulKernel) {}
+MatmulKernel resolve_matmul_kernel(size_t, size_t, size_t) { return MatmulKernel::Auto; }
+
+// Este sí devuelve algo útil sin CUDA: el banco de pruebas y las pruebas
+// imprimen el nombre de la variante aunque no haya dispositivo.
+const char* matmul_kernel_name(MatmulKernel kernel) {
+    switch (kernel) {
+        case MatmulKernel::Auto: return "auto";
+        case MatmulKernel::Naive: return "naive";
+        case MatmulKernel::Tiled: return "tiled";
+        case MatmulKernel::RegisterTiled: return "register";
+        case MatmulKernel::Vectorized: return "vectorized";
+    }
+    return "desconocido";
+}
+
 size_t min_matmul_flops() { return 0; }
 size_t min_elementwise_elements() { return 0; }
 void set_thresholds(size_t, size_t) {}

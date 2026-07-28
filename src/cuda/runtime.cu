@@ -38,10 +38,29 @@ size_t env_size(const char* name, size_t fallback) {
     return static_cast<size_t>(value);
 }
 
+// Núcleos CUDA por multiprocesador. No hay ninguna propiedad del runtime que
+// lo dé: depende de la arquitectura y hay que mirarlo en una tabla, igual que
+// hace el helper_cuda.h de los ejemplos del toolkit. Sin este número no se
+// puede calcular el pico teórico, y sin el pico teórico un GFLOP/s medido no
+// dice si el kernel va bien o mal.
+int cores_per_sm(int major, int minor) {
+    switch (major) {
+        case 3: return 192;                          // Kepler
+        case 5: return 128;                          // Maxwell
+        case 6: return (minor == 0) ? 64 : 128;      // Pascal
+        case 7: return 64;                           // Volta y Turing
+        case 8: return (minor == 0) ? 64 : 128;      // Ampere: GA100 vs el resto
+        case 9: return 128;                          // Hopper
+        default: return 128;                         // lo más probable de aquí en adelante
+    }
+}
+
 struct Context {
     bool usable = false;
     bool on = false;
     DeviceInfo info;
+    double peak_gflops = 0.0;
+    double peak_bandwidth = 0.0;
 
     Context() {
         int count = 0;
@@ -56,6 +75,18 @@ struct Context {
         info.compute_minor = props.minor;
         info.multiprocessors = props.multiProcessorCount;
         info.total_memory = props.totalGlobalMem;
+
+        // clockRate viene en kHz. El factor 2 es porque una FMA cuenta como
+        // dos operaciones en punto flotante, que es el convenio con el que se
+        // publican las cifras de las tarjetas.
+        peak_gflops = static_cast<double>(props.multiProcessorCount) *
+                      cores_per_sm(props.major, props.minor) * 2.0 *
+                      (static_cast<double>(props.clockRate) * 1e3) / 1e9;
+
+        // El otro 2 es la doble tasa de transferencia de la memoria gráfica.
+        peak_bandwidth = (static_cast<double>(props.memoryClockRate) * 1e3) * 2.0 *
+                         (static_cast<double>(props.memoryBusWidth) / 8.0) / 1e9;
+
         usable = true;
 
         // ENGINE_CUDA=0 apaga el backend sin recompilar, para comparar contra
@@ -74,6 +105,8 @@ Context& context() {
 // entre hilos del motor vive en el camino de CPU, y ese no llega hasta aquí.
 size_t g_min_matmul_flops = env_size("ENGINE_CUDA_MIN_FLOPS", size_t{1} << 22);
 size_t g_min_elements = env_size("ENGINE_CUDA_MIN_ELEMENTS", size_t{1} << 20);
+
+MatmulKernel g_matmul_kernel = MatmulKernel::Auto;
 
 TransferStats g_stats;
 
@@ -100,6 +133,39 @@ DeviceInfo device_info() { return context().info; }
 void synchronize() {
     if (!context().usable) return;
     check(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
+}
+
+double peak_fp32_gflops() { return context().peak_gflops; }
+double peak_bandwidth_gbs() { return context().peak_bandwidth; }
+
+MatmulKernel matmul_kernel() { return g_matmul_kernel; }
+void set_matmul_kernel(MatmulKernel kernel) { g_matmul_kernel = kernel; }
+
+const char* matmul_kernel_name(MatmulKernel kernel) {
+    switch (kernel) {
+        case MatmulKernel::Auto: return "auto";
+        case MatmulKernel::Naive: return "naive";
+        case MatmulKernel::Tiled: return "tiled";
+        case MatmulKernel::RegisterTiled: return "register";
+        case MatmulKernel::Vectorized: return "vectorized";
+    }
+    return "desconocido";
+}
+
+// La resolución de `Auto`, en un solo sitio para que el banco de pruebas pueda
+// preguntar qué se va a ejecutar sin duplicar el criterio.
+//
+// Dos condiciones, y las dos son de corrección antes que de velocidad:
+//   - Las cargas float4 exigen que las filas empiecen en una dirección
+//     múltiplo de 16 bytes, o sea K y N múltiplos de 4. Es la misma clase de
+//     selección de kernel por alineación que hace cuBLAS por dentro.
+//   - Con matrices pequeñas, un bloque de 128x128 desperdicia casi toda la
+//     malla rellenando con ceros, así que ahí gana el kernel de teselas.
+MatmulKernel resolve_matmul_kernel(size_t rows, size_t inner_dim, size_t cols) {
+    if (g_matmul_kernel != MatmulKernel::Auto) return g_matmul_kernel;
+    if (rows < 128 || cols < 128) return MatmulKernel::Tiled;
+    if (inner_dim % 4 == 0 && cols % 4 == 0) return MatmulKernel::Vectorized;
+    return MatmulKernel::RegisterTiled;
 }
 
 size_t min_matmul_flops() { return g_min_matmul_flops; }

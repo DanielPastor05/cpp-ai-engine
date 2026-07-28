@@ -100,6 +100,11 @@ target_link_libraries(mnist_demo PRIVATE engine)
 add_executable(bench bench/bench.cpp)
 target_link_libraries(bench PRIVATE engine)
 
+# Banco del producto de matrices, aislado para poder pasarselo a Nsight Compute:
+# un kernel, una forma, sin nada mas alrededor que perfilar.
+add_executable(bench_matmul bench/bench_matmul.cpp)
+target_link_libraries(bench_matmul PRIVATE engine)
+
 # Suite de pruebas
 enable_testing()
 add_executable(test_engine

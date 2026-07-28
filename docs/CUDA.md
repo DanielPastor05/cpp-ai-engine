@@ -143,6 +143,83 @@ de referencia.
 
 ---
 
+## Optimizar el matmul: de la teselación al techo
+
+El kernel de teselas de arriba es el de libro de texto, y se queda muy por debajo
+del techo de la tarjeta. Lo interesante es **por qué**, porque las dos respuestas
+intuitivas son las dos equivocadas.
+
+No es la ocupación: con 1024 hilos y 8 KB de memoria compartida por bloque hay warps
+de sobra en vuelo. Y no es el tráfico a memoria global: eso ya lo arreglaron las
+teselas, que lo redujeron 32 veces.
+
+Es la **intensidad aritmética a nivel de registro**. En `matmul_tiled`, cada hilo,
+por cada paso de K, hace:
+
+> **1 FMA contra 2 lecturas de memoria compartida.**
+
+Las unidades de carga se saturan mucho antes que las de cálculo, y con esa proporción
+da igual cuántos warps haya esperando: el cuello está en el propio bucle interno.
+
+La solución es que cada hilo calcule un **bloque** de resultados en vez de uno solo.
+Con 8×8 salidas vivas en registros, cada hilo lee 8 valores de A y 8 de B por paso de
+K y con ellos hace 64 productos:
+
+> **64 FMA contra 16 lecturas de memoria compartida.** De 1:2 a 4:1 — ocho veces mejor.
+
+### Las cuatro variantes
+
+| Variante | Qué cambia | FMA : lecturas de compartida |
+|---|---|---|
+| `naive` | sin memoria compartida | 1 : 2, y contra memoria **global** |
+| `tiled` | teselas 32×32, un resultado por hilo | 1 : 2 |
+| `register` | bloques 128×128, 8×8 resultados por hilo en registros | **4 : 1** |
+| `vectorized` | igual, con cargas `float4` de global a compartida | 4 : 1, con 4× menos instrucciones de carga |
+
+Todas siguen vivas en el binario y se eligen con `cuda::set_matmul_kernel`, o con
+`--kernel=` en el banco de pruebas. No es indecisión: **la progresión es el
+resultado**, y además permite comprobar la paridad de cada una por separado, que es
+lo que de verdad protege el trabajo.
+
+### Detalles que sí importan
+
+**`As` va transpuesta** en memoria compartida (índice `[k][m]`). Sin eso, las ocho
+lecturas de A de cada hilo irían con paso K y cada una caería en un banco distinto.
+
+**La ocupación baja a la mitad, y es intencionado.** 64 acumuladores más los registros
+de trabajo salen a unos 80-100 registros por hilo. Menos warps residentes, sí — pero
+el paralelismo a nivel de instrucción dentro de cada hilo compensa de sobra. Es el
+compromiso clásico de este kernel y se ve inmediatamente al perfilarlo, así que
+conviene saber que está puesto a propósito.
+
+**La vectorización exige alineación.** `K` y `N` múltiplos de 4, o las direcciones no
+caen en múltiplos de 16 bytes. Si no se cumple, el despacho degrada a `register`
+en silencio — una lectura `float4` desalineada no da un error, **da otro valor**, que
+es bastante peor. Es la misma clase de selección de kernel por alineación que hace
+cuBLAS por dentro, y hay una prueba de paridad dedicada a ese camino.
+
+**Los bordes se acotan sólo donde hace falta**: en la carga de global a compartida
+(rellenando con ceros) y en el almacenamiento final. El bucle interno va sin ninguna
+comprobación, que es lo que permite que las formas con resto sean correctas sin
+penalizar el camino caliente.
+
+### El roofline dice dónde atacar
+
+Antes de optimizar conviene saber contra qué techo se está chocando. Un producto de
+N×N×N mueve `3N²` valores para hacer `2N³` operaciones: **N/6 FLOP/byte**. El punto de
+inflexión de una RTX 3060 Ti está sobre los 36 FLOP/byte (≈16,2 TFLOP/s contra
+≈448 GB/s), así que cualquier N por encima de unos pocos cientos está de lleno en la
+región **limitada por cálculo**.
+
+Eso es lo que justifica todo lo anterior: en esta forma el trabajo está en la
+intensidad aritmética del kernel, no en las transferencias. `bench_matmul` imprime el
+punto de inflexión y la intensidad de cada forma para que la decisión quede a la vista
+en lugar de darse por supuesta.
+
+Cómo medirlo y qué mirar: **[docs/PROFILING.md](PROFILING.md)**.
+
+---
+
 ## Paridad: por qué la comparación es con tolerancia
 
 `tests/test_cuda_parity.cpp` calcula la misma expresión dos veces sobre

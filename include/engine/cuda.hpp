@@ -41,6 +41,46 @@ DeviceInfo device_info();
 void synchronize();
 
 // ---------------------------------------------------------
+// Techo teórico del dispositivo.
+//
+// Sin esto, decir «el kernel hace 4 TFLOP/s» no significa nada: la cifra que
+// importa es qué fracción del pico alcanza, porque es la que dice si queda
+// trabajo por hacer. Se deduce de cudaDeviceProp, así que no hay que buscar
+// las especificaciones de cada tarjeta a mano.
+// ---------------------------------------------------------
+
+// SMs x núcleos por SM x 2 (una FMA cuentan como dos operaciones) x reloj.
+double peak_fp32_gflops();
+// Reloj de memoria x 2 (doble tasa) x anchura del bus.
+double peak_bandwidth_gbs();
+
+// ---------------------------------------------------------
+// Variantes del producto de matrices.
+//
+// El motor lleva cuatro kernels para la misma operación, del más ingenuo al
+// más afinado. No es indecisión: la progresión **es** el resultado. Tenerlas
+// todas vivas permite medirlas una contra otra en la misma máquina y, sobre
+// todo, comprobar la paridad de cada una por separado — un kernel con teselas
+// de 128x128 falla justo en las formas con resto, y sin poder seleccionarlo
+// no habría manera de dejarlo escrito en una prueba.
+// ---------------------------------------------------------
+enum class MatmulKernel {
+    Auto,          // elige según la forma y la alineación
+    Naive,         // sin memoria compartida; referencia inferior
+    Tiled,         // teselas 32x32 en compartida, un resultado por hilo
+    RegisterTiled, // 8x8 resultados por hilo en registros
+    Vectorized     // igual, con cargas float4
+};
+
+MatmulKernel matmul_kernel();
+void set_matmul_kernel(MatmulKernel kernel);
+const char* matmul_kernel_name(MatmulKernel kernel);
+
+// Qué variante resolvería `Auto` para una forma concreta. La usan el banco de
+// pruebas y la documentación; no hace falta para calcular.
+MatmulKernel resolve_matmul_kernel(size_t rows, size_t inner_dim, size_t cols);
+
+// ---------------------------------------------------------
 // Umbrales de despacho.
 //
 // Lanzar un kernel cuesta unos microsegundos, así que por debajo de cierto

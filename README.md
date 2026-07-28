@@ -100,17 +100,19 @@ include/engine/
   transformer.hpp  LayerNorm, Embedding, attention, MultiHeadAttention, blocks
   optim.hpp        SGD, Adam, gradient clipping, LR schedulers
   parallel.hpp     Deterministic multi-threading over the hot loops
-  cuda.hpp         CUDA backend: device query, thresholds, transfer accounting
+  cuda.hpp         CUDA backend: kernel selection, thresholds, transfer accounting
   serialize.hpp    Save and load weights
   data.hpp         IDX/MNIST reader
 examples/          Six runnable demos, one per phase plus MNIST
 tests/             509 checks across six translation units + PyTorch fixtures
-bench/             Reproducible performance benchmarks
+bench/             Reproducible performance benchmarks, incl. an isolated
+                   matmul harness meant to be handed to Nsight Compute
 tools/             PyTorch fixture generator, MNIST downloader
 ```
 
 Design decisions and their trade-offs: **[docs/DESIGN.md](docs/DESIGN.md)**.
 The CUDA backend: **[docs/CUDA.md](docs/CUDA.md)**.
+Profiling methodology: **[docs/PROFILING.md](docs/PROFILING.md)**.
 
 ---
 
@@ -257,9 +259,25 @@ ctest --test-dir build-cuda --output-on-failure   # adds the CPU/GPU parity case
 ```
 
 `matmul`, the element-wise operators, ReLU and softmax dispatch to hand-written
-kernels; `matmul` tiles through shared memory, which cuts its global-memory
-traffic by the tile width. Everything else stays on the CPU, and
-[docs/CUDA.md](docs/CUDA.md) says which and why.
+kernels. Everything else stays on the CPU, and [docs/CUDA.md](docs/CUDA.md) says
+which and why.
+
+**The `matmul` ships as four kernels**, from a naive one to a register-tiled one,
+all of them live and individually selectable. That is not indecision — the
+progression is the result. The textbook shared-memory tiling everyone writes
+first does **1 FMA per 2 shared-memory reads**, and it is that ratio, not
+occupancy and not global traffic, that caps it. Giving each thread an 8x8 block
+of outputs in registers turns it into 64 FMAs per 16 reads. Each variant is
+parity-checked separately, because a kernel built on 128x128 blocks fails
+precisely on the shapes that are not a multiple of that:
+
+```bash
+./build-cuda/bench_matmul                              # all variants, with % of peak
+ncu --set full -o p ./build-cuda/bench_matmul --kernel=register --size=2048 --iters=5
+```
+
+How to profile it and which metrics actually mean something:
+**[docs/PROFILING.md](docs/PROFILING.md)**.
 
 Parity is checked by computing the same expression twice on the same data, once
 with the backend off and once on — up to a full `TransformerBlock` and its

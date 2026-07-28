@@ -87,28 +87,67 @@ void run_cuda_parity_tests() {
 
     engine::manual_seed(20260728);
 
-    // --- producto de matrices ---
+    // --- producto de matrices, las cuatro variantes ---
+    //
+    // Cada kernel se comprueba por separado, y sobre las mismas formas. Es lo
+    // que de verdad protege este trabajo: el kernel de teselas de registros
+    // opera sobre bloques de 128x128, así que sus fallos aparecen justo en las
+    // formas que no son múltiplo de eso, y sólo ahí. Probar únicamente la
+    // variante por defecto dejaría a las otras tres sin red.
     {
-        // Tamaños deliberadamente no múltiplos de 32, el lado de la tesela:
-        // si el relleno de los bordes estuviera mal, sólo se vería aquí.
+        const cuda::MatmulKernel variants[] = {
+            cuda::MatmulKernel::Naive,
+            cuda::MatmulKernel::Tiled,
+            cuda::MatmulKernel::RegisterTiled,
+            cuda::MatmulKernel::Vectorized,
+        };
+
         struct Case { size_t M, K, N; };
-        const Case cases[] = {{1, 1, 1}, {17, 23, 31}, {32, 32, 32}, {33, 65, 129}, {128, 256, 64}};
-        for (const Case& c : cases) {
-            Tensor A = Tensor::randn({c.M, c.K});
-            Tensor B = Tensor::randn({c.K, c.N});
-            compare("matmul " + std::to_string(c.M) + "x" + std::to_string(c.K) + "x" +
-                        std::to_string(c.N),
-                    [&] { return A.matmul(B); });
+        const Case cases[] = {
+            {1, 1, 1},          // el caso degenerado
+            {17, 23, 31},       // por debajo de una sola tesela
+            {32, 32, 32},       // justo una tesela de 32
+            {33, 65, 129},      // restos en los tres ejes
+            {127, 128, 129},    // alrededor del bloque de 128
+            {128, 128, 128},    // exactamente un bloque
+            {129, 256, 257},    // más de un bloque, con resto
+            {256, 260, 256},    // K múltiplo de 4 pero no de 8: tesela K parcial
+        };
+
+        for (cuda::MatmulKernel variant : variants) {
+            cuda::set_matmul_kernel(variant);
+            const std::string tag = std::string("[") + cuda::matmul_kernel_name(variant) + "] ";
+
+            for (const Case& c : cases) {
+                Tensor A = Tensor::randn({c.M, c.K});
+                Tensor B = Tensor::randn({c.K, c.N});
+                compare(tag + "matmul " + std::to_string(c.M) + "x" + std::to_string(c.K) +
+                            "x" + std::to_string(c.N),
+                        [&] { return A.matmul(B); });
+            }
+
+            Tensor QB = Tensor::randn({4, 3, 17, 23});
+            Tensor KB = Tensor::randn({4, 3, 23, 11});
+            compare(tag + "matmul por lotes (4,3,17,23) x (4,3,23,11)",
+                    [&] { return QB.matmul(KB); });
+
+            // Operando 2D compartido con todo el lote: comprueba el paso 0.
+            Tensor X = Tensor::randn({8, 12, 40});
+            Tensor W = Tensor::randn({40, 20});
+            compare(tag + "matmul con operando compartido (8,12,40) x (40,20)",
+                    [&] { return X.matmul(W); });
         }
 
-        Tensor QB = Tensor::randn({4, 3, 17, 23});
-        Tensor KB = Tensor::randn({4, 3, 23, 11});
-        compare("matmul por lotes (4,3,17,23) x (4,3,23,11)", [&] { return QB.matmul(KB); });
+        // Una forma cuya K no es múltiplo de 4: pedir la variante vectorizada
+        // tiene que degradarse a la de registros, no leer float4 desalineados.
+        // Una lectura desalineada no da error, da otro valor.
+        cuda::set_matmul_kernel(cuda::MatmulKernel::Vectorized);
+        Tensor A = Tensor::randn({131, 133});
+        Tensor B = Tensor::randn({133, 135});
+        compare("[vectorized] se degrada con K y N no alineados (133, 135)",
+                [&] { return A.matmul(B); });
 
-        // Operando 2D compartido con todo el lote: comprueba el paso 0.
-        Tensor X = Tensor::randn({8, 12, 40});
-        Tensor W = Tensor::randn({40, 20});
-        compare("matmul con operando compartido (8,12,40) x (40,20)", [&] { return X.matmul(W); });
+        cuda::set_matmul_kernel(cuda::MatmulKernel::Auto);
     }
 
     // --- operaciones elemento a elemento ---
