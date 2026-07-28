@@ -73,7 +73,12 @@ if(ENGINE_CUDA)
     # librería y quien la usa no coincidieran en esto, el desajuste de tamaño
     # daría corrupción de memoria en lugar de un error de compilación.
     target_compile_definitions(engine PUBLIC ENGINE_CUDA)
-    set_target_properties(engine PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
+    # Static, y no Shared: nvcc 13 marca obsoleto el '-cudart shared' que genera
+    # CMake para Shared, y avisa en cada fichero compilado. CMake no expone el
+    # 'hybrid' que sugiere el aviso, asi que la salida limpia es enlazar el
+    # runtime estatico. De paso el binario deja de depender de que el cudart
+    # correcto este en el PATH.
+    set_target_properties(engine PROPERTIES CUDA_RUNTIME_LIBRARY Static)
 endif()
 
 # Los avisos son para el compilador de host: nvcc no entiende estas banderas.
