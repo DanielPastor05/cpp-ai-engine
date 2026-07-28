@@ -76,15 +76,23 @@ struct Context {
         info.multiprocessors = props.multiProcessorCount;
         info.total_memory = props.totalGlobalMem;
 
-        // clockRate viene en kHz. El factor 2 es porque una FMA cuenta como
-        // dos operaciones en punto flotante, que es el convenio con el que se
-        // publican las cifras de las tarjetas.
+        // Las frecuencias se piden por atributo y no por campo de cudaDeviceProp:
+        // CUDA 13 quitó props.clockRate y props.memoryClockRate, y
+        // cudaDeviceGetAttribute es la vía que vale igual en 11, 12 y 13.
+        int clock_khz = 0;          // frecuencia de núcleo, en kHz
+        int memory_clock_khz = 0;   // frecuencia de memoria, en kHz
+        cudaDeviceGetAttribute(&clock_khz, cudaDevAttrClockRate, 0);
+        cudaDeviceGetAttribute(&memory_clock_khz, cudaDevAttrMemoryClockRate, 0);
+
+        // El factor 2 es porque una FMA cuenta como dos operaciones en punto
+        // flotante, que es el convenio con el que se publican las cifras de las
+        // tarjetas.
         peak_gflops = static_cast<double>(props.multiProcessorCount) *
                       cores_per_sm(props.major, props.minor) * 2.0 *
-                      (static_cast<double>(props.clockRate) * 1e3) / 1e9;
+                      (static_cast<double>(clock_khz) * 1e3) / 1e9;
 
         // El otro 2 es la doble tasa de transferencia de la memoria gráfica.
-        peak_bandwidth = (static_cast<double>(props.memoryClockRate) * 1e3) * 2.0 *
+        peak_bandwidth = (static_cast<double>(memory_clock_khz) * 1e3) * 2.0 *
                          (static_cast<double>(props.memoryBusWidth) / 8.0) / 1e9;
 
         usable = true;
