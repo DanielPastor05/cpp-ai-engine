@@ -154,6 +154,10 @@ void synchronize() {
     check(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
 }
 
+// Constante de compilación: es la única de las tres que dice de verdad con qué
+// toolkit se generó este binario.
+int compiled_version() { return CUDART_VERSION; }
+
 int runtime_version() {
     int version = 0;
     return (cudaRuntimeGetVersion(&version) == cudaSuccess) ? version : 0;

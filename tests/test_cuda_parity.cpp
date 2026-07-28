@@ -142,13 +142,23 @@ void run_cuda_parity_tests() {
     }
 
     const cuda::DeviceInfo info = cuda::device_info();
+    // Las tres versiones, y en este orden, porque el desajuste que rompe la
+    // ejecucion es toolkit > driver. Imprimir solo el runtime lo esconde: sigue
+    // al driver, asi que en una maquina con driver 13.2 y toolkit 13.3 esta
+    // linea decia «13.2 y 13.2» y parecia que todo cuadraba.
+    const int built = cuda::compiled_version();
     const int rt = cuda::runtime_version();
     const int drv = cuda::driver_version();
     std::cout << "  Dispositivo: " << info.name << " (cc " << info.compute_major << "."
               << info.compute_minor << ", " << info.multiprocessors << " SM, "
               << (info.total_memory >> 20) << " MiB)\n"
-              << "  Compilado con CUDA " << rt / 1000 << "." << (rt % 1000) / 10
+              << "  Compilado con CUDA " << built / 1000 << "." << (built % 1000) / 10
+              << ", runtime CUDA " << rt / 1000 << "." << (rt % 1000) / 10 << " cargado"
               << ", driver CUDA " << drv / 1000 << "." << (drv % 1000) / 10 << "\n";
+    if (drv > 0 && built > drv) {
+        std::cout << "  Aviso: el toolkit va por delante del driver. Si algun kernel no\n"
+                     "         arranca, es lo primero que hay que mirar.\n";
+    }
 
     cuda::reset_kernel_counters();
 

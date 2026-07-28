@@ -23,6 +23,7 @@ void set_enabled(bool) {}
 DeviceInfo device_info() { return DeviceInfo{}; }
 void synchronize() {}
 
+int compiled_version() { return 0; }
 int runtime_version() { return 0; }
 int driver_version() { return 0; }
 size_t kernels_launched() { return 0; }

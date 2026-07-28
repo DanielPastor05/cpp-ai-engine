@@ -40,12 +40,21 @@ DeviceInfo device_info();
 // corrección la garantizan las copias, que son sincronizantes.
 void synchronize();
 
-// Versiones del runtime con el que se compiló y del driver instalado, en el
-// formato de CUDA (12040 = 12.4). Si la primera es mayor que la segunda, los
-// kernels no se pueden ejecutar y hay que actualizar el driver: es la causa
-// mucho más común de que un backend recién compilado no arranque.
-int runtime_version();
-int driver_version();
+// Versiones de CUDA en juego, en el formato del toolkit (12040 = 12.4).
+//
+// Son tres y no dos, y la distinción importa: si el toolkit con el que se
+// compiló va por delante del driver instalado, el binario no lleva código
+// nativo utilizable para la tarjeta, el driver cae a compilar el PTX en tiempo
+// de ejecución y ahí falla con «unsupported toolchain». Es la causa más común
+// de que un backend recién compilado no arranque.
+//
+// Para detectarlo hay que comparar compiled_version() con driver_version().
+// runtime_version() **no** vale para eso: cudaRuntimeGetVersion() sigue al
+// driver, así que devuelve 13.2 en una máquina con driver 13.2 aunque el
+// runtime enlazado venga del toolkit 13.3. Medido, no supuesto.
+int compiled_version();   // CUDART_VERSION: el toolkit que compiló esto
+int runtime_version();    // lo que informa el runtime en ejecución
+int driver_version();     // el driver instalado
 
 // ---------------------------------------------------------
 // Contadores de lanzamiento.

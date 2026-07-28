@@ -77,20 +77,29 @@ bool launched_ok(const char* what, Storage& out) {
     static bool reported = false;
     if (!reported) {
         reported = true;
-        const int rt = runtime_version();
+        // La comparacion util es la del toolkit que compilo esto contra el
+        // driver. runtime_version() no sirve aqui: sigue al driver, asi que
+        // nunca sale por delante y la pista no se imprimiria jamas.
+        const int built = compiled_version();
         const int drv = driver_version();
         std::fprintf(stderr,
                      "\nengine: el kernel %s no se pudo lanzar (%s).\n"
                      "  Se calcula en CPU, asi que los resultados son correctos pero lentos.\n"
                      "  Compilado con CUDA %d.%d, driver instalado CUDA %d.%d.\n",
                      what, cudaGetErrorString(status),
-                     rt / 1000, (rt % 1000) / 10, drv / 1000, (drv % 1000) / 10);
-        if (drv > 0 && rt > drv) {
+                     built / 1000, (built % 1000) / 10, drv / 1000, (drv % 1000) / 10);
+
+        // Las dos pistas son independientes y pueden darse a la vez: un binario
+        // con la arquitectura equivocada cae a compilar el PTX, y es entonces
+        // cuando un driver mas antiguo que el toolkit remata el fallo. Encadenar
+        // las con else-if contaria media historia.
+        if (drv > 0 && built > drv) {
             std::fprintf(stderr,
                          "  El driver es mas antiguo que el toolkit: actualiza el driver de\n"
                          "  NVIDIA, o compila con una version de CUDA que el driver admita.\n");
-        } else if (status == cudaErrorUnsupportedPtxVersion ||
-                   status == cudaErrorNoKernelImageForDevice) {
+        }
+        if (status == cudaErrorUnsupportedPtxVersion ||
+            status == cudaErrorNoKernelImageForDevice) {
             const DeviceInfo info = device_info();
             std::fprintf(stderr,
                          "  El binario no lleva codigo nativo para esta tarjeta (cc %d.%d).\n"
