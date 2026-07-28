@@ -1,0 +1,10 @@
+# Estilo del proyecto: 4 espacios, 100 columnas, llaves en la misma línea.
+BasedOnStyle: Google
+IndentWidth: 4
+ColumnLimit: 100
+AccessModifierOffset: -4
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: WithoutElse
+DerivePointerAlignment: false
+PointerAlignment: Left
+SortIncludes: false

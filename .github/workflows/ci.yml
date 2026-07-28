@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux / GCC
+            os: ubuntu-latest
+            cc: gcc
+            cxx: g++
+          - name: Linux / Clang
+            os: ubuntu-latest
+            cc: clang
+            cxx: clang++
+          - name: macOS / AppleClang
+            os: macos-latest
+            cc: clang
+            cxx: clang++
+          - name: Windows / MSVC
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar CMake
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compilar
+        run: cmake --build build --config Release --parallel
+
+      - name: Ejecutar las pruebas
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+      - name: Ejecutar los ejemplos
+        shell: bash
+        run: |
+          # Los generadores multi-configuración (MSVC) anidan los binarios en Release/
+          BIN=build
+          [ -d build/Release ] && BIN=build/Release
+          for demo in cpp_ai_engine autograd_demo nn_demo cnn_demo transformer_demo mnist_demo; do
+            "$BIN/$demo" > /dev/null
+          done
+          echo "Los seis ejemplos terminaron correctamente."
+
+  sanitizers:
+    name: Linux / ASan + UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fue AddressSanitizer quien encontró un desbordamiento de heap en el
+      # gradiente de la difusión, así que se ejecuta en cada cambio.
+      - name: Configurar con sanitizers
+        run: >
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+
+      - name: Compilar
+        run: cmake --build build --parallel
+
+      - name: Pruebas bajo sanitizers
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Ejemplos bajo sanitizers
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          for demo in cpp_ai_engine autograd_demo nn_demo cnn_demo; do
+            ./build/$demo > /dev/null
+          done
+
+  thread-sanitizer:
+    name: Linux / ThreadSanitizer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # El motor reparte matmul y las operaciones elemento a elemento entre
+      # varios hilos, asi que conviene comprobar que no hay carreras de datos.
+      - name: Configurar con ThreadSanitizer
+        run: >
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
+
+      - name: Compilar
+        run: cmake --build build --parallel
+
+      - name: Pruebas bajo ThreadSanitizer
+        env:
+          ENGINE_NUM_THREADS: 4
+          TSAN_OPTIONS: halt_on_error=1
+        run: ctest --test-dir build --output-on-failure
+
+  cuda:
+    name: Linux / CUDA (solo compilacion)
+    # ubuntu-22.04 trae gcc-11, que es un compilador de host que acepta el nvcc
+    # de los repositorios. En 24.04 el gcc por defecto es mas nuevo de lo que
+    # ese nvcc soporta y la compilacion falla antes de empezar.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # El runner no tiene GPU, asi que las pruebas de paridad no se pueden
+      # ejecutar aqui. Compilar si: es lo que detecta un error en un kernel
+      # antes de que llegue a la maquina que si tiene tarjeta.
+      - name: Instalar nvcc
+        run: sudo apt-get update && sudo apt-get install -y nvidia-cuda-toolkit
+
+      - name: Configurar con el backend CUDA
+        run: >
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+          -DENGINE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86
+
+      - name: Compilar
+        run: cmake --build build --parallel
+
+  debug:
+    name: Linux / Debug
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # En Debug la biblioteca estándar comprueba los índices de los
+      # contenedores, cosa que la compilación Release no hace.
+      - name: Configurar en Debug
+        run: >
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-D_GLIBCXX_ASSERTIONS"
+
+      - name: Compilar
+        run: cmake --build build --parallel
+
+      - name: Ejecutar las pruebas
+        run: ctest --test-dir build --output-on-failure

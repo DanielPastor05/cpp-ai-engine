@@ -23,3 +23,14 @@ Makefile
 .idea/
 *.user
 *.suo
+
+# Los ficheros de referencia de PyTorch SI se commitean: la CI los necesita
+# y solo ocupan 120 KB. tools/generate_reference.py los regenera.
+!tests/fixtures/*.bin
+
+# MNIST completo: se descarga con tools/download_mnist.sh, no se commitea.
+# El subconjunto (subset-*) SI va en el repositorio para que los ejemplos
+# funcionen recien clonado.
+data/mnist/train-*
+data/mnist/t10k-*
+mnist_cnn.bin

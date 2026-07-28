@@ -1,0 +1,268 @@
+// MNIST: la CNN del motor sobre datos reales.
+//
+// El repositorio trae un subconjunto de 2.000 + 1.000 imágenes para que esto
+// funcione recién clonado. Con tools/download_mnist.sh se obtiene el conjunto
+// completo (60.000 + 10.000) y el ejemplo lo detecta solo.
+
+#include "engine/tensor.hpp"
+#include "engine/random.hpp"
+#include "engine/autograd.hpp"
+#include "engine/nn.hpp"
+#include "engine/conv.hpp"
+#include "engine/optim.hpp"
+#include "engine/data.hpp"
+#include "engine/serialize.hpp"
+#include "engine/cuda.hpp"
+#include "engine/parallel.hpp"
+
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <iomanip>
+#include <iostream>
+#include <numeric>
+#include <string>
+#include <vector>
+
+using engine::Tensor;
+namespace nn = engine::nn;
+namespace optim = engine::optim;
+namespace data = engine::data;
+
+namespace {
+
+constexpr size_t kNumClasses = 10;
+const std::string kCheckpoint = "mnist_cnn.bin";
+
+void print_digit(const Tensor& images, size_t index, size_t label) {
+    std::cout << "  Etiqueta " << label << ":\n";
+    const float* img = images.data().data() + index * 28 * 28;
+    for (size_t r = 0; r < 28; r += 2) { // una fila de cada dos: las celdas son altas
+        std::cout << "    ";
+        for (size_t c = 0; c < 28; ++c) {
+            const float v = img[r * 28 + c];
+            std::cout << (v > 0.6f ? '#' : (v > 0.25f ? '+' : (v > 0.05f ? '.' : ' ')));
+        }
+        std::cout << "\n";
+    }
+}
+
+// La exactitud se calcula por lotes: con 10.000 imágenes de golpe, las
+// activaciones intermedias de la CNN no caben cómodamente en memoria.
+float evaluate(nn::Sequential& model, const data::Dataset& set, size_t batch_size = 500) {
+    engine::autograd::NoGradGuard no_grad;
+    model.eval();
+
+    size_t hits = 0;
+    for (size_t start = 0; start < set.size(); start += batch_size) {
+        const size_t end = std::min(start + batch_size, set.size());
+        std::vector<size_t> idx(end - start);
+        std::iota(idx.begin(), idx.end(), start);
+
+        Tensor logits = model(set.images.select_rows(idx));
+        std::vector<size_t> predicted = nn::argmax_rows(logits);
+        for (size_t i = 0; i < predicted.size(); ++i) {
+            if (predicted[i] == set.labels[start + i]) ++hits;
+        }
+    }
+    model.train();
+    return static_cast<float>(hits) / static_cast<float>(set.size());
+}
+
+void print_confusion(nn::Sequential& model, const data::Dataset& set) {
+    engine::autograd::NoGradGuard no_grad;
+    model.eval();
+
+    size_t matrix[kNumClasses][kNumClasses] = {};
+    for (size_t start = 0; start < set.size(); start += 500) {
+        const size_t end = std::min(start + size_t(500), set.size());
+        std::vector<size_t> idx(end - start);
+        std::iota(idx.begin(), idx.end(), start);
+        std::vector<size_t> predicted = nn::argmax_rows(model(set.images.select_rows(idx)));
+        for (size_t i = 0; i < predicted.size(); ++i) {
+            ++matrix[set.labels[start + i]][predicted[i]];
+        }
+    }
+    model.train();
+
+    std::cout << "Matriz de confusion (filas = real, columnas = predicho):\n\n";
+    std::cout << "        ";
+    for (size_t c = 0; c < kNumClasses; ++c) std::cout << std::setw(5) << c;
+    std::cout << "\n";
+    for (size_t r = 0; r < kNumClasses; ++r) {
+        std::cout << "    " << r << " | ";
+        for (size_t c = 0; c < kNumClasses; ++c) {
+            if (matrix[r][c] == 0) std::cout << std::setw(5) << ".";
+            else std::cout << std::setw(5) << matrix[r][c];
+        }
+        std::cout << "\n";
+    }
+    std::cout << "\n";
+}
+
+} // namespace
+
+int main() {
+    std::cout << "====================================================\n";
+    std::cout << "  MNIST: la CNN del motor sobre datos reales        \n";
+    std::cout << "====================================================\n\n";
+
+    // Las capas densas se van a la GPU si el motor se compiló con CUDA; las
+    // convoluciones no, porque Conv2d tiene su propio bucle y no pasa por
+    // Tensor::matmul. Conviene que quien lea el tiempo sepa qué se ejecutó.
+    if (engine::cuda::available()) {
+        const engine::cuda::DeviceInfo gpu = engine::cuda::device_info();
+        std::cout << "Backend: CUDA sobre " << gpu.name << " (cc " << gpu.compute_major
+                  << "." << gpu.compute_minor << "); las convoluciones siguen en CPU.\n";
+    } else {
+        std::cout << "Backend: CPU, " << engine::parallel::num_threads() << " hilo(s).\n";
+    }
+    std::cout << "\n";
+
+    engine::manual_seed(42);
+
+    // ---------------------------------------------------------
+    // 1. Datos
+    // ---------------------------------------------------------
+    data::MnistPaths paths;
+    try {
+        paths = data::find_mnist();
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
+    }
+
+    data::Dataset train = data::load_mnist_train(paths);
+    data::Dataset test = data::load_mnist_test(paths);
+
+    std::cout << "--- 1. Conjunto de datos ---\n";
+    std::cout << (paths.full ? "MNIST completo" : "Subconjunto del repositorio")
+              << ": " << train.size() << " imagenes de entrenamiento, "
+              << test.size() << " de prueba, de " << train.images.shape_str() << "\n";
+    if (!paths.full) {
+        std::cout << "(ejecuta tools/download_mnist.sh para el conjunto completo)\n";
+    }
+    std::cout << "\n";
+    print_digit(train.images, 0, train.labels[0]);
+    std::cout << "\n";
+
+    // ---------------------------------------------------------
+    // 2. Modelo
+    // ---------------------------------------------------------
+    nn::Sequential model{
+        nn::make<nn::Conv2d>(1, 16, nn::Window2d(3, 3, 1, 1)),   // (N,1,28,28) -> (N,16,28,28)
+        nn::make<nn::ReLU>(),
+        nn::make<nn::MaxPool2d>(2, 2),                            // -> (N,16,14,14)
+        nn::make<nn::Conv2d>(16, 32, nn::Window2d(3, 3, 1, 1)),   // -> (N,32,14,14)
+        nn::make<nn::ReLU>(),
+        nn::make<nn::MaxPool2d>(2, 2),                            // -> (N,32,7,7)
+        nn::make<nn::Flatten>(),                                  // -> (N,1568)
+        nn::make<nn::Dropout>(0.25f),
+        nn::make<nn::Linear>(32 * 7 * 7, 128),
+        nn::make<nn::ReLU>(),
+        nn::make<nn::Linear>(128, kNumClasses)
+    };
+
+    std::cout << "--- 2. Arquitectura ---\n";
+    model.summary();
+    std::cout << "\n";
+
+    // ---------------------------------------------------------
+    // 3. Entrenamiento
+    // ---------------------------------------------------------
+    const int epochs = paths.full ? 6 : 12;
+    const size_t batch_size = 64;
+
+    optim::Adam opt(model.parameters(), 0.001f);
+    optim::CosineAnnealingLR scheduler(opt, static_cast<size_t>(epochs), 0.0001f);
+
+    std::vector<size_t> order(train.size());
+    std::iota(order.begin(), order.end(), 0);
+
+    std::cout << "--- 3. Entrenamiento (" << epochs << " epocas, lotes de "
+              << batch_size << ") ---\n";
+
+    const auto started = std::chrono::steady_clock::now();
+    for (int epoch = 1; epoch <= epochs; ++epoch) {
+        std::shuffle(order.begin(), order.end(), engine::global_rng());
+        model.train();
+
+        float epoch_loss = 0.0f;
+        size_t batches = 0;
+
+        for (size_t start = 0; start < train.size(); start += batch_size) {
+            const size_t end = std::min(start + batch_size, train.size());
+            const std::vector<size_t> idx(order.begin() + start, order.begin() + end);
+
+            std::vector<size_t> y;
+            y.reserve(idx.size());
+            for (size_t i : idx) y.push_back(train.labels[i]);
+
+            opt.zero_grad();
+            Tensor loss = nn::cross_entropy_loss(model(train.images.select_rows(idx)), y);
+            loss.backward();
+            // Recorte por norma global: evita que un lote atipico dé un paso enorme
+            optim::clip_grad_norm(model.parameters(), 5.0f);
+            opt.step();
+
+            epoch_loss += loss.data()[0];
+            ++batches;
+        }
+        scheduler.step();
+
+        const float test_acc = evaluate(model, test);
+        const double elapsed =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+
+        std::cout << "  Epoca " << std::setw(2) << epoch
+                  << " | Loss = " << std::fixed << std::setprecision(4)
+                  << (epoch_loss / static_cast<float>(batches))
+                  << " | Prueba = " << std::setprecision(2) << (test_acc * 100.0f) << "%"
+                  << " | lr = " << std::scientific << std::setprecision(1)
+                  << opt.learning_rate() << std::defaultfloat
+                  << " | " << std::fixed << std::setprecision(1) << elapsed << " s\n";
+    }
+    std::cout << "\n";
+
+    // ---------------------------------------------------------
+    // 4. Resultados
+    // ---------------------------------------------------------
+    std::cout << "--- 4. Resultados ---\n";
+    const float final_acc = evaluate(model, test);
+    std::cout << std::fixed << std::setprecision(2)
+              << "Exactitud final sobre el conjunto de prueba: " << (final_acc * 100.0f) << "%\n\n";
+    print_confusion(model, test);
+
+    // ---------------------------------------------------------
+    // 5. El modelo entrenado se guarda y se recupera
+    // ---------------------------------------------------------
+    std::cout << "--- 5. Persistencia ---\n";
+    engine::save_parameters(model, kCheckpoint);
+    std::cout << "Pesos guardados en " << kCheckpoint << " ("
+              << model.num_parameters() << " parametros).\n";
+
+    // Un modelo nuevo, con pesos aleatorios, que carga los guardados
+    engine::manual_seed(999);
+    nn::Sequential restored{
+        nn::make<nn::Conv2d>(1, 16, nn::Window2d(3, 3, 1, 1)),
+        nn::make<nn::ReLU>(),
+        nn::make<nn::MaxPool2d>(2, 2),
+        nn::make<nn::Conv2d>(16, 32, nn::Window2d(3, 3, 1, 1)),
+        nn::make<nn::ReLU>(),
+        nn::make<nn::MaxPool2d>(2, 2),
+        nn::make<nn::Flatten>(),
+        nn::make<nn::Dropout>(0.25f),
+        nn::make<nn::Linear>(32 * 7 * 7, 128),
+        nn::make<nn::ReLU>(),
+        nn::make<nn::Linear>(128, kNumClasses)
+    };
+    std::cout << "Modelo nuevo sin entrenar: " << std::setprecision(2)
+              << (evaluate(restored, test) * 100.0f) << "%\n";
+
+    engine::load_parameters(restored, kCheckpoint);
+    std::cout << "El mismo tras cargar los pesos: "
+              << (evaluate(restored, test) * 100.0f) << "%\n\n";
+
+    std::cout << "¡Entrenamiento con datos reales completado!\n";
+    return 0;
+}
