@@ -12,6 +12,8 @@
 #include "engine/optim.hpp"
 #include "engine/data.hpp"
 #include "engine/serialize.hpp"
+#include "engine/cuda.hpp"
+#include "engine/parallel.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -104,6 +106,18 @@ int main() {
     std::cout << "====================================================\n";
     std::cout << "  MNIST: la CNN del motor sobre datos reales        \n";
     std::cout << "====================================================\n\n";
+
+    // Las capas densas se van a la GPU si el motor se compiló con CUDA; las
+    // convoluciones no, porque Conv2d tiene su propio bucle y no pasa por
+    // Tensor::matmul. Conviene que quien lea el tiempo sepa qué se ejecutó.
+    if (engine::cuda::available()) {
+        const engine::cuda::DeviceInfo gpu = engine::cuda::device_info();
+        std::cout << "Backend: CUDA sobre " << gpu.name << " (cc " << gpu.compute_major
+                  << "." << gpu.compute_minor << "); las convoluciones siguen en CPU.\n";
+    } else {
+        std::cout << "Backend: CPU, " << engine::parallel::num_threads() << " hilo(s).\n";
+    }
+    std::cout << "\n";
 
     engine::manual_seed(42);
 

@@ -73,7 +73,7 @@ void backward(Tensor& root_tensor) {
     // Solo tiene sentido para un escalar; para cualquier otra forma hay que
     // indicar explícitamente el gradiente inicial con backward(grad_output).
     if (!root_impl->grad) {
-        if (root_impl->data.size() != 1) {
+        if (root_impl->storage.size() != 1) {
             throw std::runtime_error(
                 "backward() implícito solo esta permitido sobre un escalar; el tensor raíz tiene forma " +
                 root_tensor.shape_str() + ". Usa backward(grad_output).");

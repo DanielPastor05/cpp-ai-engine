@@ -58,6 +58,15 @@ by output row — so the accumulation order never changes and results are
 made the examples *slower*; the thresholds are derived from a measured 7.8 µs
 dispatch cost. Set with `ENGINE_NUM_THREADS` or `parallel::set_num_threads`.
 
+**A GPU backend that does not fork the codebase.** Every CUDA operation returns
+a `bool` — *true if it took the work*. False means no device, or a size where
+the GPU would lose to one CPU core, and the caller falls through to the existing
+path. So `src/tensor.cpp` gained one condition per operation, not a second
+implementation. `Storage` keeps a host buffer and a lazily-synced device mirror,
+so a chain of operations stays on the GPU and only comes back when the program
+reads a value — asserted by counting transfers, not assumed.
+[docs/CUDA.md](docs/CUDA.md).
+
 **Real bugs, found and fixed.** A `shared_ptr` cycle that leaked the entire
 computation graph. A repeated `backward()` that multiplied gradients. A heap
 overflow that AddressSanitizer caught and every test missed. Each is written up
@@ -91,6 +100,7 @@ include/engine/
   transformer.hpp  LayerNorm, Embedding, attention, MultiHeadAttention, blocks
   optim.hpp        SGD, Adam, gradient clipping, LR schedulers
   parallel.hpp     Deterministic multi-threading over the hot loops
+  cuda.hpp         CUDA backend: device query, thresholds, transfer accounting
   serialize.hpp    Save and load weights
   data.hpp         IDX/MNIST reader
 examples/          Six runnable demos, one per phase plus MNIST
@@ -100,6 +110,7 @@ tools/             PyTorch fixture generator, MNIST downloader
 ```
 
 Design decisions and their trade-offs: **[docs/DESIGN.md](docs/DESIGN.md)**.
+The CUDA backend: **[docs/CUDA.md](docs/CUDA.md)**.
 
 ---
 
@@ -228,7 +239,38 @@ Attention from [CLS] in the second block:
 - [x] **Phase 3 — Layers and optimisers** · `nn::Module`, SGD/Adam, schedulers, gradient clipping
 - [x] **Phase 4 — CNNs** · im2col/col2im, `Conv2d`, `MaxPool2d`, `Flatten`
 - [x] **Phase 5 — Transformers** · scaled dot-product attention, multi-head, `LayerNorm`
-- [ ] **Phase 6 — CUDA backend** · host/device memory, custom kernels, shared-memory tiling
+- [x] **Phase 6 — CUDA backend** · host/device memory, custom kernels, shared-memory tiling
+
+---
+
+## CUDA
+
+The GPU backend is **off by default** — the engine has to keep compiling and
+passing its 509 checks on a machine with no toolkit and no card, which is what
+CI has.
+
+```bash
+cmake -B build-cuda -S . -DENGINE_CUDA=ON     # add -DCMAKE_CUDA_ARCHITECTURES=<xx>
+cmake --build build-cuda --parallel
+ctest --test-dir build-cuda --output-on-failure   # adds the CPU/GPU parity cases
+./build-cuda/bench                                # CPU vs GPU, transfers apart
+```
+
+`matmul`, the element-wise operators, ReLU and softmax dispatch to hand-written
+kernels; `matmul` tiles through shared memory, which cuts its global-memory
+traffic by the tile width. Everything else stays on the CPU, and
+[docs/CUDA.md](docs/CUDA.md) says which and why.
+
+Parity is checked by computing the same expression twice on the same data, once
+with the backend off and once on — up to a full `TransformerBlock` and its
+backward pass. The comparison is to a relative tolerance rather than bit for
+bit, because the device compiler fuses multiply and add into one FMA that rounds
+once where the CPU rounds twice. Demanding bit-identical results between CPU and
+GPU would be demanding that the GPU compute *worse*.
+
+Two knobs, no recompilation: `ENGINE_CUDA=0` turns the backend off on the same
+binary, and `ENGINE_CUDA_MIN_FLOPS` / `ENGINE_CUDA_MIN_ELEMENTS` move the
+thresholds that decide when a kernel is worth launching at all.
 
 ---
 

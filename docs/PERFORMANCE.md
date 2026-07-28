@@ -229,6 +229,22 @@ Verify the baseline is the real one before quoting an improvement against it.
 
 ---
 
+## GPU
+
+The CUDA backend, its design and how to reproduce its measurements are in
+**[docs/CUDA.md](CUDA.md)**. Two things worth repeating here:
+
+- The transfer cost is measured and reported **separately** from kernel time.
+  On a real engine the PCIe link becomes the bottleneck long before arithmetic
+  does, and a CPU/GPU table that folds that cost into the total says nothing
+  about the engine — it says how big the matrix was.
+- `Conv2d` does **not** go through the GPU, for exactly the reason it did not
+  benefit from CPU threading either: it has its own hand-written loop and never
+  calls `Tensor::matmul`. In `mnist_demo` the dense layers dispatch to the
+  device and the convolutions do not, and the example says so on startup.
+
+---
+
 ## What is deliberately not done
 
 - **No BLAS.** The point is to implement it, not to call it. `matmul` reaches

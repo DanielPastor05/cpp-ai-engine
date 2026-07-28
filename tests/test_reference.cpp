@@ -267,7 +267,11 @@ void test_cross_entropy_case() {
     Tensor logits = input_of(f, "logits");
 
     std::vector<size_t> targets;
-    for (float v : get(f, "targets").data()) targets.push_back(static_cast<size_t>(v));
+    // El Tensor se mantiene vivo en una variable: recorrer directamente
+    // get(f, "targets").data() dejaría la referencia colgando, porque el
+    // temporal muere antes de que empiece el bucle.
+    const Tensor target_values = get(f, "targets");
+    for (float v : target_values.data()) targets.push_back(static_cast<size_t>(v));
 
     Tensor loss = nn::cross_entropy_loss(logits, targets);
     check_matches(loss, get(f, "output"), "cross_entropy: perdida");

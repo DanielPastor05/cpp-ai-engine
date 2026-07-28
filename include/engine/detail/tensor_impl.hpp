@@ -10,6 +10,8 @@
 #include <memory>
 #include <vector>
 
+#include "engine/detail/storage.hpp"
+
 namespace engine {
 
 class Tensor;
@@ -22,7 +24,10 @@ class Tensor;
 // el gradiente de salida como argumento en lugar de capturar su propio tensor:
 // capturarlo crearía un ciclo y el grafo jamás se liberaría.
 struct TensorImpl {
-    std::vector<float> data;
+    // El búfer y de qué lado vive. Antes era un std::vector<float> a secas;
+    // sacarlo a un tipo propio es lo que permite que un tensor resida en la GPU
+    // entre operaciones en vez de ir y volver por PCIe en cada una.
+    Storage storage;
     std::vector<size_t> shape;
     std::vector<size_t> strides;
 

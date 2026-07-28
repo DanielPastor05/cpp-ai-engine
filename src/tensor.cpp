@@ -2,6 +2,7 @@
 #include "engine/autograd.hpp"
 #include "engine/detail/restrict.hpp"
 #include "engine/parallel.hpp"
+#include "engine/detail/cuda_ops.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -127,6 +128,21 @@ Tensor fold_leading(const Tensor& full, const std::vector<size_t>& target) {
     return folded;
 }
 
+// Ofrece la operación al backend CUDA. Devuelve true si la GPU se hizo cargo;
+// false significa «no hay dispositivo» o «a este tamaño no compensa», y el
+// llamante sigue por el camino de CPU. Sin CUDA la llamada es una función que
+// devuelve false y el enlazador la elimina.
+//
+// Traducción de la difusión: el operando derecho tiene `inner` elementos que se
+// repiten `repeat` veces, exactamente el mismo plan que usa el bucle de CPU.
+bool offer_to_device(cuda::ops::Binary op, const Tensor& a, const Tensor& b, Tensor& out,
+                     bool broadcast, const BroadcastPlan& plan) {
+    const size_t inner = broadcast ? plan.inner : a.size();
+    const size_t repeat = broadcast ? plan.repeat : 1;
+    return cuda::ops::binary(op, a.get_impl()->storage, b.get_impl()->storage,
+                             out.get_impl()->storage, inner, repeat);
+}
+
 } // namespace
 
 // ---------------------------------------------------------
@@ -138,15 +154,15 @@ TensorImpl::TensorImpl(const std::vector<size_t>& s, float fill_val, bool req_gr
     compute_strides();
     size_t total_elements = 1;
     for (size_t dim : shape) total_elements *= dim;
-    data.assign(total_elements, fill_val);
+    storage.assign(total_elements, fill_val);
 }
 
 TensorImpl::TensorImpl(const std::vector<size_t>& s, const std::vector<float>& d, bool req_grad)
-    : data(d), shape(s), requires_grad(req_grad) {
+    : storage(d), shape(s), requires_grad(req_grad) {
     compute_strides();
     size_t total_elements = 1;
     for (size_t dim : shape) total_elements *= dim;
-    if (data.size() != total_elements) {
+    if (storage.size() != total_elements) {
         throw std::invalid_argument("El número de elementos en data no coincide con la forma dada.");
     }
 }
@@ -247,7 +263,8 @@ bool Tensor::has_grad() const {
 
 void Tensor::zero_grad() {
     if (impl_->grad) {
-        std::fill(impl_->grad->data.begin(), impl_->grad->data.end(), 0.0f);
+        std::vector<float>& g = impl_->grad->storage.host_mut();
+        std::fill(g.begin(), g.end(), 0.0f);
     }
 }
 
@@ -260,9 +277,9 @@ void Tensor::add_grad(const Tensor& g) {
     if (!impl_->grad) {
         impl_->grad = std::make_shared<TensorImpl>(shape(), g.data(), false);
     } else {
-        for (size_t i = 0; i < impl_->grad->data.size(); ++i) {
-            impl_->grad->data[i] += g.data()[i];
-        }
+        std::vector<float>& dst = impl_->grad->storage.host_mut();
+        const std::vector<float>& src = g.data();
+        for (size_t i = 0; i < dst.size(); ++i) dst[i] += src[i];
     }
 }
 
@@ -285,11 +302,11 @@ size_t Tensor::get_flat_index(const std::vector<size_t>& indices) const {
 }
 
 float& Tensor::operator()(const std::vector<size_t>& indices) {
-    return impl_->data[get_flat_index(indices)];
+    return impl_->storage[get_flat_index(indices)];
 }
 
 const float& Tensor::operator()(const std::vector<size_t>& indices) const {
-    return impl_->data[get_flat_index(indices)];
+    return impl_->storage[get_flat_index(indices)];
 }
 
 float& Tensor::operator()(size_t row, size_t col) {
@@ -305,22 +322,25 @@ const float& Tensor::operator()(size_t row, size_t col) const {
         throw std::out_of_range("Índice (" + std::to_string(row) + ", " + std::to_string(col) +
                                 ") fuera de rango para un tensor " + shape_str() + ".");
     }
-    return impl_->data[row * shape()[1] + col];
+    return impl_->storage[row * shape()[1] + col];
 }
 
 float& Tensor::at(size_t flat_index) {
-    return impl_->data.at(flat_index);
+    return impl_->storage.at(flat_index);
 }
 
 const float& Tensor::at(size_t flat_index) const {
-    return impl_->data.at(flat_index);
+    return impl_->storage.at(flat_index);
 }
 
 const std::vector<size_t>& Tensor::shape() const { return impl_->shape; }
 const std::vector<size_t>& Tensor::strides() const { return impl_->strides; }
-const std::vector<float>& Tensor::data() const { return impl_->data; }
-std::vector<float>& Tensor::data() { return impl_->data; }
-size_t Tensor::size() const { return impl_->data.size(); }
+// data() es la puerta al lado host. La sobrecarga mutable marca de paso el
+// espejo del dispositivo como obsoleto, que es lo que mantiene coherentes las
+// dos copias sin que ninguna operación tenga que acordarse de hacerlo.
+const std::vector<float>& Tensor::data() const { return impl_->storage.host(); }
+std::vector<float>& Tensor::data() { return impl_->storage.host_mut(); }
+size_t Tensor::size() const { return impl_->storage.size(); }
 size_t Tensor::ndim() const { return impl_->shape.size(); }
 
 std::string Tensor::shape_str() const {
@@ -359,25 +379,26 @@ Tensor Tensor::operator+(const Tensor& other) const {
     bool req_g = track(requires_grad() || other.requires_grad());
     Tensor res(shape(), 0.0f, req_g);
 
-    // Los accesores se izan fuera del bucle: llamarlos por elemento impide
-    // que el compilador vectorice.
-    const size_t n = size();
-    const float* ENGINE_RESTRICT lhs = data().data();
-    const float* ENGINE_RESTRICT rhs = other.data().data();
-    float* ENGINE_RESTRICT out = res.data().data();
-
-    if (!broadcast) {
-        parallel::parallel_for(n, kElementsPerThread, [&](size_t from, size_t to) {
-            for (size_t i = from; i < to; ++i) out[i] = lhs[i] + rhs[i];
-        });
-    } else {
-        // Por bloques en lugar de con un módulo por elemento: el operando
-        // difundido se repite tal cual, y así el bucle interno vectoriza.
-        const size_t inner = plan.inner;
-        for (size_t r = 0; r < plan.repeat; ++r) {
-            const float* ENGINE_RESTRICT l = lhs + r * inner;
-            float* ENGINE_RESTRICT o = out + r * inner;
-            for (size_t j = 0; j < inner; ++j) o[j] = l[j] + rhs[j];
+    if (!offer_to_device(cuda::ops::Binary::Add, *this, other, res, broadcast, plan)) {
+        // Los accesores se izan fuera del bucle: llamarlos por elemento impide
+        // que el compilador vectorice.
+        const size_t n = size();
+        const float* ENGINE_RESTRICT lhs = data().data();
+        const float* ENGINE_RESTRICT rhs = other.data().data();
+        float* ENGINE_RESTRICT out = res.data().data();
+        if (!broadcast) {
+            parallel::parallel_for(n, kElementsPerThread, [&](size_t from, size_t to) {
+                for (size_t i = from; i < to; ++i) out[i] = lhs[i] + rhs[i];
+            });
+        } else {
+            // Por bloques en lugar de con un módulo por elemento: el operando
+            // difundido se repite tal cual, y así el bucle interno vectoriza.
+            const size_t inner = plan.inner;
+            for (size_t r = 0; r < plan.repeat; ++r) {
+                const float* ENGINE_RESTRICT l = lhs + r * inner;
+                float* ENGINE_RESTRICT o = out + r * inner;
+                for (size_t j = 0; j < inner; ++j) o[j] = l[j] + rhs[j];
+            }
         }
     }
 
@@ -422,7 +443,7 @@ Tensor Tensor::operator-(const Tensor& other) const {
     bool req_g = track(requires_grad() || other.requires_grad());
     Tensor res(shape(), 0.0f, req_g);
 
-    {
+    if (!offer_to_device(cuda::ops::Binary::Sub, *this, other, res, broadcast, plan)) {
         const size_t n = size();
         const float* ENGINE_RESTRICT lhs = data().data();
         const float* ENGINE_RESTRICT rhs = other.data().data();
@@ -477,7 +498,7 @@ Tensor Tensor::operator*(const Tensor& other) const {
     bool req_g = track(requires_grad() || other.requires_grad());
     Tensor res(shape(), 0.0f, req_g);
 
-    {
+    if (!offer_to_device(cuda::ops::Binary::Mul, *this, other, res, broadcast, plan)) {
         const size_t n = size();
         const float* ENGINE_RESTRICT lhs = data().data();
         const float* ENGINE_RESTRICT rhs = other.data().data();
@@ -533,7 +554,7 @@ Tensor Tensor::operator/(const Tensor& other) const {
     bool req_g = track(requires_grad() || other.requires_grad());
     Tensor res(shape(), 0.0f, req_g);
 
-    {
+    if (!offer_to_device(cuda::ops::Binary::Div, *this, other, res, broadcast, plan)) {
         const size_t n = size();
         const float* ENGINE_RESTRICT lhs = data().data();
         const float* ENGINE_RESTRICT rhs = other.data().data();
@@ -760,51 +781,57 @@ Tensor Tensor::matmul(const Tensor& B) const {
     bool req_g = track(requires_grad() || B.requires_grad());
     Tensor C(out_shape, 0.0f, req_g);
 
-    const std::vector<float>& a_data = data();
-    const std::vector<float>& b_data = B.data();
-    std::vector<float>& c_data = C.data();
-
     // Un operando no lotificado usa paso 0: se reutiliza en cada iteración
     const size_t a_stride = a_batched ? M * K : 0;
     const size_t b_stride = b_batched ? K * N : 0;
 
-    // Bucle en orden i -> k -> j: el recorrido de j es contiguo en memoria, de
-    // modo que la fila de B se lee y la de C se escribe secuencialmente.
-    //
-    // Los punteros de fila se izan fuera del bucle interno y se marcan con
-    // ENGINE_RESTRICT: sin esa promesa de no solapamiento el compilador no
-    // puede vectorizar el acumulador.
-    //
-    // La comprobación de a_ik == 0 sí compensa, aunque impida vectorizar esa
-    // rama. Sobre datos densos cuesta un 40%, pero las matrices que llegan
-    // aquí a menudo son salidas de ReLU con la mitad de los valores en cero
-    // exacto —la segunda capa densa de cada bloque Transformer, por ejemplo—
-    // y ahí se salta la mitad del trabajo. Medido de las dos formas sobre el
-    // ejemplo del Transformer: sin la rama 18,7 s, con ella 15,9 s.
-    // El reparto va por filas de la salida: cada fila la calcula un único hilo
-    // de principio a fin, así que el orden de acumulación no cambia y el
-    // resultado es idéntico bit a bit sea cual sea el número de hilos.
-    const size_t rows = batch * M;
-    parallel::parallel_for(rows, matmul_rows_per_thread(rows, K, N),
-                           [&](size_t from, size_t to) {
-        for (size_t row = from; row < to; ++row) {
-            const size_t b = row / M;
-            const size_t i = row % M;
+    // Primero se ofrece al dispositivo. Si se hace cargo, C se queda residente
+    // en la GPU y ni siquiera se baja a host: sólo la lectura de un valor
+    // desde el programa provoca la copia de vuelta.
+    if (!cuda::ops::matmul(impl_->storage, B.impl_->storage, C.impl_->storage,
+                           batch, M, K, N, a_batched, b_batched)) {
+        const std::vector<float>& a_data = data();
+        const std::vector<float>& b_data = B.data();
+        std::vector<float>& c_data = C.data();
 
-            const float* ENGINE_RESTRICT a_row = a_data.data() + b * a_stride + i * K;
-            const float* ENGINE_RESTRICT bm = b_data.data() + b * b_stride;
-            float* ENGINE_RESTRICT c_row = c_data.data() + b * M * N + i * N;
+        // Bucle en orden i -> k -> j: el recorrido de j es contiguo en memoria, de
+        // modo que la fila de B se lee y la de C se escribe secuencialmente.
+        //
+        // Los punteros de fila se izan fuera del bucle interno y se marcan con
+        // ENGINE_RESTRICT: sin esa promesa de no solapamiento el compilador no
+        // puede vectorizar el acumulador.
+        //
+        // La comprobación de a_ik == 0 sí compensa, aunque impida vectorizar esa
+        // rama. Sobre datos densos cuesta un 40%, pero las matrices que llegan
+        // aquí a menudo son salidas de ReLU con la mitad de los valores en cero
+        // exacto —la segunda capa densa de cada bloque Transformer, por ejemplo—
+        // y ahí se salta la mitad del trabajo. Medido de las dos formas sobre el
+        // ejemplo del Transformer: sin la rama 18,7 s, con ella 15,9 s.
+        // El reparto va por filas de la salida: cada fila la calcula un único hilo
+        // de principio a fin, así que el orden de acumulación no cambia y el
+        // resultado es idéntico bit a bit sea cual sea el número de hilos.
+        const size_t rows = batch * M;
+        parallel::parallel_for(rows, matmul_rows_per_thread(rows, K, N),
+                               [&](size_t from, size_t to) {
+            for (size_t row = from; row < to; ++row) {
+                const size_t b = row / M;
+                const size_t i = row % M;
 
-            for (size_t k = 0; k < K; ++k) {
-                const float a_ik = a_row[k];
-                if (a_ik == 0.0f) continue;
-                const float* ENGINE_RESTRICT b_row = bm + k * N;
-                for (size_t j = 0; j < N; ++j) {
-                    c_row[j] += a_ik * b_row[j];
+                const float* ENGINE_RESTRICT a_row = a_data.data() + b * a_stride + i * K;
+                const float* ENGINE_RESTRICT bm = b_data.data() + b * b_stride;
+                float* ENGINE_RESTRICT c_row = c_data.data() + b * M * N + i * N;
+
+                for (size_t k = 0; k < K; ++k) {
+                    const float a_ik = a_row[k];
+                    if (a_ik == 0.0f) continue;
+                    const float* ENGINE_RESTRICT b_row = bm + k * N;
+                    for (size_t j = 0; j < N; ++j) {
+                        c_row[j] += a_ik * b_row[j];
+                    }
                 }
             }
-        }
-    });
+        });
+    }
 
     if (req_g) {
         C.impl_->parents = { impl_, B.impl_ };
@@ -837,7 +864,7 @@ Tensor Tensor::matmul(const Tensor& B) const {
 Tensor Tensor::relu() const {
     bool req_g = track(requires_grad());
     Tensor res(shape(), 0.0f, req_g);
-    {
+    if (!cuda::ops::relu(impl_->storage, res.impl_->storage)) {
         const size_t n = size();
         const float* ENGINE_RESTRICT lhs = data().data();
         float* ENGINE_RESTRICT out = res.data().data();
@@ -850,8 +877,14 @@ Tensor Tensor::relu() const {
 
         res.impl_->backward_fn = [self_copy](const Tensor& grad_out) mutable {
             Tensor dX(self_copy.shape(), 0.0f, false);
-            for (size_t i = 0; i < self_copy.size(); ++i) {
-                dX.data()[i] = (self_copy.data()[i] > 0.0f) ? grad_out.data()[i] : 0.0f;
+            if (!cuda::ops::relu_backward(self_copy.get_impl()->storage,
+                                          grad_out.get_impl()->storage,
+                                          dX.get_impl()->storage)) {
+                const size_t n = self_copy.size();
+                const float* ENGINE_RESTRICT x = self_copy.data().data();
+                const float* ENGINE_RESTRICT g = grad_out.data().data();
+                float* ENGINE_RESTRICT out = dX.data().data();
+                for (size_t i = 0; i < n; ++i) out[i] = (x[i] > 0.0f) ? g[i] : 0.0f;
             }
             self_copy.add_grad(dX);
         };
@@ -872,17 +905,19 @@ Tensor Tensor::softmax() const {
     bool req_g = track(requires_grad());
     Tensor res(shape(), 0.0f, req_g);
 
-    for (size_t i = 0; i < rows; ++i) {
-        const float* row = data().data() + i * cols;
-        float max_v = *std::max_element(row, row + cols);
-        float denom = 0.0f;
-        for (size_t j = 0; j < cols; ++j) {
-            float e = std::exp(row[j] - max_v);
-            res.data()[i * cols + j] = e;
-            denom += e;
-        }
-        for (size_t j = 0; j < cols; ++j) {
-            res.data()[i * cols + j] /= denom;
+    if (!cuda::ops::softmax(impl_->storage, res.impl_->storage, rows, cols)) {
+        const float* ENGINE_RESTRICT src = data().data();
+        float* ENGINE_RESTRICT dst = res.data().data();
+        for (size_t i = 0; i < rows; ++i) {
+            const float* row = src + i * cols;
+            float max_v = *std::max_element(row, row + cols);
+            float denom = 0.0f;
+            for (size_t j = 0; j < cols; ++j) {
+                float e = std::exp(row[j] - max_v);
+                dst[i * cols + j] = e;
+                denom += e;
+            }
+            for (size_t j = 0; j < cols; ++j) dst[i * cols + j] /= denom;
         }
     }
 
@@ -896,14 +931,18 @@ Tensor Tensor::softmax() const {
         res.impl_->backward_fn = [self_copy, saved, rows, cols](const Tensor& grad_out) mutable {
             // dX_ij = y_ij * (dY_ij - sum_k dY_ik * y_ik)
             Tensor dX(self_copy.shape(), 0.0f, false);
-            for (size_t i = 0; i < rows; ++i) {
-                float dot = 0.0f;
-                for (size_t j = 0; j < cols; ++j) {
-                    dot += grad_out.data()[i * cols + j] * saved.data()[i * cols + j];
-                }
-                for (size_t j = 0; j < cols; ++j) {
-                    dX.data()[i * cols + j] =
-                        saved.data()[i * cols + j] * (grad_out.data()[i * cols + j] - dot);
+            if (!cuda::ops::softmax_backward(saved.get_impl()->storage,
+                                             grad_out.get_impl()->storage,
+                                             dX.get_impl()->storage, rows, cols)) {
+                const float* ENGINE_RESTRICT y = saved.data().data();
+                const float* ENGINE_RESTRICT g = grad_out.data().data();
+                float* ENGINE_RESTRICT out = dX.data().data();
+                for (size_t i = 0; i < rows; ++i) {
+                    float dot = 0.0f;
+                    for (size_t j = 0; j < cols; ++j) dot += g[i * cols + j] * y[i * cols + j];
+                    for (size_t j = 0; j < cols; ++j) {
+                        out[i * cols + j] = y[i * cols + j] * (g[i * cols + j] - dot);
+                    }
                 }
             }
             self_copy.add_grad(dX);

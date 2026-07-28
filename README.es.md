@@ -36,9 +36,27 @@ Un motor de Inteligencia Artificial y Aprendizaje Profundo (Deep Learning) avanz
   - `TransformerBlock` pre-norm con conexiones residuales.
   - Soporte N-dimensional en el tensor: `permute`, `matmul` por lotes,
     `softmax` sobre el último eje y difusión por sufijo.
-- [ ] **Fase 6: Backend GPU & CUDA**
-  - Gestión de memoria Host/Device (`cudaMalloc`, `cudaMemcpy`).
-  - Custom CUDA Kernels y optimización con *Shared Memory Tiling*.
+- [x] **Fase 6: Backend GPU & CUDA**
+  - `Storage`: búfer de host y espejo en el dispositivo con banderas de
+    validez, de modo que una cadena de operaciones se queda en la GPU y sólo
+    baja cuando el programa lee un valor.
+  - Kernels propios para `matmul` (con teselas en memoria compartida), las
+    operaciones elemento a elemento, ReLU y softmax.
+  - Contabilidad de las transferencias host↔dispositivo, medida e informada
+    aparte del tiempo de kernel.
+  - Pruebas de paridad CPU/GPU sobre los mismos datos, hasta un
+    `TransformerBlock` completo con su paso hacia atrás.
+  - Detalle completo en **[docs/CUDA.md](docs/CUDA.md)**.
+
+  ```bash
+  cmake -B build-cuda -S . -DENGINE_CUDA=ON
+  cmake --build build-cuda --parallel
+  ctest --test-dir build-cuda --output-on-failure
+  ```
+
+  El backend está apagado por defecto: el motor tiene que seguir compilando y
+  pasando las pruebas en una máquina sin toolkit ni tarjeta, que es lo que hay
+  en CI.
 
 ---
 
