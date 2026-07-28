@@ -27,37 +27,93 @@ namespace {
 
 namespace cuda = engine::cuda;
 
-// Error relativo al tamaño del valor esperado: en un matmul con K grande los
-// valores crecen como sqrt(K), y un umbral absoluto acabaría midiendo la
-// magnitud de los datos en lugar de la calidad del kernel.
-float max_relative_error(const std::vector<float>& got, const std::vector<float>& want) {
-    if (got.size() != want.size()) return 1e30f;
-    float worst = 0.0f;
-    for (size_t i = 0; i < got.size(); ++i) {
-        const float scale = std::max(1.0f, std::fabs(want[i]));
-        worst = std::max(worst, std::fabs(got[i] - want[i]) / scale);
+// Traduce un índice plano a coordenadas, para que un fallo diga «fila 128,
+// columna 0» en vez de «elemento 16384».
+std::string position_of(size_t flat, const std::vector<size_t>& shape) {
+    if (shape.empty()) return "(escalar)";
+    std::vector<size_t> coords(shape.size());
+    for (size_t axis = shape.size(); axis-- > 0;) {
+        coords[axis] = (shape[axis] == 0) ? 0 : flat % shape[axis];
+        flat = (shape[axis] == 0) ? 0 : flat / shape[axis];
     }
-    return worst;
+    std::string out = "(";
+    for (size_t i = 0; i < coords.size(); ++i) {
+        out += std::to_string(coords[i]);
+        if (i + 1 < coords.size()) out += ", ";
+    }
+    return out + ")";
 }
 
 // Evalúa la misma función con el backend apagado y encendido, y compara.
+//
+// Cuando falla, imprime bastante más que el error máximo. El motivo es
+// práctico: estos kernels no se pueden ejecutar en el entorno donde se
+// escriben, así que cada iteración de depuración cuesta una ida y vuelta
+// entera hasta una máquina con GPU. El mensaje tiene que llevar de una vez
+// todo lo necesario para localizar el fallo.
+//
+// El **reparto** de las diferencias es más informativo que su tamaño:
+//   - unas pocas al final  -> tratamiento de bordes
+//   - todas                -> la fórmula, no los índices
+//   - a intervalos regulares -> un paso o una transposición mal puestos
 void compare(const std::string& what, const std::function<Tensor()>& compute,
              float tol = 1e-5f) {
     cuda::set_enabled(false);
-    const std::vector<float> on_cpu = compute().data();
+    const Tensor on_cpu = compute();
+    const std::vector<float> want = on_cpu.data();
+    const std::vector<size_t> shape = on_cpu.shape();
 
     cuda::set_enabled(true);
-    const std::vector<float> on_gpu = compute().data();
+    const std::vector<float> got = compute().data();
 
-    const float error = max_relative_error(on_gpu, on_cpu);
     ++testing::g_checks;
-    if (error <= tol) {
-        std::cout << "  [ ok ] " << what << " (error relativo maximo " << std::scientific
-                  << std::setprecision(2) << error << std::defaultfloat << ")\n";
-    } else {
+
+    if (got.size() != want.size()) {
         ++testing::g_failures;
-        std::cout << "  [FAIL] " << what << " (error relativo maximo " << error
-                  << " > " << tol << ")\n";
+        std::cout << "  [FAIL] " << what << " (tamanos distintos: " << got.size()
+                  << " frente a " << want.size() << ")\n";
+        return;
+    }
+
+    size_t differing = 0;
+    size_t first = want.size();
+    size_t last = 0;
+    size_t worst_at = 0;
+    float worst = 0.0f;
+
+    for (size_t i = 0; i < want.size(); ++i) {
+        const float scale = std::max(1.0f, std::fabs(want[i]));
+        const float error = std::fabs(got[i] - want[i]) / scale;
+        if (error > worst) { worst = error; worst_at = i; }
+        if (error > tol) {
+            ++differing;
+            if (first == want.size()) first = i;
+            last = i;
+        }
+    }
+
+    if (differing == 0) {
+        std::cout << "  [ ok ] " << what << " (error relativo maximo " << std::scientific
+                  << std::setprecision(2) << worst << std::defaultfloat << ")\n";
+        return;
+    }
+
+    ++testing::g_failures;
+    std::cout << "  [FAIL] " << what << "\n"
+              << "         error relativo maximo " << std::scientific << std::setprecision(3)
+              << worst << " > " << tol << std::defaultfloat << "\n"
+              << "         difieren " << differing << " de " << want.size()
+              << " elementos, del " << first << " al " << last << "\n"
+              << "         el peor en " << worst_at << " = " << position_of(worst_at, shape)
+              << ": esperado " << want[worst_at] << ", obtenido " << got[worst_at] << "\n";
+
+    if (differing == want.size()) {
+        std::cout << "         difieren todos: apunta a la formula, no a los indices\n";
+    } else if (first > 0 && last + 1 == want.size()) {
+        std::cout << "         difiere la cola: apunta al tratamiento de bordes\n";
+    } else if (differing * 4 < want.size()) {
+        std::cout << "         difiere una minoria dispersa: apunta a un paso o una"
+                     " transposicion\n";
     }
 }
 
