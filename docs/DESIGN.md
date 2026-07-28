@@ -28,6 +28,34 @@ otherwise pay for.
 
 ---
 
+## The buffer is a `Storage`, not a `std::vector<float>`
+
+`TensorImpl` used to hold the vector directly. That is host memory and nothing
+else, which is fine right up to the moment a second kind of memory exists.
+
+`Storage` owns a host buffer plus an optional device mirror and two validity
+flags, with one invariant: **at least one of the two copies is valid at all
+times**. Asking for a stale side pays for the copy; asking for the fresh one
+costs a flag check.
+
+The reason to do this *before* writing any kernel is that the alternative is
+worse in two ways. Without a place to record that a tensor is already on the
+device, every kernel pays a round trip over PCIe. And without the buffer behind
+a type, host/device branching spreads through every operation in
+`src/tensor.cpp` instead of living in one file.
+
+Without `ENGINE_CUDA` the device members are not even declared, so the CPU build
+pays nothing for the backend existing. That makes the macro part of the ABI —
+it changes the layout of `Storage` — which is why CMake exports it as `PUBLIC`.
+A library and its consumer disagreeing here would corrupt memory rather than
+fail to compile.
+
+The same split is what would make `reshape`, `transpose` and `permute` into
+views instead of copies: shape, strides and offset are already separate from
+the buffer. That has not been done.
+
+---
+
 ## The graph is acyclic in reference counting, not just in topology
 
 A node holds `shared_ptr`s to its **parents** and never to its children. That

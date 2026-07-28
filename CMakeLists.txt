@@ -22,16 +22,54 @@ set(SOURCES
     src/serialize.cpp
     src/data.cpp
     src/parallel.cpp
+    src/storage.cpp
+    src/cuda_disabled.cpp
 )
+
+# ---------------------------------------------------------
+# Fase 6: backend CUDA.
+#
+# Está apagado por defecto a propósito. El motor tiene que seguir compilando y
+# pasando las pruebas en una máquina sin toolkit ni GPU, que es lo que hay en
+# CI; el backend es una aceleración opcional, no un requisito.
+#
+#   cmake -B build-cuda -S . -DENGINE_CUDA=ON
+# ---------------------------------------------------------
+option(ENGINE_CUDA "Compilar el backend CUDA (Fase 6)" OFF)
+
+if(ENGINE_CUDA)
+    enable_language(CUDA)
+    set(CMAKE_CUDA_STANDARD 17)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        # 86 es la capacidad de cómputo de Ampere GA104 (RTX 30xx), que es la
+        # máquina donde se desarrolló. Se puede cambiar con
+        # -DCMAKE_CUDA_ARCHITECTURES=<xx>, o poner varias separadas por ';'
+        # para generar un binario que valga en más tarjetas.
+        set(CMAKE_CUDA_ARCHITECTURES 86)
+    endif()
+    list(APPEND SOURCES src/cuda/runtime.cu src/cuda/kernels.cu)
+    message(STATUS "Backend CUDA activado (arquitecturas: ${CMAKE_CUDA_ARCHITECTURES})")
+endif()
 
 # Librería del motor, compartida por los ejemplos y las pruebas
 find_package(Threads REQUIRED)
 add_library(engine STATIC ${SOURCES})
 
+if(ENGINE_CUDA)
+    # PUBLIC, y no PRIVATE, porque la macro cambia la disposición de Storage:
+    # con CUDA lleva puntero de dispositivo y banderas de validez. Si la
+    # librería y quien la usa no coincidieran en esto, el desajuste de tamaño
+    # daría corrupción de memoria en lugar de un error de compilación.
+    target_compile_definitions(engine PUBLIC ENGINE_CUDA)
+    set_target_properties(engine PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
+endif()
+
+# Los avisos son para el compilador de host: nvcc no entiende estas banderas.
 if(MSVC)
-    target_compile_options(engine PRIVATE /W4)
+    target_compile_options(engine PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4>)
 else()
-    target_compile_options(engine PRIVATE -Wall -Wextra)
+    target_compile_options(engine PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra>)
 endif()
 
 # Ejecutable de la Fase 1 (Tensores)
@@ -71,7 +109,8 @@ add_executable(test_engine
     tests/test_nn.cpp
     tests/test_conv.cpp
     tests/test_transformer.cpp
-    tests/test_reference.cpp)
+    tests/test_reference.cpp
+    tests/test_cuda_parity.cpp)
 target_include_directories(test_engine PRIVATE tests)
 # Los ficheros de referencia se leen del arbol de fuentes, no del de compilacion
 target_compile_definitions(test_engine PRIVATE

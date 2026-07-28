@@ -15,6 +15,7 @@
 #include "engine/transformer.hpp"
 #include "engine/optim.hpp"
 #include "engine/parallel.hpp"
+#include "engine/cuda.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -200,6 +201,125 @@ int main() {
         engine::parallel::set_num_threads(original);
         printf("\n  La suma escala peor: esta limitada por el ancho de banda de\n"
                "  memoria, no por el calculo.\n");
+    }
+
+    section("CPU frente a GPU");
+    {
+        namespace cuda = engine::cuda;
+
+        if (!cuda::available()) {
+            printf("  Compilado sin CUDA o sin dispositivo utilizable.\n"
+                   "  Recompila con: cmake -B build-cuda -S . -DENGINE_CUDA=ON\n");
+        } else {
+            const cuda::DeviceInfo info = cuda::device_info();
+            printf("  Dispositivo: %s (cc %d.%d, %d SM, %zu MiB)\n\n",
+                   info.name.c_str(), info.compute_major, info.compute_minor,
+                   info.multiprocessors, info.total_memory >> 20);
+
+            // Sin umbral: aqui interesa medir donde esta el cruce, no aplicarlo.
+            const size_t saved_flops = cuda::min_matmul_flops();
+            const size_t saved_elems = cuda::min_elementwise_elements();
+            cuda::set_thresholds(0, 0);
+
+            printf("  matmul NxNxN, con los operandos ya residentes en el dispositivo:\n");
+            printf("  %-10s %12s %12s %10s %14s\n", "N", "CPU (ms)", "GPU (ms)", "ganancia", "GPU GFLOP/s");
+
+            const size_t sizes[] = {64, 128, 256, 512, 1024, 2048};
+            for (size_t n : sizes) {
+                Tensor A = Tensor::randn({n, n});
+                Tensor B = Tensor::randn({n, n});
+                const double flops = 2.0 * (double)n * n * n;
+
+                cuda::set_enabled(false);
+                const double cpu = time_op([&] { Tensor C = A.matmul(B); });
+
+                // La primera pasada sube A y B; a partir de ahi se quedan
+                // arriba, asi que lo que se mide es el kernel y no el PCIe.
+                cuda::set_enabled(true);
+                const double gpu = time_op([&] {
+                    Tensor C = A.matmul(B);
+                    cuda::synchronize();
+                });
+
+                printf("  %-10zu %12.3f %12.3f %9.2fx %14.1f\n",
+                       n, cpu * 1000.0, gpu * 1000.0, cpu / gpu, flops / gpu / 1e9);
+            }
+
+            // El numero que de verdad importa: cuanto cuesta cruzar el PCIe.
+            // Una tabla CPU/GPU que esconda esto dentro del total no dice nada,
+            // porque en un motor real la transferencia domina mucho antes que
+            // el calculo.
+            printf("\n  Coste de las transferencias host <-> dispositivo:\n");
+            {
+                const size_t n = 1024;
+                Tensor A = Tensor::randn({n, n});
+                Tensor B = Tensor::randn({n, n});
+                cuda::set_enabled(true);
+
+                // Caso 1: los datos ya estan arriba y el resultado se queda.
+                Tensor warm = A.matmul(B);
+                cuda::synchronize();
+                cuda::reset_transfer_stats();
+                const double resident = time_op([&] {
+                    Tensor C = A.matmul(B);
+                    cuda::synchronize();
+                });
+                const cuda::TransferStats resident_stats = cuda::transfer_stats();
+
+                // Caso 2: los operandos se tocan en host entre iteraciones, que
+                // es lo que pasa en un bucle de entrenamiento donde el
+                // optimizador y la perdida siguen en CPU. Cada iteracion vuelve
+                // a subir y a bajar.
+                cuda::reset_transfer_stats();
+                const double round_trip = time_op([&] {
+                    A.data()[0] = A.data()[0];   // invalida el espejo del dispositivo
+                    B.data()[0] = B.data()[0];
+                    Tensor C = A.matmul(B);
+                    (void)C.data()[0];           // fuerza la bajada del resultado
+                });
+                const cuda::TransferStats trip_stats = cuda::transfer_stats();
+
+                const double mib = (double)(n * n * sizeof(float)) / (1024.0 * 1024.0);
+                printf("    matmul 1024^3, datos residentes      %8.3f ms  (%zu subidas, %zu bajadas)\n",
+                       resident * 1000.0, resident_stats.to_device_count,
+                       resident_stats.to_host_count);
+                printf("    matmul 1024^3, ida y vuelta completa %8.3f ms  (%zu subidas, %zu bajadas)\n",
+                       round_trip * 1000.0, trip_stats.to_device_count, trip_stats.to_host_count);
+                printf("    penalizacion de la ida y vuelta      %8.2fx\n", round_trip / resident);
+                if (trip_stats.to_device_seconds > 0.0) {
+                    printf("    ancho de banda H2D                   %8.2f GB/s (%.1f MiB por matriz)\n",
+                           (double)trip_stats.to_device_bytes / trip_stats.to_device_seconds / 1e9, mib);
+                }
+                if (trip_stats.to_host_seconds > 0.0) {
+                    printf("    ancho de banda D2H                   %8.2f GB/s\n",
+                           (double)trip_stats.to_host_bytes / trip_stats.to_host_seconds / 1e9);
+                }
+                printf("\n    La bajada incluye la espera al kernel: cudaMemcpy sincroniza.\n"
+                       "    Es lo que se quiere medir, el coste real de leer un resultado.\n");
+            }
+
+            printf("\n  Operaciones elemento a elemento (residentes):\n");
+            for (size_t n : {size_t{1} << 18, size_t{1} << 22, size_t{1} << 24}) {
+                Tensor A = Tensor::randn({n});
+                Tensor B = Tensor::randn({n});
+                cuda::set_enabled(false);
+                const double cpu = time_op([&] { Tensor C = A + B; });
+                cuda::set_enabled(true);
+                const double gpu = time_op([&] {
+                    Tensor C = A + B;
+                    cuda::synchronize();
+                });
+                printf("    suma de %10zu valores   CPU %8.3f ms   GPU %8.3f ms   %5.2fx\n",
+                       n, cpu * 1000.0, gpu * 1000.0, cpu / gpu);
+            }
+
+            cuda::set_thresholds(saved_flops, saved_elems);
+            cuda::set_enabled(true);
+            printf("\n  Umbrales de despacho en uso: %zu operaciones para matmul,\n"
+                   "  %zu elementos para las operaciones elemento a elemento.\n"
+                   "  Se cambian con ENGINE_CUDA_MIN_FLOPS y ENGINE_CUDA_MIN_ELEMENTS.\n",
+                   cuda::min_matmul_flops(), cuda::min_elementwise_elements());
+        }
     }
 
     printf("\n");
