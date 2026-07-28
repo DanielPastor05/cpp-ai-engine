@@ -115,6 +115,7 @@ add_executable(test_engine
     tests/test_conv.cpp
     tests/test_transformer.cpp
     tests/test_reference.cpp
+    tests/test_cuda_indexing.cpp
     tests/test_cuda_parity.cpp)
 target_include_directories(test_engine PRIVATE tests)
 # Los ficheros de referencia se leen del arbol de fuentes, no del de compilacion

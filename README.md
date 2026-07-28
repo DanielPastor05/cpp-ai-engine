@@ -6,7 +6,7 @@ PyTorch**.
 
 [![CI](https://github.com/DanielPastor05/cpp-ai-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/DanielPastor05/cpp-ai-engine/actions/workflows/ci.yml)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)
-![tests](https://img.shields.io/badge/tests-509%20checks-brightgreen)
+![tests](https://img.shields.io/badge/tests-524%20checks-brightgreen)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
 No dependencies. No BLAS. The point is to implement it, not to call it.
@@ -79,7 +79,7 @@ and each has a regression test.
 
 ```bash
 cmake -B build -S . && cmake --build build --parallel
-ctest --test-dir build --output-on-failure     # 509 checks
+ctest --test-dir build --output-on-failure     # 524 checks
 ./build/mnist_demo                             # trains a CNN on real data
 ```
 
@@ -104,7 +104,7 @@ include/engine/
   serialize.hpp    Save and load weights
   data.hpp         IDX/MNIST reader
 examples/          Six runnable demos, one per phase plus MNIST
-tests/             509 checks across six translation units + PyTorch fixtures
+tests/             524 checks across eight translation units + PyTorch fixtures
 bench/             Reproducible performance benchmarks, incl. an isolated
                    matmul harness meant to be handed to Nsight Compute
 tools/             PyTorch fixture generator, MNIST downloader
@@ -248,7 +248,7 @@ Attention from [CLS] in the second block:
 ## CUDA
 
 The GPU backend is **off by default** — the engine has to keep compiling and
-passing its 509 checks on a machine with no toolkit and no card, which is what
+passing its 524 checks on a machine with no toolkit and no card, which is what
 CI has.
 
 ```bash
@@ -279,8 +279,15 @@ ncu --set full -o p ./build-cuda/bench_matmul --kernel=register --size=2048 --it
 How to profile it and which metrics actually mean something:
 **[docs/PROFILING.md](docs/PROFILING.md)**.
 
-Parity is checked by computing the same expression twice on the same data, once
-with the backend off and once on — up to a full `TransformerBlock` and its
+**CI has no GPU, so the CUDA job only compiles** — which catches a syntax error and
+nothing else. An indexing error compiles perfectly happily and shows up weeks later
+as wrong numbers. So the kernel's index arithmetic is *replayed on the CPU*: same
+block grid, same 256 threads, same shared-memory staging, same barriers, same index
+expressions, checked against a reference product on eleven shapes chosen for their
+remainders. That runs everywhere, on every push.
+
+Parity is then checked on the device by computing the same expression twice on the
+same data, once with the backend off and once on — up to a full `TransformerBlock` and its
 backward pass. The comparison is to a relative tolerance rather than bit for
 bit, because the device compiler fuses multiply and add into one FMA that rounds
 once where the CPU rounds twice. Demanding bit-identical results between CPU and
@@ -294,7 +301,7 @@ thresholds that decide when a kernel is worth launching at all.
 
 ## Testing
 
-509 checks over six translation units, run on every push against **GCC, Clang,
+524 checks over eight translation units, run on every push against **GCC, Clang,
 AppleClang and MSVC**, plus a job under **AddressSanitizer and
 UndefinedBehaviorSanitizer** one under **ThreadSanitizer**, and one in
 **Debug** with standard-library assertions enabled.

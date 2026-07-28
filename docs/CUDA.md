@@ -11,7 +11,7 @@ ctest --test-dir build-cuda --output-on-failure   # incluye la paridad CPU/GPU
 ```
 
 El backend está **apagado por defecto**. El motor tiene que seguir compilando y
-pasando las 509 comprobaciones en una máquina sin toolkit ni tarjeta, que es lo
+pasando las 524 comprobaciones en una máquina sin toolkit ni tarjeta, que es lo
 que hay en CI; la GPU es una aceleración opcional, no un requisito.
 
 ---
@@ -215,6 +215,27 @@ Eso es lo que justifica todo lo anterior: en esta forma el trabajo está en la
 intensidad aritmética del kernel, no en las transferencias. `bench_matmul` imprime el
 punto de inflexión y la intensidad de cada forma para que la decisión quede a la vista
 en lugar de darse por supuesta.
+
+### Comprobar los índices sin tener GPU
+
+CI no tiene tarjeta, así que el job de CUDA sólo compila. Eso detecta errores de
+sintaxis y nada más: **un error de indexación compila sin inmutarse** y aparece
+semanas después como resultados incorrectos.
+
+`tests/test_cuda_indexing.cpp` cubre ese hueco. Reproduce la estructura del kernel
+con bucles —rejilla de bloques, 256 hilos, memoria compartida, barreras— usando las
+mismas expresiones de índice, y compara contra un producto de referencia sobre once
+formas elegidas por sus restos: 1×1×1, 127×128×129, 256×260×256, 130×4×130. Corre en
+cualquier máquina y en cada push.
+
+El precio es que las expresiones están escritas dos veces y hay que mantenerlas en
+paralelo. Se asume a conciencia: la alternativa era no tener ninguna comprobación de
+los índices hasta llegar a una máquina con GPU, y para entonces el error ya está
+commiteado.
+
+Lo que no cubre, y por eso sigue haciendo falta la paridad en el dispositivo: carreras
+entre hilos, coherencia real de la memoria compartida, alineación de las lecturas
+`float4` y, evidentemente, el rendimiento.
 
 Cómo medirlo y qué mirar: **[docs/PROFILING.md](PROFILING.md)**.
 

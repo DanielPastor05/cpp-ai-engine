@@ -109,23 +109,39 @@ jobs:
 
   cuda:
     name: Linux / CUDA (solo compilacion)
-    # ubuntu-22.04 trae gcc-11, que es un compilador de host que acepta el nvcc
-    # de los repositorios. En 24.04 el gcc por defecto es mas nuevo de lo que
-    # ese nvcc soporta y la compilacion falla antes de empezar.
+    # ubuntu-22.04 trae gcc-11, que es un compilador de host que nvcc acepta.
+    # En 24.04 el gcc por defecto es mas nuevo de lo que soporta y la
+    # compilacion falla antes de empezar.
     runs-on: ubuntu-22.04
+    # Sin limite, un mirror de apt colgado deja el trabajo corriendo horas. Ha
+    # pasado: la primera version de este job usaba el paquete monolitico de los
+    # repositorios de Ubuntu y se quedaba clavado descargando.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      # El runner no tiene GPU, asi que las pruebas de paridad no se pueden
-      # ejecutar aqui. Compilar si: es lo que detecta un error en un kernel
-      # antes de que llegue a la maquina que si tiene tarjeta.
+      # El runner no tiene GPU, asi que la paridad no se puede ejecutar aqui.
+      # Compilar si: es lo que detecta un error de sintaxis en un kernel antes
+      # de que llegue a la maquina que si tiene tarjeta. Los indices, que es el
+      # otro fallo probable, los cubre tests/test_cuda_indexing.cpp en CPU.
+      #
+      # Del toolkit solo hacen falta dos paquetes: el compilador y las
+      # cabeceras del runtime. El metapaquete nvidia-cuda-toolkit de Ubuntu son
+      # dos o tres gigas de perfilador, ejemplos y bibliotecas que aqui no se
+      # usan para nada.
       - name: Instalar nvcc
-        run: sudo apt-get update && sudo apt-get install -y nvidia-cuda-toolkit
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cuda-nvcc-12-4 cuda-cudart-dev-12-4
+          echo "/usr/local/cuda-12.4/bin" >> "$GITHUB_PATH"
 
       - name: Configurar con el backend CUDA
         run: >
           cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
           -DENGINE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86
+          -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.4/bin/nvcc
 
       - name: Compilar
         run: cmake --build build --parallel

@@ -11,6 +11,7 @@ int main() {
     run_conv_tests();
     run_transformer_tests();
     run_reference_tests();
+    run_cuda_indexing_tests();
     run_cuda_parity_tests();
 
     std::cout << "\n====================================================\n";

@@ -131,5 +131,6 @@ void run_conv_tests();
 void run_transformer_tests();
 void run_reference_tests();
 void run_cuda_parity_tests();
+void run_cuda_indexing_tests();
 
 #endif // ENGINE_TEST_SUPPORT_HPP
