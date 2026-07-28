@@ -44,10 +44,7 @@ constexpr size_t kMatmulParallelFloor = 1u << 20;
 // sin que el coste de pedir el siguiente trozo pese.
 constexpr size_t kMatmulChunkWork = 1u << 16;
 
-// Una operación elemento a elemento está limitada por el ancho de banda de
-// memoria, no por el cálculo, así que escala peor y necesita más trabajo para
-// merecer la pena: medido, 1,77x con cuatro hilos frente a 3,08x del producto.
-constexpr size_t kElementsPerThread = 1u << 17;
+using parallel::kElementsPerThread;
 
 // Devuelve 0 —«ejecuta en línea»— cuando el producto no da para repartir.
 inline size_t matmul_rows_per_thread(size_t rows, size_t K, size_t N) {

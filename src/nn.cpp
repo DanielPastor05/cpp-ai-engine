@@ -1,5 +1,7 @@
 #include "engine/nn.hpp"
 #include "engine/autograd.hpp"
+#include "engine/detail/restrict.hpp"
+#include "engine/parallel.hpp"
 #include "engine/random.hpp"
 
 #include <algorithm>
@@ -33,10 +35,14 @@ Tensor unary_with_grad(const Tensor& input, Tensor out, Derivative derivative) {
     out.get_impl()->backward_fn =
         [input_copy, saved, derivative](const Tensor& grad_out) mutable {
             Tensor dX(input_copy.shape(), 0.0f, false);
-            for (size_t i = 0; i < dX.size(); ++i) {
-                dX.data()[i] = grad_out.data()[i] *
-                               derivative(input_copy.data()[i], saved.data()[i]);
-            }
+            const size_t n = dX.size();
+            const float* ENGINE_RESTRICT g = grad_out.data().data();
+            const float* ENGINE_RESTRICT x = input_copy.data().data();
+            const float* ENGINE_RESTRICT y = saved.data().data();
+            float* ENGINE_RESTRICT dx = dX.data().data();
+            parallel::parallel_for(n, parallel::kElementsPerThread, [&](size_t from, size_t to) {
+                for (size_t i = from; i < to; ++i) dx[i] = g[i] * derivative(x[i], y[i]);
+            });
             input_copy.add_grad(dX);
         };
     return out;
@@ -147,28 +153,41 @@ Tensor Softmax::forward(const Tensor& input) {
 Tensor Sigmoid::forward(const Tensor& input) {
     // sigma(x) = 1 / (1 + e^-x), calculado de forma estable en ambos extremos
     Tensor out(input.shape(), 0.0f, false);
-    for (size_t i = 0; i < input.size(); ++i) {
-        const float x = input.data()[i];
-        out.data()[i] = (x >= 0.0f) ? 1.0f / (1.0f + std::exp(-x))
-                                    : std::exp(x) / (1.0f + std::exp(x));
-    }
-    return unary_with_grad(input, out, [](float, float y) { return y * (1.0f - y); });
+    const size_t n = input.size();
+    const float* ENGINE_RESTRICT x = input.data().data();
+    float* ENGINE_RESTRICT y = out.data().data();
+    parallel::parallel_for(n, parallel::kElementsPerThread, [&](size_t from, size_t to) {
+        for (size_t i = from; i < to; ++i) {
+            y[i] = (x[i] >= 0.0f) ? 1.0f / (1.0f + std::exp(-x[i]))
+                                  : std::exp(x[i]) / (1.0f + std::exp(x[i]));
+        }
+    });
+    return unary_with_grad(input, out, [](float, float v) { return v * (1.0f - v); });
 }
 
 Tensor Tanh::forward(const Tensor& input) {
     Tensor out(input.shape(), 0.0f, false);
-    for (size_t i = 0; i < input.size(); ++i) out.data()[i] = std::tanh(input.data()[i]);
-    return unary_with_grad(input, out, [](float, float y) { return 1.0f - y * y; });
+    const size_t n = input.size();
+    const float* ENGINE_RESTRICT x = input.data().data();
+    float* ENGINE_RESTRICT y = out.data().data();
+    parallel::parallel_for(n, parallel::kElementsPerThread, [&](size_t from, size_t to) {
+        for (size_t i = from; i < to; ++i) y[i] = std::tanh(x[i]);
+    });
+    return unary_with_grad(input, out, [](float, float v) { return 1.0f - v * v; });
 }
 
 Tensor GELU::forward(const Tensor& input) {
     // 0.5x(1 + tanh(sqrt(2/pi)(x + 0.044715x^3)))
     Tensor out(input.shape(), 0.0f, false);
-    for (size_t i = 0; i < input.size(); ++i) {
-        const float x = input.data()[i];
-        out.data()[i] =
-            0.5f * x * (1.0f + std::tanh(kGeluAlpha * (x + kGeluBeta * x * x * x)));
-    }
+    const size_t n = input.size();
+    const float* ENGINE_RESTRICT x = input.data().data();
+    float* ENGINE_RESTRICT y = out.data().data();
+    parallel::parallel_for(n, parallel::kElementsPerThread, [&](size_t from, size_t to) {
+        for (size_t i = from; i < to; ++i) {
+            y[i] = 0.5f * x[i] *
+                   (1.0f + std::tanh(kGeluAlpha * (x[i] + kGeluBeta * x[i] * x[i] * x[i])));
+        }
+    });
     return unary_with_grad(input, out, [](float x, float) {
         const float inner = kGeluAlpha * (x + kGeluBeta * x * x * x);
         const float t = std::tanh(inner);
@@ -195,9 +214,19 @@ Tensor Dropout::forward(const Tensor& input) {
     // tiene que anular exactamente las mismas posiciones.
     auto mask = std::make_shared<std::vector<float>>(input.size(), 0.0f);
     Tensor out(input.shape(), 0.0f, false);
-    for (size_t i = 0; i < input.size(); ++i) {
+    // Este bucle NO se reparte, aunque sea el mismo elemento a elemento que las
+    // activaciones de arriba. global_rng() es un mt19937 compartido y sin
+    // sincronizar: pasarlo por parallel_for mete una carrera silenciosa, y
+    // encima el resultado dejaría de ser reproducible, porque cada hilo
+    // consumiría números en un orden que depende de cómo caiga el reparto.
+    // Para paralelizarlo haría falta un generador por hilo sembrado de forma
+    // determinista, no un parallel_for alrededor.
+    const size_t n = input.size();
+    const float* ENGINE_RESTRICT x = input.data().data();
+    float* ENGINE_RESTRICT y = out.data().data();
+    for (size_t i = 0; i < n; ++i) {
         (*mask)[i] = alive(global_rng()) ? scale : 0.0f;
-        out.data()[i] = input.data()[i] * (*mask)[i];
+        y[i] = x[i] * (*mask)[i];
     }
 
     if (!autograd::grad_enabled() || !input.requires_grad()) return out;
@@ -315,6 +344,12 @@ Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targe
     Tensor probs(logits.shape(), 0.0f, false);
     float total_loss = 0.0f;
 
+    // En serie por dos motivos, y basta cualquiera de los dos: total_loss es una
+    // reducción sobre las filas, y el bucle lanza una excepción cuando una
+    // etiqueta se sale de rango —cruzar una excepción desde dentro de una región
+    // paralela es otro problema entero—. El backward, que no tiene ni lo uno ni
+    // lo otro, sí se reparte.
+    // ponytail: en serie; separar validación y reducción si el perfil lo pide.
     for (size_t i = 0; i < N; ++i) {
         if (targets[i] >= C) {
             throw std::out_of_range("Etiqueta " + std::to_string(targets[i]) +
@@ -350,13 +385,21 @@ Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targe
                 // dL/dlogits = (softmax(logits) - one_hot(y)) / N
                 const float scale = grad_out.data()[0] / static_cast<float>(N);
                 Tensor dX(logits_copy.shape(), 0.0f, false);
-                for (size_t i = 0; i < N; ++i) {
-                    for (size_t j = 0; j < C; ++j) {
-                        float g = probs.data()[i * C + j];
-                        if (j == targets[i]) g -= 1.0f;
-                        dX.data()[i * C + j] = g * scale;
+                // Aquí sí se reparte, al revés que el forward: esto es una
+                // escritura por elemento y no acumula nada.
+                const float* ENGINE_RESTRICT pr = probs.data().data();
+                float* ENGINE_RESTRICT dx = dX.data().data();
+                const size_t rows_per_thread =
+                    std::max<size_t>(1, parallel::kElementsPerThread / std::max<size_t>(1, C));
+                parallel::parallel_for(N, rows_per_thread, [&](size_t from, size_t to) {
+                    for (size_t i = from; i < to; ++i) {
+                        for (size_t j = 0; j < C; ++j) {
+                            float g = pr[i * C + j];
+                            if (j == targets[i]) g -= 1.0f;
+                            dx[i * C + j] = g * scale;
+                        }
                     }
-                }
+                });
                 logits_copy.add_grad(dX);
             };
     }

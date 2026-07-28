@@ -391,8 +391,19 @@ Tensor MaxPool2d::forward(const Tensor& input) {
     const std::vector<float>& src = input.data();
     std::vector<float>& dst = out.data();
 
-    for (size_t n = 0; n < N; ++n) {
-        for (size_t c = 0; c < C; ++c) {
+    // Era la única operación de este fichero sin repartir, teniendo im2col y
+    // col2im paralelos justo encima. Cada plano (n, c) escribe su propio trozo
+    // de la salida y no lee nada de los demás, así que el reparto por planos no
+    // cruza ninguna frontera y da el mismo resultado con uno o con ocho hilos.
+    const size_t planes = N * C;
+    const size_t work_per_plane = oH * oW * window_.kernel_h * window_.kernel_w;
+    const size_t planes_per_thread =
+        std::max<size_t>(1, parallel::kElementsPerThread / std::max<size_t>(1, work_per_plane));
+
+    parallel::parallel_for(planes, planes_per_thread, [&](size_t from, size_t to) {
+        for (size_t p = from; p < to; ++p) {
+            const size_t n = p / C;
+            const size_t c = p % C;
             for (size_t oh = 0; oh < oH; ++oh) {
                 for (size_t ow = 0; ow < oW; ++ow) {
                     float best = -std::numeric_limits<float>::infinity();
@@ -425,7 +436,7 @@ Tensor MaxPool2d::forward(const Tensor& input) {
                 }
             }
         }
-    }
+    });
 
     if (!autograd::grad_enabled() || !input.requires_grad()) return out;
 

@@ -20,6 +20,16 @@ namespace parallel {
 // que las pruebas comprueban.
 // ---------------------------------------------------------
 
+// Umbral de reparto para un bucle elemento a elemento.
+//
+// Una operación así está limitada por el ancho de banda de memoria y no por el
+// cálculo, así que escala peor y necesita más trabajo para merecer la pena:
+// medido, 1,77x con cuatro hilos frente a 3,08x del producto de matrices.
+//
+// Vive aquí y no en cada .cpp porque lo usan tensor.cpp, nn.cpp y
+// transformer.cpp: repetido, se ajustaría en un sitio y no en los otros dos.
+constexpr size_t kElementsPerThread = 1u << 17;
+
 // Número de hilos en uso. Por defecto, los núcleos de la máquina; se puede
 // fijar con la variable de entorno ENGINE_NUM_THREADS.
 size_t num_threads();

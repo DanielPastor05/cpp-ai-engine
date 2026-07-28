@@ -1,5 +1,7 @@
 #include "engine/optim.hpp"
 #include "engine/autograd.hpp"
+#include "engine/detail/restrict.hpp"
+#include "engine/parallel.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -52,16 +54,24 @@ void SGD::step() {
         const std::vector<float>& g = grad_tensor.data();
         std::vector<float>& w = p.data();
 
-        for (size_t j = 0; j < w.size(); ++j) {
-            float grad = g[j];
-            if (weight_decay_ != 0.0f) grad += weight_decay_ * w[j];
+        // Cada peso se actualiza con su propio gradiente y su propia velocidad:
+        // no hay ninguna reducción, así que el reparto no cambia el resultado.
+        const float* ENGINE_RESTRICT gp = g.data();
+        float* ENGINE_RESTRICT wp = w.data();
+        float* ENGINE_RESTRICT vp = momentum_ != 0.0f ? velocity_[i].data() : nullptr;
+        parallel::parallel_for(w.size(), parallel::kElementsPerThread,
+                               [&](size_t from, size_t to) {
+            for (size_t j = from; j < to; ++j) {
+                float grad = gp[j];
+                if (weight_decay_ != 0.0f) grad += weight_decay_ * wp[j];
 
-            if (momentum_ != 0.0f) {
-                velocity_[i][j] = momentum_ * velocity_[i][j] + grad;
-                grad = velocity_[i][j];
+                if (vp != nullptr) {
+                    vp[j] = momentum_ * vp[j] + grad;
+                    grad = vp[j];
+                }
+                wp[j] -= lr_ * grad;
             }
-            w[j] -= lr_ * grad;
-        }
+        });
     }
 }
 
@@ -107,18 +117,27 @@ void Adam::step() {
         const std::vector<float>& g = grad_tensor.data();
         std::vector<float>& w = p.data();
 
-        for (size_t j = 0; j < w.size(); ++j) {
-            float grad = g[j];
-            if (weight_decay_ != 0.0f) grad += weight_decay_ * w[j];
+        // Igual que en SGD: cada peso lleva su propio momento y su propia
+        // varianza, y no se cruza nada entre índices.
+        const float* ENGINE_RESTRICT gp = g.data();
+        float* ENGINE_RESTRICT wp = w.data();
+        float* ENGINE_RESTRICT mp = m_[i].data();
+        float* ENGINE_RESTRICT vp = v_[i].data();
+        parallel::parallel_for(w.size(), parallel::kElementsPerThread,
+                               [&](size_t from, size_t to) {
+            for (size_t j = from; j < to; ++j) {
+                float grad = gp[j];
+                if (weight_decay_ != 0.0f) grad += weight_decay_ * wp[j];
 
-            m_[i][j] = beta1_ * m_[i][j] + (1.0f - beta1_) * grad;
-            v_[i][j] = beta2_ * v_[i][j] + (1.0f - beta2_) * grad * grad;
+                mp[j] = beta1_ * mp[j] + (1.0f - beta1_) * grad;
+                vp[j] = beta2_ * vp[j] + (1.0f - beta2_) * grad * grad;
 
-            const float m_hat = m_[i][j] / bias_c1;
-            const float v_hat = v_[i][j] / bias_c2;
+                const float m_hat = mp[j] / bias_c1;
+                const float v_hat = vp[j] / bias_c2;
 
-            w[j] -= lr_ * m_hat / (std::sqrt(v_hat) + eps_);
-        }
+                wp[j] -= lr_ * m_hat / (std::sqrt(v_hat) + eps_);
+            }
+        });
     }
 }
 

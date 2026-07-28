@@ -1,5 +1,7 @@
 #include "engine/transformer.hpp"
 #include "engine/autograd.hpp"
+#include "engine/detail/restrict.hpp"
+#include "engine/parallel.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -46,29 +48,40 @@ Tensor LayerNorm::forward(const Tensor& input) {
     const std::vector<float>& g = gamma_.data();
     const std::vector<float>& b = beta_.data();
 
-    for (size_t i = 0; i < rows; ++i) {
-        const float* row = x.data() + i * D;
+    // Cada fila se normaliza con su propia media y varianza, así que no hay
+    // ninguna reducción que cruce la frontera entre trozos: el reparto por filas
+    // da el mismo resultado bit a bit con uno o con ocho hilos.
+    float* ENGINE_RESTRICT xhat_out = xhat.data().data();
+    float* ENGINE_RESTRICT out_data = out.data().data();
+    // El umbral se cuenta en filas, pero el trabajo está en los elementos: una
+    // fila son D valores y tres pasadas sobre ellos.
+    const size_t rows_per_thread =
+        std::max<size_t>(1, parallel::kElementsPerThread / std::max<size_t>(1, D));
+    parallel::parallel_for(rows, rows_per_thread, [&](size_t from, size_t to) {
+        for (size_t i = from; i < to; ++i) {
+            const float* row = x.data() + i * D;
 
-        float mean = 0.0f;
-        for (size_t j = 0; j < D; ++j) mean += row[j];
-        mean *= inv_d;
+            float mean = 0.0f;
+            for (size_t j = 0; j < D; ++j) mean += row[j];
+            mean *= inv_d;
 
-        float var = 0.0f;
-        for (size_t j = 0; j < D; ++j) {
-            const float d = row[j] - mean;
-            var += d * d;
+            float var = 0.0f;
+            for (size_t j = 0; j < D; ++j) {
+                const float d = row[j] - mean;
+                var += d * d;
+            }
+            var *= inv_d;
+
+            const float inv = 1.0f / std::sqrt(var + eps_);
+            inv_std[i] = inv;
+
+            for (size_t j = 0; j < D; ++j) {
+                const float h = (row[j] - mean) * inv;
+                xhat_out[i * D + j] = h;
+                out_data[i * D + j] = g[j] * h + b[j];
+            }
         }
-        var *= inv_d;
-
-        const float inv = 1.0f / std::sqrt(var + eps_);
-        inv_std[i] = inv;
-
-        for (size_t j = 0; j < D; ++j) {
-            const float h = (row[j] - mean) * inv;
-            xhat.data()[i * D + j] = h;
-            out.data()[i * D + j] = g[j] * h + b[j];
-        }
-    }
+    });
 
     const bool req_g = autograd::grad_enabled() &&
                        (input.requires_grad() || gamma_.requires_grad() || beta_.requires_grad());
@@ -91,6 +104,14 @@ Tensor LayerNorm::forward(const Tensor& input) {
             Tensor dbeta(beta_copy.shape(), 0.0f, false);
             Tensor dX(input_copy.shape(), 0.0f, false);
 
+            // Este bucle se queda en serie a propósito, al revés que el del
+            // forward. dX sí es independiente por filas, pero dgamma y dbeta
+            // acumulan **a través** de ellas: repartirlo pediría un parcial por
+            // hilo y una combinación en orden fijo para no perder la identidad
+            // bit a bit que comprueban las pruebas, y separarlo en dos pasadas
+            // costaría releer dy y xhat enteros. Ninguna de las dos se ha
+            // medido, así que no se elige a ciegas.
+            // ponytail: reducción en serie; parciales por hilo si el perfil la señala.
             for (size_t i = 0; i < rows; ++i) {
                 // La media y la varianza dependen de todo el vector, así que la
                 // derivada de cada componente arrastra dos términos de correción:
