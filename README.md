@@ -259,8 +259,10 @@ ctest --test-dir build-cuda --output-on-failure   # adds the CPU/GPU parity case
 ```
 
 `matmul`, the element-wise operators, the scalar ones, `transpose` / `permute`,
-per-axis sums, ReLU and softmax dispatch to hand-written kernels. Everything else
-stays on the CPU, and [docs/CUDA.md](docs/CUDA.md) says which and why.
+per-axis sums, ReLU, softmax, `im2col` / `col2im` and `MaxPool2d` dispatch to
+hand-written kernels — enough that a CNN's `conv → relu → pool → conv` chain
+stays on the device end to end. Everything else stays on the CPU, and
+[docs/CUDA.md](docs/CUDA.md) says which and why.
 
 **The kernel list is a residency decision, not a checklist.** An operation
 without one downloads its input and forces the next one to upload it again, so

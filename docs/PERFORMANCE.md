@@ -154,12 +154,57 @@ End to end on the flagship example — full MNIST, 60 000 images, six epochs:
 The per-epoch losses are identical to the last digit across both runs, which is
 the determinism guarantee holding in practice rather than in a unit test.
 
-`Conv2d` had to be parallelised separately: it has its own hand-written loop and
-does not go through `Tensor::matmul`. The first threaded build left it alone and
-MNIST gained **nothing** — 589 s against 587 s — because the convolutions
-dominate that workload. Its backward pass is now split into two passes over
-disjoint axes (`m` for `dcols`, output channel for `dW` and `db`) rather than one
-pass with shared accumulators, which keeps it both race-free and deterministic.
+`Conv2d` had to be parallelised separately, because at the time it had its own
+hand-written loop and did not go through `Tensor::matmul`. The first threaded
+build left it alone and MNIST gained **nothing** — 589 s against 587 s — because
+the convolutions dominate that workload.
+
+### Composing `Conv2d` out of tensor operations, and what it cost
+
+That hand-written loop is gone. `Conv2d` is now `im2col` followed by
+`Tensor::matmul`, a broadcast bias, a permute and two reshapes — every one of
+which already carries its own derivative and its own kernel. The layer's
+hand-written `backward_fn` disappeared with it: autograd derives all three
+gradients by composition. Roughly ninety lines deleted.
+
+The point was to let the CUDA backend see convolutions at all, and it does. On
+the bench shape (`Conv2d(8→16, 3×3)`, batch 16 of 16×16, forward + backward):
+
+| | CPU | GPU |
+|---|---|---|
+| hand-written loop | 5.12 ms | 5.14 ms — the backend never saw it |
+| composed | 6.78 ms | **2.85 ms** |
+
+**1.8× against the original**, and the CNN chain `conv → relu → pool → conv` now
+stays resident on the device end to end, which needed `im2col`, `col2im` and
+`MaxPool2d` to get kernels of their own.
+
+The honest other half: composition does **five passes over the output buffer
+where the hand-written version did one**, and that is not free. Measured on the
+MNIST subset shipped in the repo (2 000 images, 12 epochs):
+
+| | Training |
+|---|---|
+| hand-written, CPU | **18.4 s** |
+| hand-written, CUDA | 19.8 s |
+| composed, CPU | 25.8 s (**+40%**) |
+| composed, CUDA, default thresholds | 24.3 s |
+| composed, CUDA, `ENGINE_CUDA_MIN_ELEMENTS=65536` | **19.5 s** |
+
+So the GPU build comes out slightly ahead and the CPU-only build pays 40%. The
+cost is concentrated in `reshape`, which still copies the whole buffer to change
+nothing but the shape: two of those five passes are pure metadata changes. A
+`Storage` with shared buffers and per-view shapes would remove them, and that is
+the next real piece of work rather than a micro-optimisation.
+
+Two things measured along the way that did **not** work, recorded so nobody
+repeats them. Replacing that `permute({0,2,1})` with `transpose()` — identical
+semantics on a 3D tensor, and a specialised loop instead of per-element index
+arithmetic — came out **5% slower**: it writes with a stride where permute writes
+contiguously, and at this size the memory access pattern outweighs the
+arithmetic. And giving the matrix product a kernel while `im2col` still ran on
+the host was a **loss**, because the columns are `kH*kW` times the input and
+uploading them costs more than multiplying them: 24.6 s against 19.0 s.
 
 ### The thresholds matter more than the parallelism
 

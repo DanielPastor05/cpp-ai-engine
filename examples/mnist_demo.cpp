@@ -107,13 +107,14 @@ int main() {
     std::cout << "  MNIST: la CNN del motor sobre datos reales        \n";
     std::cout << "====================================================\n\n";
 
-    // Las capas densas se van a la GPU si el motor se compiló con CUDA; las
-    // convoluciones no, porque Conv2d tiene su propio bucle y no pasa por
-    // Tensor::matmul. Conviene que quien lea el tiempo sepa qué se ejecutó.
+    // Conviene que quien lea el tiempo sepa qué se ejecutó y dónde. Las
+    // convoluciones ya pasan por Tensor::matmul, así que la cadena
+    // conv -> relu -> pool -> conv se queda entera en la tarjeta; la pérdida y
+    // el optimizador siguen en CPU y la cortan una vez por paso.
     if (engine::cuda::available()) {
         const engine::cuda::DeviceInfo gpu = engine::cuda::device_info();
         std::cout << "Backend: CUDA sobre " << gpu.name << " (cc " << gpu.compute_major
-                  << "." << gpu.compute_minor << "); las convoluciones siguen en CPU.\n";
+                  << "." << gpu.compute_minor << "), convoluciones incluidas.\n";
     } else {
         std::cout << "Backend: CPU, " << engine::parallel::num_threads() << " hilo(s).\n";
     }

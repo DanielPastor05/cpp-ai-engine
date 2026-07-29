@@ -731,15 +731,20 @@ Tensor Tensor::transpose() const {
                             out_shape.data(), src_strides.data(), nd)) {
         const float* ENGINE_RESTRICT src_base = data().data();
         float* ENGINE_RESTRICT dst_base = res.data().data();
-        for (size_t b = 0; b < batch; ++b) {
-            const float* src = src_base + b * rows * cols;
-            float* dst = dst_base + b * rows * cols;
-            for (size_t i = 0; i < rows; ++i) {
-                for (size_t j = 0; j < cols; ++j) {
-                    dst[j * rows + i] = src[i * cols + j];
-                }
+        // Se reparte por fila de origen: cada una escribe una columna entera del
+        // destino, y ninguna toca lo de las demás. El umbral se cuenta en filas
+        // porque el trabajo de cada una son sus `cols` elementos.
+        const size_t rows_per_thread =
+            std::max<size_t>(1, kElementsPerThread / std::max<size_t>(1, cols));
+        parallel::parallel_for(batch * rows, rows_per_thread, [&](size_t from, size_t to) {
+            for (size_t r = from; r < to; ++r) {
+                const size_t b = r / rows;
+                const size_t i = r % rows;
+                const float* src = src_base + b * rows * cols + i * cols;
+                float* dst = dst_base + b * rows * cols + i;
+                for (size_t j = 0; j < cols; ++j) dst[j * rows] = src[j];
             }
-        }
+        });
     }
 
     if (req_g) {
@@ -783,17 +788,33 @@ Tensor Tensor::permute(const std::vector<size_t>& order) const {
                             out_shape.data(), src_strides.data(), nd)) {
         const float* ENGINE_RESTRICT src_data = data().data();
         float* ENGINE_RESTRICT dst_data = res.data().data();
-        std::vector<size_t> idx(nd, 0);
-        for (size_t flat = 0; flat < size(); ++flat) {
-            size_t src = 0;
-            for (size_t i = 0; i < nd; ++i) src += idx[i] * src_strides[i];
-            dst_data[flat] = src_data[src];
-
+        // El contador con acarreo es barato por elemento pero encadena cada uno
+        // con el anterior, y esa dependencia es la que obligaba a recorrerlo en
+        // serie. Basta con sembrarlo: cada trozo calcula las coordenadas de su
+        // primer elemento —una división por eje, pagada una vez por trozo— y a
+        // partir de ahí sigue con el acarreo de siempre.
+        //
+        // No se notaba mientras permute era cosa de la atención, con tensores de
+        // unos miles de elementos. Conv2d permuta la salida entera de cada capa.
+        parallel::parallel_for(size(), kElementsPerThread, [&](size_t from, size_t to) {
+            std::vector<size_t> idx(nd, 0);
+            size_t rem = from;
             for (size_t i = nd; i-- > 0;) {
-                if (++idx[i] < out_shape[i]) break;
-                idx[i] = 0;
+                idx[i] = rem % out_shape[i];
+                rem /= out_shape[i];
             }
-        }
+
+            for (size_t flat = from; flat < to; ++flat) {
+                size_t src = 0;
+                for (size_t i = 0; i < nd; ++i) src += idx[i] * src_strides[i];
+                dst_data[flat] = src_data[src];
+
+                for (size_t i = nd; i-- > 0;) {
+                    if (++idx[i] < out_shape[i]) break;
+                    idx[i] = 0;
+                }
+            }
+        });
     }
 
     if (req_g) {

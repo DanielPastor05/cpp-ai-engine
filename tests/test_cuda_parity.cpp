@@ -410,6 +410,69 @@ void run_cuda_parity_tests() {
                        "una segunda operacion no resube operandos ya residentes");
     }
 
+    // --- una convolucion entera ---
+    //
+    // Conv2d es ahora im2col, un producto, la suma difundida del sesgo, una
+    // permutacion y dos reshape, y las seis tienen kernel: es la cadena mas
+    // larga que se comprueba aqui. Los indices de im2col y col2im son ademas los
+    // mas enrevesados del backend —relleno, paso y ventanas solapadas—, y un
+    // error ahi no da un fallo, da otro numero.
+    {
+        engine::manual_seed(99);
+        nn::Conv2d conv(3, 5, nn::Window2d(3, 3, 1, 1));
+        Tensor images = Tensor::randn({2, 3, 9, 9}, 0.0f, 1.0f, true);
+
+        compare("Conv2d 3->5 (k3, s1, p1): salida", [&] { return conv(images); }, 1e-4f);
+
+        compare("Conv2d: gradiente de la entrada", [&] {
+            conv.zero_grad();
+            images.zero_grad();
+            conv(images).sum().backward();
+            return images.grad();
+        }, 1e-4f);
+
+        compare("Conv2d: gradiente del kernel", [&] {
+            conv.zero_grad();
+            images.zero_grad();
+            conv(images).sum().backward();
+            return conv.weight().grad();
+        }, 1e-4f);
+
+        // Con paso 2 y sin relleno las ventanas dejan de solaparse y aparecen
+        // pixeles que no cubre ninguna. Es justo donde falla un col2im con el
+        // rango de ventanas mal despejado: el caso de paso 1 lo perdonaria.
+        nn::Conv2d strided(2, 3, nn::Window2d(3, 3, 2, 0));
+        Tensor small = Tensor::randn({2, 2, 8, 8}, 0.0f, 1.0f, true);
+
+        compare("Conv2d con paso 2 y sin relleno: salida",
+                [&] { return strided(small); }, 1e-4f);
+        compare("Conv2d con paso 2: gradiente de la entrada", [&] {
+            strided.zero_grad();
+            small.zero_grad();
+            strided(small).sum().backward();
+            return small.grad();
+        }, 1e-4f);
+
+        // MaxPool2d con ventanas **solapadas** (kernel 3, paso 2): dos ventanas
+        // pueden elegir el mismo pixel, y ese es el caso que obliga a acumular
+        // en el gradiente. Es tambien donde un backward escrito con atomicas
+        // dejaria de dar el mismo resultado dos veces seguidas.
+        nn::MaxPool2d pool(nn::Window2d(3, 3, 2, 0));
+        Tensor plane = Tensor::randn({2, 3, 9, 9}, 0.0f, 1.0f, true);
+
+        compare("MaxPool2d 3x3 paso 2 (solapado): salida", [&] { return pool(plane); });
+        compare("MaxPool2d solapado: gradiente de la entrada", [&] {
+            plane.zero_grad();
+            Tensor y = pool(plane);
+            // Gradiente aguas arriba no uniforme: con todos los pesos iguales,
+            // un reparto equivocado se cancelaria solo y la prueba pasaria.
+            Tensor w = Tensor::zeros(y.shape());
+            for (size_t i = 0; i < w.size(); ++i) w.data()[i] = 0.1f * static_cast<float>(i % 7);
+            (y * w).sum().backward();
+            return plane.grad();
+        });
+    }
+
     // --- reshape se queda en el dispositivo ---
     //
     // reshape copia el bufer entero por definicion —no es una vista—, pero

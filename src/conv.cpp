@@ -1,5 +1,7 @@
 #include "engine/conv.hpp"
 #include "engine/autograd.hpp"
+#include "engine/detail/cuda_ops.hpp"
+#include "engine/detail/restrict.hpp"
 #include "engine/parallel.hpp"
 
 #include <limits>
@@ -69,6 +71,15 @@ Tensor im2col(const Tensor& input, const Window2d& window) {
     const size_t K = C * kH * kW;
 
     Tensor cols({N * oH * oW, K}, 0.0f, false);
+
+    // Primero se ofrece al dispositivo. Si se hace cargo, las columnas se quedan
+    // arriba y el producto que viene detrás las lee sin que crucen el PCIe: son
+    // kH*kW veces la entrada, así que subirlas cuesta más que multiplicarlas.
+    if (cuda::ops::im2col(input.get_impl()->storage, cols.get_impl()->storage,
+                          {N, C, H, W, kH, kW, window.stride, window.padding, oH, oW})) {
+        return cols;
+    }
+
     const std::vector<float>& src = input.data();
     std::vector<float>& dst = cols.data();
 
@@ -129,6 +140,12 @@ Tensor col2im(const Tensor& cols, const std::vector<size_t>& input_shape, const 
     }
 
     Tensor out(input_shape, 0.0f, false);
+
+    if (cuda::ops::col2im(cols.get_impl()->storage, out.get_impl()->storage,
+                          {N, C, H, W, kH, kW, window.stride, window.padding, oH, oW})) {
+        return out;
+    }
+
     const std::vector<float>& src = cols.data();
     std::vector<float>& dst = out.data();
 
@@ -171,6 +188,36 @@ Tensor col2im(const Tensor& cols, const std::vector<size_t>& input_shape, const 
 // Conv2d
 // ---------------------------------------------------------
 
+namespace {
+
+// im2col con su nodo de autograd colgado.
+//
+// Es la única derivada de esta capa que sigue escrita a mano, y cabe en una
+// línea porque su adjunto ya existía: col2im reparte el gradiente de cada
+// ventana a los píxeles que la formaron y suma los solapes, que es exactamente
+// lo que la hace correcta.
+//
+// La función pública im2col() se queda como está: las pruebas la usan suelta y
+// no tiene por qué construir grafo.
+Tensor im2col_node(const Tensor& input, const Window2d& window) {
+    Tensor cols = im2col(input, window);
+    if (!autograd::grad_enabled() || !input.requires_grad()) return cols;
+
+    cols.set_requires_grad(true);
+    cols.get_impl()->parents = { input.get_impl() };
+
+    Tensor input_copy = input;
+    const std::vector<size_t> in_shape = input.shape();
+    const Window2d win = window;
+
+    cols.get_impl()->backward_fn = [input_copy, in_shape, win](const Tensor& grad_out) mutable {
+        input_copy.add_grad(col2im(grad_out, in_shape, win));
+    };
+    return cols;
+}
+
+} // namespace
+
 Conv2d::Conv2d(size_t in_channels, size_t out_channels, const Window2d& window, bool use_bias)
     : in_channels_(in_channels), out_channels_(out_channels), window_(window), use_bias_(use_bias) {
     if (in_channels == 0 || out_channels == 0) {
@@ -209,135 +256,45 @@ Tensor Conv2d::forward(const Tensor& input) {
     const size_t oH = window_.out_h(H);
     const size_t oW = window_.out_w(W);
     const size_t spatial = oH * oW;
-    const size_t M = N * spatial;
     const size_t K = in_channels_ * window_.kernel_h * window_.kernel_w;
 
-    // im2col reduce la convolución a un producto matricial (M, K) x (K, outC).
-    // Los pesos ya están guardados como outC filas contiguas de K valores, así
-    // que el producto se hace leyendo cada fila directamente.
+    // im2col reduce la convolución a un producto matricial, y a partir de ahí
+    // no hay nada que escribir a mano: cada operación de las de abajo trae su
+    // propia derivada y su propio kernel, así que la convolución entera —ida y
+    // vuelta— se va a la GPU y el paso hacia atrás lo deduce autograd.
     //
-    // Las columnas NO se guardan para el backward: ocupan kH*kW veces la
-    // entrada (con un kernel 3x3, nueve veces), así que sale mucho más barato
-    // guardar la entrada y recalcularlas. Es el mismo compromiso que hace
-    // PyTorch: un 5% más de tiempo a cambio de un orden de magnitud de memoria.
-    Tensor cols = im2col(input, window_);
+    // Antes esto llevaba un producto y un backward_fn propios, con dos pasadas
+    // paralelas sobre ejes disjuntos para no tener carreras. Funcionaba, pero
+    // por no pasar por Tensor::matmul el backend no lo veía nunca: el motor
+    // tenía cuatro kernels de producto afinados y las convoluciones no tocaban
+    // ninguno. Es lo que hacía que MNIST no ganara nada con la tarjeta.
+    //
+    // Hay un compromiso que esto invierte, y conviene decirlo en vez de dejar
+    // que se descubra: la versión anterior NO guardaba las columnas para el
+    // backward —ocupan kH*kW veces la entrada— y las recalculaba con un segundo
+    // im2col, cambiando un 5% de tiempo por un orden de magnitud de memoria. El
+    // backward de matmul captura `cols`, así que ahora sí quedan vivas entre la
+    // ida y la vuelta. Es inevitable al componer en lugar de fusionar a mano, y
+    // es lo que hace cualquier framework cuando compone; a cambio desaparece el
+    // backward propio entero y la capa entra en la GPU.
+    Tensor cols = im2col_node(input, window_);   // (N*oH*oW, K)
 
-    Tensor out({N, out_channels_, oH, oW}, 0.0f, false);
-    {
-        const std::vector<float>& c = cols.data();
-        const std::vector<float>& w = weight_.data();
-        const std::vector<float>& b = bias_.data();
-        std::vector<float>& o = out.data();
+    // weight_ ya guarda outC filas contiguas de K valores, así que verlo como
+    // (outC, K) es reinterpretarlo y no reordenarlo; la transposición es la que
+    // lo deja en (K, outC) para multiplicar por la derecha.
+    Tensor out = cols.matmul(weight_.reshape({out_channels_, K}).transpose());
+    if (use_bias_) out = out + bias_;  // difusión del vector de canales por fila
 
-        // Cada m escribe posiciones distintas de la salida: reparto directo.
-        const size_t rows_per_thread = std::max<size_t>(1, 32768 / std::max<size_t>(1, K * out_channels_));
-        parallel::parallel_for(M, rows_per_thread, [&](size_t from, size_t to) {
-            for (size_t m = from; m < to; ++m) {
-                const size_t n = m / spatial;
-                const size_t p = m % spatial;
-                const float* col_row = c.data() + m * K;
-
-                for (size_t oc = 0; oc < out_channels_; ++oc) {
-                    const float* w_row = w.data() + oc * K;
-                    float acc = use_bias_ ? b[oc] : 0.0f;
-                    for (size_t k = 0; k < K; ++k) acc += col_row[k] * w_row[k];
-                    o[(n * out_channels_ + oc) * spatial + p] = acc;
-                }
-            }
-        });
-    }
-
-    const bool req_g = autograd::grad_enabled() &&
-                       (input.requires_grad() || weight_.requires_grad() ||
-                        (use_bias_ && bias_.requires_grad()));
-    if (!req_g) return out;
-
-    out.set_requires_grad(true);
-    out.get_impl()->parents = { input.get_impl(), weight_.get_impl() };
-    if (use_bias_) out.get_impl()->parents.push_back(bias_.get_impl());
-
-    Tensor input_copy = input;
-    Tensor weight_copy = weight_;
-    Tensor bias_copy = bias_;
-    Window2d win = window_;
-    const size_t out_channels = out_channels_;
-    const bool use_bias = use_bias_;
-    // La lambda la captura por valor, así que aquí basta con la referencia
-    const std::vector<size_t>& in_shape = input.shape();
-
-    out.get_impl()->backward_fn =
-        [input_copy, weight_copy, bias_copy, win, in_shape,
-         M, K, spatial, out_channels, use_bias](const Tensor& grad_out) mutable {
-            const std::vector<float>& g = grad_out.data();
-            const Tensor cols = im2col(input_copy, win); // recalculadas, no guardadas
-            const std::vector<float>& c = cols.data();
-            const std::vector<float>& w = weight_copy.data();
-
-            Tensor dW(weight_copy.shape(), 0.0f, false);
-            Tensor db(bias_copy.shape(), 0.0f, false);
-            Tensor dcols(cols.shape(), 0.0f, false);
-
-            std::vector<float>& dw = dW.data();
-            std::vector<float>& dbv = db.data();
-            std::vector<float>& dc = dcols.data();
-
-            // Se recorre dos veces, no una, para poder repartir sin carreras.
-            // En un solo recorrido sobre m, dW y db los escribirían todos los
-            // hilos a la vez; separando las pasadas cada una tiene su propio
-            // eje disjunto y el orden de acumulación sigue siendo fijo, así que
-            // el resultado no depende del número de hilos.
-
-            // Pasada 1, repartida por m: dcols = dOut x W^T. Cada m escribe su
-            // propia fila de dcols.
-            const size_t rows_per_thread =
-                std::max<size_t>(1, 32768 / std::max<size_t>(1, K * out_channels));
-            parallel::parallel_for(M, rows_per_thread, [&](size_t from, size_t to) {
-                for (size_t m = from; m < to; ++m) {
-                    const size_t n = m / spatial;
-                    const size_t p = m % spatial;
-                    float* dcol_row = dc.data() + m * K;
-
-                    for (size_t oc = 0; oc < out_channels; ++oc) {
-                        const float grad = g[(n * out_channels + oc) * spatial + p];
-                        if (grad == 0.0f) continue;
-                        const float* w_row = w.data() + oc * K;
-                        for (size_t k = 0; k < K; ++k) dcol_row[k] += grad * w_row[k];
-                    }
-                }
-            });
-
-            // Pasada 2, repartida por canal de salida: dW = cols^T x dOut y
-            // db = suma por canal. Cada oc escribe su propia fila de dW y su
-            // propia entrada de db.
-            parallel::parallel_for(out_channels, 1, [&](size_t oc_from, size_t oc_to) {
-                for (size_t oc = oc_from; oc < oc_to; ++oc) {
-                    float* dw_row = dw.data() + oc * K;
-                    float bias_sum = 0.0f;
-
-                    for (size_t m = 0; m < M; ++m) {
-                        const size_t n = m / spatial;
-                        const size_t p = m % spatial;
-                        const float grad = g[(n * out_channels + oc) * spatial + p];
-                        if (grad == 0.0f) continue;
-
-                        const float* col_row = c.data() + m * K;
-                        bias_sum += grad;
-                        for (size_t k = 0; k < K; ++k) dw_row[k] += grad * col_row[k];
-                    }
-                    dbv[oc] = bias_sum;
-                }
-            });
-
-            if (weight_copy.requires_grad()) weight_copy.add_grad(dW);
-            if (use_bias && bias_copy.requires_grad()) bias_copy.add_grad(db);
-            if (input_copy.requires_grad()) {
-                // col2im es el adjunto de im2col: reparte el gradiente de cada
-                // ventana a los píxeles que la formaron, sumando los solapes.
-                input_copy.add_grad(col2im(dcols, in_shape, win));
-            }
-        };
-
-    return out;
+    // El producto sale ordenado (N, oH*oW, outC) y la capa devuelve
+    // (N, outC, oH, oW): intercambiar los dos últimos ejes es todo lo que falta.
+    //
+    // permute({0,2,1}) y no transpose(), aunque sobre un tensor 3D hagan lo
+    // mismo y transpose tenga bucle propio: medido, transpose sale un 5% peor
+    // aquí. Escribe con paso y lee contiguo, y a este tamaño mandan los accesos
+    // a memoria, no la aritmética de índices que permute hace por elemento.
+    return out.reshape({N, spatial, out_channels_})
+              .permute({0, 2, 1})
+              .reshape({N, out_channels_, oH, oW});
 }
 
 std::vector<Tensor> Conv2d::parameters() {
@@ -384,59 +341,72 @@ Tensor MaxPool2d::forward(const Tensor& input) {
     const size_t oW = window_.out_w(W);
 
     Tensor out({N, C, oH, oW}, 0.0f, false);
-    // Posición ganadora de cada ventana, en índices planos de la entrada:
-    // es lo único que hace falta guardar para la propagación hacia atrás.
-    std::vector<size_t> argmax(out.size(), 0);
+    // Posición ganadora de cada ventana, en índices planos de la entrada: es lo
+    // único que hace falta guardar para la propagación hacia atrás.
+    //
+    // Va en un Tensor y no en un vector<size_t> para que pueda quedarse en el
+    // dispositivo. Con el índice en host, esta capa cortaba la cadena justo
+    // entre las dos convoluciones y obligaba a bajar y volver a subir la salida
+    // entera de la primera.
+    Tensor argmax(out.shape(), 0.0f, false);
 
-    const std::vector<float>& src = input.data();
-    std::vector<float>& dst = out.data();
+    const cuda::ops::WindowShape shape{N, C, H, W, window_.kernel_h, window_.kernel_w,
+                                       window_.stride, window_.padding, oH, oW};
 
-    // Era la única operación de este fichero sin repartir, teniendo im2col y
-    // col2im paralelos justo encima. Cada plano (n, c) escribe su propio trozo
-    // de la salida y no lee nada de los demás, así que el reparto por planos no
-    // cruza ninguna frontera y da el mismo resultado con uno o con ocho hilos.
-    const size_t planes = N * C;
-    const size_t work_per_plane = oH * oW * window_.kernel_h * window_.kernel_w;
-    const size_t planes_per_thread =
-        std::max<size_t>(1, parallel::kElementsPerThread / std::max<size_t>(1, work_per_plane));
+    if (!cuda::ops::maxpool(input.get_impl()->storage, out.get_impl()->storage,
+                            argmax.get_impl()->storage, shape)) {
+        const std::vector<float>& src = input.data();
+        std::vector<float>& dst = out.data();
+        float* am = argmax.data().data();
 
-    parallel::parallel_for(planes, planes_per_thread, [&](size_t from, size_t to) {
-        for (size_t p = from; p < to; ++p) {
-            const size_t n = p / C;
-            const size_t c = p % C;
-            for (size_t oh = 0; oh < oH; ++oh) {
-                for (size_t ow = 0; ow < oW; ++ow) {
-                    float best = -std::numeric_limits<float>::infinity();
-                    size_t best_idx = 0;
-                    bool found = false;
+        // Era la única operación de este fichero sin repartir, teniendo im2col y
+        // col2im paralelos justo encima. Cada plano (n, c) escribe su propio
+        // trozo de la salida y no lee nada de los demás, así que el reparto por
+        // planos no cruza ninguna frontera y da el mismo resultado con uno o con
+        // ocho hilos.
+        const size_t planes = N * C;
+        const size_t work_per_plane = oH * oW * window_.kernel_h * window_.kernel_w;
+        const size_t planes_per_thread =
+            std::max<size_t>(1, parallel::kElementsPerThread / std::max<size_t>(1, work_per_plane));
 
-                    for (size_t i = 0; i < window_.kernel_h; ++i) {
-                        const long long h = static_cast<long long>(oh * window_.stride + i) -
-                                            static_cast<long long>(window_.padding);
-                        if (h < 0 || static_cast<size_t>(h) >= H) continue;
+        parallel::parallel_for(planes, planes_per_thread, [&](size_t from, size_t to) {
+            for (size_t p = from; p < to; ++p) {
+                const size_t n = p / C;
+                const size_t c = p % C;
+                for (size_t oh = 0; oh < oH; ++oh) {
+                    for (size_t ow = 0; ow < oW; ++ow) {
+                        float best = -std::numeric_limits<float>::infinity();
+                        size_t best_idx = 0;
+                        bool found = false;
 
-                        for (size_t j = 0; j < window_.kernel_w; ++j) {
-                            const long long w = static_cast<long long>(ow * window_.stride + j) -
+                        for (size_t i = 0; i < window_.kernel_h; ++i) {
+                            const long long h = static_cast<long long>(oh * window_.stride + i) -
                                                 static_cast<long long>(window_.padding);
-                            if (w < 0 || static_cast<size_t>(w) >= W) continue;
+                            if (h < 0 || static_cast<size_t>(h) >= H) continue;
 
-                            const size_t idx = ((n * C + c) * H + static_cast<size_t>(h)) * W +
-                                               static_cast<size_t>(w);
-                            if (!found || src[idx] > best) {
-                                best = src[idx];
-                                best_idx = idx;
-                                found = true;
+                            for (size_t j = 0; j < window_.kernel_w; ++j) {
+                                const long long w = static_cast<long long>(ow * window_.stride + j) -
+                                                    static_cast<long long>(window_.padding);
+                                if (w < 0 || static_cast<size_t>(w) >= W) continue;
+
+                                const size_t idx = ((n * C + c) * H + static_cast<size_t>(h)) * W +
+                                                   static_cast<size_t>(w);
+                                if (!found || src[idx] > best) {
+                                    best = src[idx];
+                                    best_idx = idx;
+                                    found = true;
+                                }
                             }
                         }
-                    }
 
-                    const size_t out_idx = ((n * C + c) * oH + oh) * oW + ow;
-                    dst[out_idx] = best;
-                    argmax[out_idx] = best_idx;
+                        const size_t out_idx = ((n * C + c) * oH + oh) * oW + ow;
+                        dst[out_idx] = best;
+                        am[out_idx] = static_cast<float>(best_idx);
+                    }
                 }
             }
-        }
-    });
+        });
+    }
 
     if (!autograd::grad_enabled() || !input.requires_grad()) return out;
 
@@ -444,14 +414,24 @@ Tensor MaxPool2d::forward(const Tensor& input) {
     out.get_impl()->parents = { input.get_impl() };
     Tensor input_copy = input;
 
-    out.get_impl()->backward_fn = [input_copy, argmax](const Tensor& grad_out) mutable {
-        // Solo el máximo influyó en la salida, así que solo él recibe gradiente.
-        Tensor dX(input_copy.shape(), 0.0f, false);
-        for (size_t i = 0; i < argmax.size(); ++i) {
-            dX.data()[argmax[i]] += grad_out.data()[i];
-        }
-        input_copy.add_grad(dX);
-    };
+    out.get_impl()->backward_fn =
+        [input_copy, argmax, shape](const Tensor& grad_out) mutable {
+            // Solo el máximo influyó en la salida, así que solo él recibe gradiente.
+            Tensor dX(input_copy.shape(), 0.0f, false);
+            if (!cuda::ops::maxpool_backward(argmax.get_impl()->storage,
+                                             grad_out.get_impl()->storage,
+                                             dX.get_impl()->storage, shape)) {
+                const float* ENGINE_RESTRICT a = argmax.data().data();
+                const float* ENGINE_RESTRICT g = grad_out.data().data();
+                float* ENGINE_RESTRICT d = dX.data().data();
+                // El += es necesario: con paso menor que el kernel dos ventanas
+                // solapadas pueden haber elegido el mismo píxel.
+                for (size_t i = 0; i < argmax.size(); ++i) {
+                    d[static_cast<size_t>(a[i])] += g[i];
+                }
+            }
+            input_copy.add_grad(dX);
+        };
 
     return out;
 }

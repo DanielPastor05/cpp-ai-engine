@@ -287,6 +287,180 @@ __global__ void sum_over_axis(const float* __restrict__ x, float* __restrict__ o
 }
 
 // ---------------------------------------------------------
+// im2col / col2im
+// ---------------------------------------------------------
+//
+// Los dos recorren la salida, no la entrada, y esa es toda la diferencia entre
+// que hagan falta operaciones atomicas o no.
+//
+// im2col escribe cada elemento de las columnas una sola vez, asi que sale
+// directo. col2im es su adjunto: varias ventanas solapadas contribuyen al mismo
+// pixel, y recorrer las ventanas obligaria a sumar con atomicas —lentas y, peor
+// aun, con un orden de acumulacion que cambia de una ejecucion a otra—. Se
+// invierte el recorrido: un hilo por pixel de **entrada**, que busca las
+// ventanas que lo cubren. Sin atomicas, y con el mismo orden que la CPU.
+
+struct WindowDims {
+    int channels, height, width;
+    int kernel_h, kernel_w, stride, padding;
+    int out_h, out_w;
+};
+
+__global__ void im2col_gather(const float* __restrict__ input, float* __restrict__ cols,
+                              WindowDims d, long long n) {
+    const long long K = (long long)d.channels * d.kernel_h * d.kernel_w;
+    const long long spatial = (long long)d.out_h * d.out_w;
+    const long long grid_stride = (long long)blockDim.x * gridDim.x;
+
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += grid_stride) {
+        const long long row = i / K;
+        const long long k = i % K;
+
+        const long long b = row / spatial;
+        const long long oh = (row % spatial) / d.out_w;
+        const long long ow = row % d.out_w;
+
+        const long long c = k / ((long long)d.kernel_h * d.kernel_w);
+        const long long r = k % ((long long)d.kernel_h * d.kernel_w);
+        const long long ki = r / d.kernel_w;
+        const long long kj = r % d.kernel_w;
+
+        const long long h = oh * d.stride + ki - d.padding;
+        const long long w = ow * d.stride + kj - d.padding;
+
+        // El cero se escribe explicitamente. El camino de CPU se apoya en que el
+        // tensor nace a ceros y se salta las posiciones de relleno; aqui la
+        // salida se pidio con device_write(), que no sube nada, asi que saltarse
+        // una posicion la dejaria con lo que hubiera antes en ese bufer.
+        float value = 0.0f;
+        if (h >= 0 && h < d.height && w >= 0 && w < d.width) {
+            value = input[((b * d.channels + c) * d.height + h) * d.width + w];
+        }
+        cols[i] = value;
+    }
+}
+
+__global__ void col2im_scatter(const float* __restrict__ cols, float* __restrict__ input,
+                               WindowDims d, long long n) {
+    const long long K = (long long)d.channels * d.kernel_h * d.kernel_w;
+    const long long spatial = (long long)d.out_h * d.out_w;
+    const long long grid_stride = (long long)blockDim.x * gridDim.x;
+
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += grid_stride) {
+        const long long w = i % d.width;
+        const long long h = (i / d.width) % d.height;
+        const long long c = (i / ((long long)d.width * d.height)) % d.channels;
+        const long long b = i / ((long long)d.width * d.height * d.channels);
+
+        // Ventanas que cubren este pixel: de h + padding = oh*stride + ki con
+        // 0 <= ki < kH se despeja el rango de oh, y dentro de el **toda** oh es
+        // valida, asi que no hace falta comprobar divisibilidad.
+        const long long hp = h + d.padding;
+        const long long wp = w + d.padding;
+        long long oh_lo = (hp - d.kernel_h + d.stride) / d.stride;   // techo de (hp-kH+1)/stride
+        long long ow_lo = (wp - d.kernel_w + d.stride) / d.stride;
+        if (oh_lo < 0) oh_lo = 0;
+        if (ow_lo < 0) ow_lo = 0;
+        const long long oh_hi = min(hp / d.stride, (long long)d.out_h - 1);
+        const long long ow_hi = min(wp / d.stride, (long long)d.out_w - 1);
+
+        // oh y ow ascendentes: el mismo orden en que acumula el bucle de CPU, de
+        // modo que la suma se hace con los mismos redondeos.
+        float acc = 0.0f;
+        for (long long oh = oh_lo; oh <= oh_hi; ++oh) {
+            const long long ki = hp - oh * d.stride;
+            for (long long ow = ow_lo; ow <= ow_hi; ++ow) {
+                const long long kj = wp - ow * d.stride;
+                const long long row = (b * d.out_h + oh) * d.out_w + ow;
+                const long long k = (c * d.kernel_h + ki) * d.kernel_w + kj;
+                acc += cols[row * K + k];
+            }
+        }
+        input[i] = acc;
+    }
+}
+
+// ---------------------------------------------------------
+// Submuestreo por maximo
+// ---------------------------------------------------------
+//
+// El forward guarda, junto al maximo, el indice plano del pixel que lo gano:
+// es lo unico que el paso hacia atras necesita, y con el criterio de desempate
+// del camino de CPU —gana el primero en orden de recorrido, porque la
+// comparacion es estricta—.
+//
+// El backward recorre la **entrada**, como col2im y por el mismo motivo: dos
+// ventanas solapadas pueden haber elegido el mismo pixel, y recorrer las
+// ventanas obligaria a sumar con atomicas. Asi cada pixel busca las ventanas
+// que lo cubren, se queda con las que lo eligieron, y suma en un orden fijo.
+
+__global__ void maxpool_windows(const float* __restrict__ input, float* __restrict__ out,
+                                float* __restrict__ argmax, WindowDims d, long long n) {
+    const long long spatial = (long long)d.out_h * d.out_w;
+    const long long grid_stride = (long long)blockDim.x * gridDim.x;
+
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += grid_stride) {
+        const long long ow = i % d.out_w;
+        const long long oh = (i / d.out_w) % d.out_h;
+        const long long c = (i / spatial) % d.channels;
+        const long long b = i / (spatial * d.channels);
+
+        float best = -INFINITY;
+        long long best_idx = 0;
+        bool found = false;
+
+        for (int ki = 0; ki < d.kernel_h; ++ki) {
+            const long long h = oh * d.stride + ki - d.padding;
+            if (h < 0 || h >= d.height) continue;
+            for (int kj = 0; kj < d.kernel_w; ++kj) {
+                const long long w = ow * d.stride + kj - d.padding;
+                if (w < 0 || w >= d.width) continue;
+
+                const long long idx = ((b * d.channels + c) * d.height + h) * d.width + w;
+                const float v = input[idx];
+                // Estricto, no >=: en un empate gana el primero, igual que en CPU.
+                if (!found || v > best) { best = v; best_idx = idx; found = true; }
+            }
+        }
+        out[i] = best;
+        argmax[i] = (float)best_idx;
+    }
+}
+
+__global__ void maxpool_windows_grad(const float* __restrict__ argmax,
+                                     const float* __restrict__ g,
+                                     float* __restrict__ dx, WindowDims d, long long n) {
+    const long long spatial = (long long)d.out_h * d.out_w;
+    const long long grid_stride = (long long)blockDim.x * gridDim.x;
+
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += grid_stride) {
+        const long long w = i % d.width;
+        const long long h = (i / d.width) % d.height;
+        const long long c = (i / ((long long)d.width * d.height)) % d.channels;
+        const long long b = i / ((long long)d.width * d.height * d.channels);
+
+        const long long hp = h + d.padding;
+        const long long wp = w + d.padding;
+        long long oh_lo = (hp - d.kernel_h + d.stride) / d.stride;
+        long long ow_lo = (wp - d.kernel_w + d.stride) / d.stride;
+        if (oh_lo < 0) oh_lo = 0;
+        if (ow_lo < 0) ow_lo = 0;
+        const long long oh_hi = min(hp / d.stride, (long long)d.out_h - 1);
+        const long long ow_hi = min(wp / d.stride, (long long)d.out_w - 1);
+
+        float acc = 0.0f;
+        for (long long oh = oh_lo; oh <= oh_hi; ++oh) {
+            for (long long ow = ow_lo; ow <= ow_hi; ++ow) {
+                const long long out_idx = ((b * d.channels + c) * d.out_h + oh) * d.out_w + ow;
+                // Solo suma si esta ventana eligio precisamente este pixel.
+                if ((long long)argmax[out_idx] == i) acc += g[out_idx];
+            }
+        }
+        dx[i] = acc;
+    }
+}
+
+// ---------------------------------------------------------
 // Producto de matrices con teselas en memoria compartida
 // ---------------------------------------------------------
 //
@@ -642,6 +816,30 @@ bool elementwise_worth_it(size_t n) {
     return enabled() && n > 0 && n >= min_elementwise_elements();
 }
 
+// Traduce la geometria a los enteros del kernel, o dice que no cabe. Los dos
+// puntos de entrada de la convolucion comparten estas comprobaciones.
+bool window_dims(const WindowShape& s, WindowDims& d) {
+    const size_t all[] = {s.batch, s.channels, s.height, s.width, s.kernel_h,
+                          s.kernel_w, s.stride, s.padding, s.out_h, s.out_w};
+    for (size_t v : all) {
+        if (v > kMaxInt) return false;
+    }
+    if (s.batch == 0 || s.channels == 0 || s.height == 0 || s.width == 0) return false;
+    if (s.kernel_h == 0 || s.kernel_w == 0 || s.stride == 0) return false;
+    if (s.out_h == 0 || s.out_w == 0) return false;
+
+    d.channels = (int)s.channels;
+    d.height = (int)s.height;
+    d.width = (int)s.width;
+    d.kernel_h = (int)s.kernel_h;
+    d.kernel_w = (int)s.kernel_w;
+    d.stride = (int)s.stride;
+    d.padding = (int)s.padding;
+    d.out_h = (int)s.out_h;
+    d.out_w = (int)s.out_w;
+    return true;
+}
+
 template <int Op>
 bool launch_binary(const Storage& a, const Storage& b, Storage& out,
                    size_t inner, size_t repeat) {
@@ -786,6 +984,82 @@ bool sum_axis(const Storage& x, Storage& out, size_t outer, size_t axis_len, siz
     sum_over_axis<<<grid_for(n), kBlock>>>(x.device(), out.device_write(),
                                            (long long)axis_len, (long long)inner, n);
     return launched_ok("sum_over_axis", out);
+}
+
+bool im2col(const Storage& input, Storage& cols, const WindowShape& s) {
+    if (!elementwise_worth_it(cols.size())) return false;
+
+    WindowDims d{};
+    if (!window_dims(s, d)) return false;
+
+    const size_t K = s.channels * s.kernel_h * s.kernel_w;
+    if (input.size() != s.batch * s.channels * s.height * s.width) return false;
+    if (cols.size() != s.batch * s.out_h * s.out_w * K) return false;
+
+    const long long n = (long long)cols.size();
+    im2col_gather<<<grid_for(n), kBlock>>>(input.device(), cols.device_write(), d, n);
+    return launched_ok("im2col_gather", cols);
+}
+
+bool col2im(const Storage& cols, Storage& input, const WindowShape& s) {
+    // El trabajo se mide por las columnas, que es el lado grande, aunque la
+    // malla recorra la entrada: con kernel 3x3 son nueve veces mas valores.
+    if (!elementwise_worth_it(cols.size())) return false;
+
+    WindowDims d{};
+    if (!window_dims(s, d)) return false;
+
+    const size_t K = s.channels * s.kernel_h * s.kernel_w;
+    if (input.size() != s.batch * s.channels * s.height * s.width) return false;
+    if (cols.size() != s.batch * s.out_h * s.out_w * K) return false;
+
+    const long long n = (long long)input.size();
+    col2im_scatter<<<grid_for(n), kBlock>>>(cols.device(), input.device_write(), d, n);
+    return launched_ok("col2im_scatter", input);
+}
+
+bool maxpool(const Storage& input, Storage& out, Storage& argmax, const WindowShape& s) {
+    if (!elementwise_worth_it(input.size())) return false;
+
+    WindowDims d{};
+    if (!window_dims(s, d)) return false;
+
+    if (input.size() != s.batch * s.channels * s.height * s.width) return false;
+    if (out.size() != s.batch * s.channels * s.out_h * s.out_w) return false;
+    if (argmax.size() != out.size()) return false;
+    // El indice viaja en float, que solo representa enteros exactos hasta 2^24.
+    // Por encima de ese tamano el redondeo elegiria otro pixel, asi que se
+    // rechaza el despacho y lo hace la CPU.
+    if (input.size() > (size_t{1} << 24)) return false;
+
+    const long long n = (long long)out.size();
+    maxpool_windows<<<grid_for(n), kBlock>>>(input.device(), out.device_write(),
+                                             argmax.device_write(), d, n);
+    // Dos salidas, y las dos se pidieron con device_write(): si el lanzamiento
+    // falla hay que deshacer las dos, o el camino de CPU bajaria a host un bufer
+    // sin inicializar.
+    if (launch_ok("maxpool_windows")) return true;
+    out.revert_device_write();
+    argmax.revert_device_write();
+    return false;
+}
+
+bool maxpool_backward(const Storage& argmax, const Storage& grad_out, Storage& dx,
+                      const WindowShape& s) {
+    if (!elementwise_worth_it(dx.size())) return false;
+
+    WindowDims d{};
+    if (!window_dims(s, d)) return false;
+
+    if (dx.size() != s.batch * s.channels * s.height * s.width) return false;
+    if (grad_out.size() != s.batch * s.channels * s.out_h * s.out_w) return false;
+    if (argmax.size() != grad_out.size()) return false;
+    if (dx.size() > (size_t{1} << 24)) return false;
+
+    const long long n = (long long)dx.size();
+    maxpool_windows_grad<<<grid_for(n), kBlock>>>(argmax.device(), grad_out.device(),
+                                                  dx.device_write(), d, n);
+    return launched_ok("maxpool_windows_grad", dx);
 }
 
 bool relu(const Storage& x, Storage& out) {

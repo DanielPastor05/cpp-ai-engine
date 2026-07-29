@@ -42,7 +42,9 @@ Un motor de Inteligencia Artificial y Aprendizaje Profundo (Deep Learning) avanz
     baja cuando el programa lee un valor.
   - Kernels propios para `matmul` (con teselas en memoria compartida), las
     operaciones elemento a elemento, las de escalar, `transpose` / `permute`,
-    las sumas por eje, ReLU y softmax. La lista no es un inventario: una
+    las sumas por eje, ReLU, softmax, `im2col` / `col2im` y `MaxPool2d`: los
+    suficientes para que la cadena `conv -> relu -> pool -> conv` de una CNN se
+    quede entera en la tarjeta. La lista no es un inventario: una
     operación sin kernel baja su entrada a host y obliga a resubirla, así que
     las baratas en medio de una cadena cuestan más que las caras del final.
     Un paso completo del `TransformerBlock` pasó de 29 bajadas y 39 subidas a
@@ -461,7 +463,7 @@ gradiente es un valor temporal del recorrido, y conservarlo haría que un segund
 ## ✅ Pruebas
 
 La suite cubre tensores, autograd, capas densas, convoluciones,
-atención y optimizadores con **524 comprobaciones** (605 al compilar con
+atención y optimizadores con **524 comprobaciones** (612 al compilar con
 `-DENGINE_CUDA=ON` sobre una máquina con tarjeta, que añade las de paridad
 CPU/GPU), y se ejecutan en CI sobre GCC, Clang, AppleClang y MSVC, más
 AddressSanitizer, UBSan, ThreadSanitizer y una compilación en Debug. El grueso

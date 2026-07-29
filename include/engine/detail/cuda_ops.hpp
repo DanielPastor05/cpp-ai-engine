@@ -68,6 +68,45 @@ bool permute(const Storage& x, Storage& out,
 // misma descomposición que usa AxisView en src/tensor.cpp.
 bool sum_axis(const Storage& x, Storage& out, size_t outer, size_t axis_len, size_t inner);
 
+// Geometría de una ventana deslizante sobre un lote de volúmenes. Repite lo que
+// ya dice nn::Window2d más las dimensiones del tensor, a propósito: así esta
+// cabecera no depende de engine/conv.hpp y el backend sigue sin saber nada de
+// las capas.
+struct WindowShape {
+    size_t batch, channels, height, width;
+    size_t kernel_h, kernel_w, stride, padding;
+    size_t out_h, out_w;
+};
+
+// im2col aplana cada ventana en una fila: (N,C,H,W) -> (N*oH*oW, C*kH*kW).
+// col2im es su adjunto y suma donde las ventanas se solapan.
+//
+// Sin estos dos, dar kernel al producto de la convolución no sirve de nada: las
+// columnas ocupan kH*kW veces la entrada, así que subirlas cuesta más que el
+// propio producto. Medido en MNIST: 24,6 s con el producto en la GPU y las
+// columnas construidas en host, contra 19,0 s haciéndolo todo en CPU.
+bool im2col(const Storage& input, Storage& cols, const WindowShape& s);
+bool col2im(const Storage& cols, Storage& input, const WindowShape& s);
+
+// Submuestreo por máximo. `argmax` guarda el índice plano del píxel ganador de
+// cada ventana, que es lo único que el paso hacia atrás necesita.
+//
+// Sin estos dos la cadena se corta justo **entre las dos convoluciones**: la
+// salida de la primera baja a host para agruparse y vuelve a subir para la
+// segunda. Con lotes de evaluación grandes son decenas de MB por pasada.
+//
+// El paso hacia atrás recorre la entrada, no la salida, igual que col2im: así
+// cada píxel suma las ventanas que lo eligieron sin operaciones atómicas y con
+// un orden de acumulación fijo, que es lo que mantiene el resultado
+// reproducible.
+//
+// ponytail: el índice viaja en float, exacto hasta 2^24; por encima de eso el
+// despacho se rechaza y lo hace la CPU. Un Storage de enteros sería lo suyo si
+// algún día hace falta pasar de ahí.
+bool maxpool(const Storage& input, Storage& out, Storage& argmax, const WindowShape& s);
+bool maxpool_backward(const Storage& argmax, const Storage& grad_out, Storage& dx,
+                      const WindowShape& s);
+
 // Softmax sobre el último eje: `rows` filas de `cols` valores contiguos.
 bool softmax(const Storage& x, Storage& out, size_t rows, size_t cols);
 // y es la salida guardada del forward, no la entrada.

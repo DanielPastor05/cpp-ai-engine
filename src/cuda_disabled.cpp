@@ -88,6 +88,12 @@ bool matmul(const Storage&, const Storage&, Storage&, size_t, size_t, size_t, si
     return false;
 }
 bool scalar(const Storage&, Storage&, float, float) { return false; }
+bool im2col(const Storage&, Storage&, const WindowShape&) { return false; }
+bool col2im(const Storage&, Storage&, const WindowShape&) { return false; }
+bool maxpool(const Storage&, Storage&, Storage&, const WindowShape&) { return false; }
+bool maxpool_backward(const Storage&, const Storage&, Storage&, const WindowShape&) {
+    return false;
+}
 bool permute(const Storage&, Storage&, const size_t*, const size_t*, size_t) { return false; }
 bool sum_axis(const Storage&, Storage&, size_t, size_t, size_t) { return false; }
 bool relu(const Storage&, Storage&) { return false; }

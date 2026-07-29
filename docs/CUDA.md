@@ -315,13 +315,10 @@ recompilar nada.
 
 ## Lo que deliberadamente no está en la GPU
 
-- **`Conv2d`.** Tiene su propio bucle escrito a mano y no pasa por
-  `Tensor::matmul`, así que el backend no lo ve. Es exactamente el mismo motivo
-  por el que el primer intento de paralelismo en CPU no aceleró MNIST en
-  absoluto (589 s contra 587 s). En `mnist_demo` las capas densas sí se van a la
-  GPU y las convoluciones no, y el ejemplo lo dice al arrancar en lugar de dejar
-  que el lector lo suponga. Reescribirlo como `im2col` + `Tensor::matmul` es la
-  continuación natural, y está sin hacer, no pasada por alto.
+- **La pérdida y los optimizadores.** `cross_entropy` y los pasos de SGD y Adam
+  siguen en CPU, y son ahora el corte que queda en MNIST: una bajada de todos
+  los gradientes y una subida de todos los parámetros por paso. Es lo siguiente
+  que atacar, porque la cadena de delante ya no se rompe.
 - **`LayerNorm`.** Es la que queda, y la que rompe la cadena dos veces por
   bloque. El forward tendría kernel sin dificultad; el que manda es el backward,
   porque `dgamma` y `dbeta` acumulan **a través** de las filas y esa reducción
