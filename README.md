@@ -91,6 +91,33 @@ which one is present.
 
 ## What's inside
 
+Every operation goes through one dispatch decision, and that decision is the
+architecture. `cuda::ops::*` returns `bool`: **true means the device took the
+work**, false sends the caller down the CPU path. There is no `#ifdef` per
+operation and no second implementation to keep in sync — without CUDA the same
+functions are linked from `src/cuda_disabled.cpp` returning false, and the
+linker deletes them.
+
+```mermaid
+flowchart TD
+    A["Tensor operation<br/>matmul, +, relu, permute, im2col…"] --> B{"cuda::ops::* <br/>took it?"}
+    B -- "true" --> C["Kernel launched.<br/>Output stays resident on the device"]
+    B -- "false: no device,<br/>below threshold,<br/>or launch failed" --> D["CPU path<br/>parallel_for over contiguous chunks"]
+    C --> E["Storage<br/>host ⇄ device mirror,<br/>one validity flag each"]
+    D --> E
+    E --> F{"Who asks<br/>for the data?"}
+    F -- "host() / data()" --> G["Download, only if the<br/>host copy is stale"]
+    F -- "device()" --> H["Upload, only if the<br/>device copy is stale"]
+    F -- "nobody" --> I["Nothing moves.<br/>A chain of GPU operations<br/>never crosses PCIe"]
+```
+
+The invariant that makes it work: **at least one of the two copies is valid at
+all times**, and nothing is transferred until somebody asks for the side that
+has gone stale. That is why a `conv → relu → pool → conv` chain stays on the
+card end to end, and why an operation *without* a kernel is expensive out of
+proportion to its cost — it pulls its input down and forces the next one to push
+it back up.
+
 ```
 include/engine/
   tensor.hpp       Tensor (handle) + N-dimensional operations

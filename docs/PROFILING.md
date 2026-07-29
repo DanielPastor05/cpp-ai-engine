@@ -1,128 +1,129 @@
-# Perfilar los kernels con Nsight Compute
+# Profiling the kernels with Nsight Compute
 
-Medir el tiempo dice **cuánto** tarda un kernel. Perfilarlo dice **por qué**, que es
-lo único que permite decidir qué tocar a continuación.
+Timing a kernel tells you **how long** it takes. Profiling it tells you **why**,
+which is the only thing that lets you decide what to touch next.
 
-Este documento son los comandos exactos y, sobre todo, qué métricas mirar — la parte
-que casi nunca está escrita en ningún sitio.
+This document is the exact commands and, above all, which metrics to look at —
+the part that is almost never written down anywhere.
 
 ---
 
-## Por qué hay un ejecutable aparte
+## Why there is a separate executable
 
-`bench_matmul` existe para esto. Pasarle `bench` entero a `ncu` significa esperar a
-que perfile decenas de lanzamientos distintos para leer uno; `bench_matmul` ejecuta
-**un kernel sobre una forma** y nada más:
+`bench_matmul` exists for this. Handing the whole of `bench` to `ncu` means
+waiting for it to profile dozens of unrelated launches to read one;
+`bench_matmul` runs **one kernel on one shape** and nothing else:
 
 ```bash
 bench_matmul --kernel=register --size=2048 --iters=10
 ```
 
-`--iters` fija el número de repeticiones en lugar de medir por tiempo, que es lo que
-conviene bajo el perfilador: cada lanzamiento perfilado cuesta bastante más que uno
-normal.
+`--iters` fixes the repetition count rather than measuring against a wall clock,
+which is what you want under the profiler: each profiled launch costs
+considerably more than a normal one.
 
 ---
 
-## Los comandos
+## The commands
 
 ```powershell
-# Resumen rápido en la terminal
+# Quick summary in the terminal
 ncu --set default .\build-cuda\Release\bench_matmul.exe --kernel=register --size=2048 --iters=5
 
-# Informe completo, con roofline, para abrir en la interfaz de Nsight Compute
-ncu --set full -o perfil_register .\build-cuda\Release\bench_matmul.exe --kernel=register --size=2048 --iters=5
+# Full report, with roofline, to open in the Nsight Compute UI
+ncu --set full -o profile_register .\build-cuda\Release\bench_matmul.exe --kernel=register --size=2048 --iters=5
 
-# Sólo las métricas que interesan, sin el resto del informe
+# Only the metrics that matter, without the rest of the report
 ncu --metrics sm__throughput.avg.pct_of_peak_sustained_elapsed,dram__throughput.avg.pct_of_peak_sustained_elapsed,sm__warps_active.avg.pct_of_peak_sustained_active,launch__registers_per_thread .\build-cuda\Release\bench_matmul.exe --kernel=register --size=2048 --iters=5
 ```
 
-En Linux es lo mismo cambiando la ruta por `./build-cuda/bench_matmul`.
+On Linux it is the same with the path changed to `./build-cuda/bench_matmul`.
 
-Para comparar variantes, perfila las cuatro y abre los informes juntos: Nsight Compute
-sabe poner dos perfiles lado a lado (*Add Baseline*), que es la forma más rápida de ver
-qué cambió de verdad entre un kernel y el siguiente.
+To compare variants, profile all four and open the reports together: Nsight
+Compute can put two profiles side by side (*Add Baseline*), which is the fastest
+way to see what actually changed between one kernel and the next.
 
 ```powershell
 foreach ($k in "naive","tiled","register","vectorized") {
-    ncu --set full -o "perfil_$k" .\build-cuda\Release\bench_matmul.exe --kernel=$k --size=2048 --iters=5
+    ncu --set full -o "profile_$k" .\build-cuda\Release\bench_matmul.exe --kernel=$k --size=2048 --iters=5
 }
 ```
 
-> Nsight Compute necesita permisos para leer los contadores del hardware. En Windows
-> hay que abrir la terminal como administrador; en Linux, o bien `sudo`, o poner
-> `NVreg_RestrictProfilingToAdminUsers=0` en el módulo del driver.
+> Nsight Compute needs permission to read the hardware counters. On Windows the
+> terminal has to be opened as administrator; on Linux, either `sudo` or set
+> `NVreg_RestrictProfilingToAdminUsers=0` on the driver module.
 
 ---
 
-## Qué métricas mirar, y qué significan
+## Which metrics to look at, and what they mean
 
-| Métrica | Qué dice |
+| Metric | What it says |
 |---|---|
-| `sm__throughput.avg.pct_of_peak_sustained_elapsed` | Qué fracción del pico de **cálculo** se alcanza |
-| `dram__throughput.avg.pct_of_peak_sustained_elapsed` | Qué fracción del pico de **memoria** |
-| `sm__warps_active.avg.pct_of_peak_sustained_active` | Ocupación real, no la teórica |
-| `launch__registers_per_thread` | Registros por hilo — lo que limita la ocupación |
-| `l1tex__data_bank_conflicts_pipe_lsu_shared.sum` | Conflictos de banco en memoria compartida |
-| `smsp__sass_average_branch_targets_threads_uniform.pct` | Divergencia entre hilos del warp |
+| `sm__throughput.avg.pct_of_peak_sustained_elapsed` | What fraction of **compute** peak is reached |
+| `dram__throughput.avg.pct_of_peak_sustained_elapsed` | What fraction of **memory** peak |
+| `sm__warps_active.avg.pct_of_peak_sustained_active` | Achieved occupancy, not the theoretical one |
+| `launch__registers_per_thread` | Registers per thread — what caps occupancy |
+| `l1tex__data_bank_conflicts_pipe_lsu_shared.sum` | Shared-memory bank conflicts |
+| `smsp__sass_average_branch_targets_threads_uniform.pct` | Divergence within a warp |
 
-### Cómo se leen juntas
+### How to read them together
 
-**Cálculo alto y memoria baja** → el kernel está donde debe estar para un matmul
-grande. Lo que queda es afinar el bucle interno.
+**Compute high, memory low** → the kernel is where it should be for a large
+matmul. What is left is tuning the inner loop.
 
-**Memoria alta y cálculo bajo** → está limitado por ancho de banda. En un matmul de
-tamaño decente eso significa que las teselas no están reutilizando los datos, no que
-la tarjeta se quede corta.
+**Memory high, compute low** → it is bandwidth bound. On a matmul of any decent
+size that means the tiles are not reusing their data, not that the card is
+falling short.
 
-**Los dos bajos** → es latencia. O no hay bastantes warps para tapar las esperas, o
-hay dependencias en cadena dentro de cada hilo. Aquí es donde miran los registros por
-hilo y la ocupación.
+**Both low** → it is latency. Either there are not enough warps to hide the
+waits, or there are dependency chains inside each thread. This is where
+registers per thread and occupancy are worth reading.
 
-**Conflictos de banco distintos de cero** → dos hilos del mismo warp están pidiendo
-direcciones distintas del mismo banco de memoria compartida y la lectura se serializa.
-Se arregla cambiando la disposición de la tesela: transponerla, o añadirle una columna
-de relleno.
+**Bank conflicts above zero** → two threads in the same warp are asking for
+different addresses in the same shared-memory bank and the read serialises. It
+is fixed by changing the tile's layout: transposing it, or adding a padding
+column.
 
-### Sobre la ocupación
+### On occupancy
 
-Es la métrica más malinterpretada. **Ocupación baja no es un defecto por sí sola.**
-El kernel `register` de este motor baja a propósito a la mitad de ocupación respecto
-al de teselas, porque gasta unos 80-100 registros por hilo en los 64 acumuladores. A
-cambio, cada hilo tiene mucho más trabajo independiente en vuelo.
+It is the most misread metric of the set. **Low occupancy is not a defect on its
+own.** This engine's `register` kernel deliberately drops to half the occupancy
+of the tiled one, because it spends some 80-100 registers per thread on its 64
+accumulators. In exchange, each thread has far more independent work in flight.
 
-La pregunta correcta no es «¿qué ocupación tengo?» sino «¿tengo bastante trabajo en
-vuelo para tapar la latencia?». Si el rendimiento de cálculo es alto con ocupación
-del 50%, la ocupación no es el problema.
+The right question is not "what occupancy do I have?" but "do I have enough work
+in flight to hide the latency?". If compute throughput is high at 50% occupancy,
+occupancy is not the problem.
 
 ---
 
-## La sección de roofline
+## The roofline section
 
-`--set full` genera el diagrama roofline, que sitúa el kernel en dos ejes: intensidad
-aritmética (FLOP por byte movido) contra rendimiento alcanzado.
+`--set full` generates the roofline chart, which places the kernel on two axes:
+arithmetic intensity (FLOP per byte moved) against achieved throughput.
 
-Para una RTX 3060 Ti el punto de inflexión está sobre los **36 FLOP/byte**
-(≈16,2 TFLOP/s de pico fp32 contra ≈448 GB/s). Un matmul de N×N×N tiene una intensidad
-de **N/6 FLOP/byte**, así que:
+For an RTX 3060 Ti the ridge point sits around **36 FLOP/byte** (≈16.2 TFLOP/s
+of fp32 peak against ≈448 GB/s). An N×N×N matmul has an intensity of **N/6
+FLOP/byte**, so:
 
-| Forma | Intensidad | Región |
+| Shape | Intensity | Region |
 |---|---|---|
-| 512³ | ~85 FLOP/byte | limitado por cálculo |
-| 2048³ | ~341 FLOP/byte | limitado por cálculo, con holgura |
+| 512³ | ~85 FLOP/byte | compute bound |
+| 2048³ | ~341 FLOP/byte | compute bound, with room to spare |
 
-Estar a la derecha del punto de inflexión y aun así lejos del techo horizontal es
-exactamente el diagnóstico que motivó el teselado de registros: hay margen de cálculo
-sin usar, y el problema está dentro del kernel.
+Sitting to the right of the ridge point and still far below the horizontal
+ceiling is exactly the diagnosis that motivated the register tiling: there is
+unused compute headroom, and the problem is inside the kernel.
 
-`bench_matmul` imprime esos dos números al arrancar, así que el diagnóstico está a la
-vista antes incluso de abrir el perfilador.
+`bench_matmul` prints both numbers on start-up, so the diagnosis is visible
+before the profiler is even opened.
 
 ---
 
-## Qué hacer con los resultados
+## What to do with the results
 
-Las cifras medidas van a la tabla de [CUDA.md](CUDA.md). Conviene apuntar, para cada
-variante: tiempo, GFLOP/s, porcentaje del pico, registros por hilo y ocupación
-alcanzada. Con esas cinco columnas, la progresión se explica sola — y si alguna
-optimización no dio lo que prometía, también se ve, que es igual de útil.
+The measured figures go into the table in [CUDA.md](CUDA.md). It is worth
+recording, for each variant: time, GFLOP/s, percentage of peak, registers per
+thread and achieved occupancy. With those five columns the progression explains
+itself — and if an optimisation did not deliver what it promised, that shows too,
+which is just as useful.

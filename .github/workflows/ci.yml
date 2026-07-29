@@ -219,8 +219,13 @@ jobs:
 
       # "524 checks" is a number with no meaning attached until somebody says
       # what fraction of the engine they actually reach.
-      - name: Install lcov
-        run: sudo apt-get update && sudo apt-get install -y lcov
+      #
+      # gcovr rather than lcov: lcov 2.x, which is what the runners now ship,
+      # turns a pile of previously benign gcov mismatches into hard errors and
+      # its flags moved. gcovr is a Python tool that reads the same .gcda files
+      # and behaves the same across versions.
+      - name: Install gcovr
+        run: pipx install gcovr
 
       - name: Build instrumented
         run: >
@@ -231,15 +236,18 @@ jobs:
       - name: Run the tests
         run: ctest --test-dir build --output-on-failure
 
+      # Only the library counts. Measuring coverage of the tests themselves
+      # would inflate the number while saying nothing about the engine.
       - name: Summarise
-        run: |
-          lcov --directory build --capture --output-file coverage.info \
-            --ignore-errors mismatch,gcov
-          lcov --remove coverage.info '/usr/*' '*/tests/*' '*/examples/*' '*/bench/*' \
-            --output-file coverage.info --ignore-errors unused
-          lcov --list coverage.info
+        run: >
+          gcovr --root . --filter 'src/' --filter 'include/engine/'
+          --exclude-unreachable-branches
+          --print-summary --xml-pretty --output coverage.xml
+          --html-details coverage.html
 
       - uses: actions/upload-artifact@v4
         with:
           name: coverage
-          path: coverage.info
+          path: |
+            coverage.xml
+            coverage*.html
