@@ -1,31 +1,31 @@
-# Fase 6: el backend CUDA
+# Phase 6: the CUDA backend
 
-Cómo está construido el camino de GPU, qué decisiones tiene detrás y qué
-deliberadamente no hace.
+How the GPU path is built, what decisions sit behind it, and what it
+deliberately does not do.
 
 ```bash
 cmake -B build-cuda -S . -DENGINE_CUDA=ON
 cmake --build build-cuda --parallel
-ctest --test-dir build-cuda --output-on-failure   # incluye la paridad CPU/GPU
-./build-cuda/bench                                # tabla CPU vs GPU
+ctest --test-dir build-cuda --output-on-failure   # includes CPU/GPU parity
+./build-cuda/bench                                # CPU vs GPU table
 ```
 
-El backend está **apagado por defecto**. El motor tiene que seguir compilando y
-pasando las 524 comprobaciones en una máquina sin toolkit ni tarjeta, que es lo
-que hay en CI; la GPU es una aceleración opcional, no un requisito.
+The backend is **off by default**. The engine has to keep compiling and passing
+its 524 checks on a machine with no toolkit and no card, which is what CI has;
+the GPU is an optional acceleration, not a requirement.
 
 ---
 
-## Lo primero fue separar el almacenamiento del tensor
+## The first thing was separating storage from the tensor
 
-Antes del primer kernel, `TensorImpl` guardaba un `std::vector<float>`. Eso es
-host y punto. Con esa estructura, cada operación habría acabado con ramas
-host/dispositivo repartidas por todo `src/tensor.cpp`, y —lo que es peor— cada
-kernel habría pagado una ida y vuelta por PCIe, porque no había dónde anotar
-que un tensor ya estaba arriba.
+Before the first kernel, `TensorImpl` held a `std::vector<float>`. That is host
+and nothing else. With that structure every operation would have ended up with
+host/device branches spread through `src/tensor.cpp` and — worse — every kernel
+would have paid a round trip over PCIe, because there was nowhere to record that
+a tensor was already up there.
 
-`include/engine/detail/storage.hpp` introduce `Storage`: el búfer de host, un
-espejo opcional en el dispositivo, y dos banderas de validez.
+`include/engine/detail/storage.hpp` introduces `Storage`: the host buffer, an
+optional device mirror, and two validity flags.
 
 ```cpp
 mutable float* device_ = nullptr;
@@ -33,317 +33,318 @@ mutable bool host_valid_ = true;
 mutable bool device_valid_ = false;
 ```
 
-**Invariante: al menos una de las dos copias es válida en todo momento.** A
-partir de ahí, quien pide un lado obsoleto paga la copia y nadie más se entera:
+**Invariant: at least one of the two copies is valid at all times.** From there,
+whoever asks for a stale side pays for the copy and nobody else notices:
 
-| Se pide | Qué ocurre |
+| Asked for | What happens |
 |---|---|
-| `host()` | baja del dispositivo si el host está obsoleto |
-| `host_mut()` | igual, y además marca el dispositivo como obsoleto |
-| `device()` | sube si el dispositivo está obsoleto |
-| `device_mut()` | igual, y marca el host como obsoleto |
-| `device_write()` | reserva **sin subir nada**, y marca el host como obsoleto |
+| `host()` | downloads if the host copy is stale |
+| `host_mut()` | the same, and marks the device stale |
+| `device()` | uploads if the device copy is stale |
+| `device_mut()` | the same, and marks the host stale |
+| `device_write()` | allocates **without uploading anything**, and marks the host stale |
 
-`device_write()` es el que más tráfico ahorra: la salida de un kernel se
-escribe entera, así que subir su contenido previo sería tirar ancho de banda.
+`device_write()` is the one that saves the most traffic: a kernel's output is
+written in full, so uploading its previous contents would be bandwidth thrown
+away.
 
-El resultado es que una cadena de operaciones en GPU se queda en la GPU. La
-prueba de paridad lo comprueba, y no de oídas:
+The result is that a chain of GPU operations stays on the GPU. The parity test
+checks it, and not by hearsay:
 
 ```cpp
 cuda::reset_transfer_stats();
 Tensor D = A.matmul(B).relu();
 (void)D.data()[0];
 check(cuda::transfer_stats().to_device_count == 0,
-      "una segunda operacion no resube operandos ya residentes");
+      "a second operation does not re-upload already resident operands");
 ```
 
-Sin `ENGINE_CUDA` los tres miembros del dispositivo **ni se declaran**, así que
-la compilación de CPU no paga nada por que exista el backend. La macro es
-`PUBLIC` en CMake precisamente por esto: cambia la disposición de `Storage`, y
-si la librería y quien la usa no coincidieran, el desajuste daría corrupción de
-memoria en vez de un error de compilación.
+Without `ENGINE_CUDA` the three device members are **not even declared**, so a
+CPU build pays nothing for the backend existing. The macro is `PUBLIC` in CMake
+precisely because of this: it changes `Storage`'s layout, and if the library and
+its consumer disagreed, the mismatch would give memory corruption rather than a
+compile error.
 
 ---
 
-## El contrato de despacho
+## The dispatch contract
 
-Cada operación de GPU devuelve un `bool`: **true si se hizo cargo del trabajo**.
+Every GPU operation returns a `bool`: **true if it took the work**.
 
 ```cpp
 if (!cuda::ops::matmul(impl_->storage, B.impl_->storage, C.impl_->storage,
                        batch, M, K, N, a_batched, b_batched)) {
-    // ... el camino de CPU de siempre, intacto ...
+    // ... the usual CPU path, untouched ...
 }
 ```
 
-Devolver false significa «no hay dispositivo», «a este tamaño no compensa» o
-«esta forma no cabe en la geometría de lanzamiento». Sin CUDA, esas funciones
-las define `src/cuda_disabled.cpp` devolviendo false y el enlazador las elimina.
+Returning false means "no device", "not worth it at this size", or "this shape
+does not fit the launch geometry". Without CUDA those functions are defined in
+`src/cuda_disabled.cpp` returning false, and the linker removes them.
 
-Esto es lo que mantiene `src/tensor.cpp` legible: una condición por operación,
-no dos implementaciones enredadas ni un `#ifdef` por función. Y tiene una
-consecuencia práctica: **un fallo al lanzar un kernel no tumba el programa**, se
-calcula en CPU y se sigue. Un motor que se cae porque la GPU está ocupada es
-peor que uno que va más lento.
+This is what keeps `src/tensor.cpp` readable: one condition per operation, not
+two tangled implementations and not an `#ifdef` per function. And it has a
+practical consequence: **a kernel failing to launch does not bring the program
+down**, it computes on the CPU and carries on. An engine that crashes because
+the GPU is busy is worse than one that runs slower.
 
-Ese camino de recuperación tenía una trampa que costó encontrar razonando sobre
-el invariante. `device_write()` marca el host como obsoleto *antes* de lanzar el
-kernel. Si el lanzamiento falla y se cae al camino de CPU, `matmul` pide el
-búfer de host, `Storage` se lo baja del dispositivo **sin inicializar**, y como
-`matmul` acumula sobre una salida que da por puesta a cero, el resultado es
-basura. Por eso existe `revert_device_write()`, y por eso se llama en el mismo
-sitio donde se detecta el fallo:
+That recovery path had a trap that took reasoning about the invariant to find.
+`device_write()` marks the host stale *before* the kernel launches. If the
+launch fails and it falls back to the CPU path, `matmul` asks for the host
+buffer, `Storage` pulls it off the device **uninitialised**, and since `matmul`
+accumulates into an output it assumes is zeroed, the result is garbage. That is
+why `revert_device_write()` exists, and why it is called in the same place the
+failure is detected:
 
 ```cpp
 bool launched_ok(const char* what, Storage& out) {
     const cudaError_t status = cudaGetLastError();
     if (status == cudaSuccess) return true;
-    out.revert_device_write();   // el host vuelve a ser la copia buena
+    out.revert_device_write();   // the host is the good copy again
     ...
     return false;
 }
 ```
 
-### El fallo que esa comprobación no ve
+### The failure that check does not see
 
-`cudaGetLastError()` informa de errores **de lanzamiento**: una malla inválida,
-un binario sin código para la tarjeta, memoria compartida de más. Un fallo
-*dentro* del cuerpo del kernel —un acceso fuera de rango— no aparece ahí. El
-lanzamiento es asíncrono: para cuando el error existe, la llamada ya volvió con
-`cudaSuccess`. El error se queda pegado al contexto y aflora en la siguiente
-operación sincronizante, que suele ser un `cudaMemcpy` tres operaciones más
-allá y no tiene ninguna culpa. El síntoma es un mensaje que señala al sitio
-equivocado.
+`cudaGetLastError()` reports **launch** errors: an invalid grid, a binary with
+no code for the card, too much shared memory. A fault *inside* the kernel body —
+an out-of-range access — does not appear there. The launch is asynchronous: by
+the time the error exists, the call has already returned `cudaSuccess`. The
+error sticks to the context and surfaces at the next synchronising operation,
+which is usually a `cudaMemcpy` three operations later and is in no way to
+blame. The symptom is a message pointing at the wrong place.
 
-Cogerlo en el lanzamiento culpable exige sincronizar justo después, y eso es una
-barrera por kernel cuando el motor lanza cientos por paso: sería pagar en
-producción por un diagnóstico que sólo interesa mientras se persigue un fallo.
-Por eso va detrás de una variable de entorno, apagada por defecto:
+Catching it at the guilty launch means synchronising right after, and that is a
+barrier per kernel when the engine launches hundreds per step: it would mean
+paying in production for a diagnostic that only matters while chasing a fault.
+So it sits behind an environment variable, off by default:
 
 ```bash
 ENGINE_CUDA_SYNC=1 ./build-cuda/test_engine
 ```
 
-Con ella, `launch_ok()` llama a `cudaDeviceSynchronize()` antes de mirar el
-estado, y el error sale con el nombre del kernel que lo provocó. El camino de
-recuperación es el mismo de siempre: se informa una vez y se calcula en CPU.
+With it, `launch_ok()` calls `cudaDeviceSynchronize()` before looking at the
+status, and the error comes out naming the kernel that caused it. The recovery
+path is the usual one: report once and compute on the CPU.
 
 ---
 
-## El producto de matrices, con teselas en memoria compartida
+## The matrix product, with shared-memory tiles
 
-Es la operación que domina el perfil (53% del ejemplo del Transformer), así que
-es la que justifica el trabajo.
+It is the operation that dominates the profile (53% of the Transformer example),
+so it is the one that justifies the work.
 
-Cada bloque calcula una tesela de 32×32 de la salida y la recorre a lo largo de
-K. En cada paso los 1024 hilos del bloque cargan una tesela de A y otra de B a
-memoria compartida, y después cada hilo hace sus 32 productos leyendo de ahí.
+Each block computes a 32×32 tile of the output and walks it along K. At each
+step the block's 1024 threads load one tile of A and one of B into shared
+memory, and then each thread does its 32 products reading from there.
 
-El motivo es el tráfico a memoria global. Sin teselas, cada elemento de A se lee
-N veces y cada uno de B se lee M veces. Con teselas de lado T se leen N/T y M/T
-veces: **32 veces menos**. La memoria compartida tiene un orden de magnitud más
-de ancho de banda y una latencia mucho menor que la global, y ese cambio de
-proporción es todo el kernel.
+The reason is global memory traffic. Without tiles, each element of A is read N
+times and each of B M times. With tiles of side T they are read N/T and M/T
+times: **32 times fewer**. Shared memory has an order of magnitude more
+bandwidth and far lower latency than global, and that change of ratio is the
+whole kernel.
 
-Dos detalles que no se ven en el resultado pero sí en el rendimiento y en la
-corrección:
+Two details that do not show in the result but do show in performance and in
+correctness:
 
-- **Los bordes se rellenan con ceros en vez de acortar el bucle.** Todos los
-  hilos del bloque tienen que llegar a los mismos `__syncthreads()`; si los del
-  borde salieran antes, la barrera sería inválida y el comportamiento quedaría
-  sin definir. Rellenar con cero es correcto *y* más simple.
-- **La memoria compartida no necesita relleno.** `As[ty][k]` es una difusión
-  dentro del warp y `Bs[k][tx]` recorre bancos consecutivos: ninguno de los dos
-  accesos genera conflictos de banco. Añadir una columna de relleno, que es el
-  reflejo habitual, aquí sólo gastaría memoria compartida y reduciría la
-  ocupación.
+- **Edges are padded with zeros rather than shortening the loop.** Every thread
+  in the block has to reach the same `__syncthreads()`; if the edge threads left
+  early, the barrier would be invalid and the behaviour undefined. Padding with
+  zero is correct *and* simpler.
+- **Shared memory needs no padding.** `As[ty][k]` is a broadcast within the warp
+  and `Bs[k][tx]` walks consecutive banks: neither access produces bank
+  conflicts. Adding a padding column, which is the usual reflex, would only
+  spend shared memory here and reduce occupancy.
 
-El softmax usa un bloque por fila con dos reducciones sobre memoria compartida
-—primero el máximo, para restarlo y que la exponencial no se desborde, y
-después la suma—, con `expf` y no `__expf`: la versión rápida ahorra unos ciclos
-a cambio de precisión, y estos valores se comparan contra PyTorch en la prueba
-de referencia.
+Softmax uses one block per row with two reductions over shared memory — first
+the maximum, to subtract it so the exponential does not overflow, and then the
+sum — with `expf` rather than `__expf`: the fast version saves a few cycles in
+exchange for precision, and these values are compared against PyTorch in the
+reference test.
 
 ---
 
-## Optimizar el matmul: de la teselación al techo
+## Optimising the matmul: from tiling to the ceiling
 
-El kernel de teselas de arriba es el de libro de texto, y se queda muy por debajo
-del techo de la tarjeta. Lo interesante es **por qué**, porque las dos respuestas
-intuitivas son las dos equivocadas.
+The tiled kernel above is the textbook one, and it falls well short of the
+card's ceiling. What is interesting is **why**, because both intuitive answers
+are wrong.
 
-No es la ocupación: con 1024 hilos y 8 KB de memoria compartida por bloque hay warps
-de sobra en vuelo. Y no es el tráfico a memoria global: eso ya lo arreglaron las
-teselas, que lo redujeron 32 veces.
+It is not occupancy: with 1024 threads and 8 KB of shared memory per block there
+are plenty of warps in flight. And it is not global memory traffic: the tiles
+already fixed that, cutting it by a factor of 32.
 
-Es la **intensidad aritmética a nivel de registro**. En `matmul_tiled`, cada hilo,
-por cada paso de K, hace:
+It is **arithmetic intensity at the register level**. In `matmul_tiled`, each
+thread, for each step of K, does:
 
-> **1 FMA contra 2 lecturas de memoria compartida.**
+> **1 FMA against 2 shared-memory reads.**
 
-Las unidades de carga se saturan mucho antes que las de cálculo, y con esa proporción
-da igual cuántos warps haya esperando: el cuello está en el propio bucle interno.
+The load units saturate long before the arithmetic ones, and at that ratio it
+makes no difference how many warps are waiting: the bottleneck is the inner loop
+itself.
 
-La solución es que cada hilo calcule un **bloque** de resultados en vez de uno solo.
-Con 8×8 salidas vivas en registros, cada hilo lee 8 valores de A y 8 de B por paso de
-K y con ellos hace 64 productos:
+The fix is for each thread to compute a **block** of results instead of a single
+one. With 8×8 outputs live in registers, each thread reads 8 values of A and 8
+of B per step of K and does 64 products with them:
 
-> **64 FMA contra 16 lecturas de memoria compartida.** De 1:2 a 4:1 — ocho veces mejor.
+> **64 FMA against 16 shared-memory reads.** From 1:2 to 4:1 — eight times better.
 
-### Las cuatro variantes
+### The four variants
 
-| Variante | Qué cambia | FMA : lecturas de compartida |
+| Variant | What changes | FMA : shared reads |
 |---|---|---|
-| `naive` | sin memoria compartida | 1 : 2, y contra memoria **global** |
-| `tiled` | teselas 32×32, un resultado por hilo | 1 : 2 |
-| `register` | bloques 128×128, 8×8 resultados por hilo en registros | **4 : 1** |
-| `vectorized` | igual, con cargas `float4` de global a compartida | 4 : 1, con 4× menos instrucciones de carga |
+| `naive` | no shared memory | 1 : 2, and against **global** memory |
+| `tiled` | 32×32 tiles, one result per thread | 1 : 2 |
+| `register` | 128×128 blocks, 8×8 results per thread in registers | **4 : 1** |
+| `vectorized` | the same, with `float4` loads from global to shared | 4 : 1, with 4× fewer load instructions |
 
-Todas siguen vivas en el binario y se eligen con `cuda::set_matmul_kernel`, o con
-`--kernel=` en el banco de pruebas. No es indecisión: **la progresión es el
-resultado**, y además permite comprobar la paridad de cada una por separado, que es
-lo que de verdad protege el trabajo.
+All four stay alive in the binary and are selected with
+`cuda::set_matmul_kernel`, or with `--kernel=` in the benchmark. This is not
+indecision: **the progression is the result**, and it also makes it possible to
+parity-check each one separately, which is what actually protects the work.
 
-### Detalles que sí importan
+### The details that matter
 
-**`As` va transpuesta** en memoria compartida (índice `[k][m]`). Sin eso, las ocho
-lecturas de A de cada hilo irían con paso K y cada una caería en un banco distinto.
+**`As` is stored transposed** in shared memory (index `[k][m]`). Without that,
+each thread's eight reads of A would go with stride K and each would land in a
+different bank.
 
-**La ocupación baja a la mitad, y es intencionado.** 64 acumuladores más los registros
-de trabajo salen a unos 80-100 registros por hilo. Menos warps residentes, sí — pero
-el paralelismo a nivel de instrucción dentro de cada hilo compensa de sobra. Es el
-compromiso clásico de este kernel y se ve inmediatamente al perfilarlo, así que
-conviene saber que está puesto a propósito.
+**Occupancy halves, and that is intentional.** 64 accumulators plus working
+registers comes to some 80-100 registers per thread. Fewer resident warps, yes —
+but the instruction-level parallelism inside each thread more than makes up for
+it. It is this kernel's classic trade-off and it shows up immediately under the
+profiler, so it is worth knowing it was put there on purpose.
 
-**La vectorización exige alineación.** `K` y `N` múltiplos de 4, o las direcciones no
-caen en múltiplos de 16 bytes. Si no se cumple, el despacho degrada a `register`
-en silencio — una lectura `float4` desalineada no da un error, **da otro valor**, que
-es bastante peor. Es la misma clase de selección de kernel por alineación que hace
-cuBLAS por dentro, y hay una prueba de paridad dedicada a ese camino.
+**Vectorisation demands alignment.** `K` and `N` must be multiples of 4, or the
+addresses do not land on multiples of 16 bytes. If that does not hold, the
+dispatch degrades to `register` silently — a misaligned `float4` read does not
+raise an error, **it returns a different value**, which is considerably worse. It
+is the same kind of alignment-driven kernel selection cuBLAS does internally, and
+there is a parity test dedicated to that path.
 
-**Los bordes se acotan sólo donde hace falta**: en la carga de global a compartida
-(rellenando con ceros) y en el almacenamiento final. El bucle interno va sin ninguna
-comprobación, que es lo que permite que las formas con resto sean correctas sin
-penalizar el camino caliente.
+**Bounds are checked only where they are needed**: on the global-to-shared load
+(padding with zeros) and on the final store. The inner loop runs with no checks
+at all, which is what lets shapes with remainders be correct without penalising
+the hot path.
 
-### El roofline dice dónde atacar
+### The roofline says where to attack
 
-Antes de optimizar conviene saber contra qué techo se está chocando. Un producto de
-N×N×N mueve `3N²` valores para hacer `2N³` operaciones: **N/6 FLOP/byte**. El punto de
-inflexión de una RTX 3060 Ti está sobre los 36 FLOP/byte (≈16,2 TFLOP/s contra
-≈448 GB/s), así que cualquier N por encima de unos pocos cientos está de lleno en la
-región **limitada por cálculo**.
+Before optimising it is worth knowing which ceiling you are hitting. An N×N×N
+product moves `3N²` values to do `2N³` operations: **N/6 FLOP/byte**. An RTX
+3060 Ti's ridge point sits around 36 FLOP/byte (≈16.2 TFLOP/s against ≈448
+GB/s), so any N above a few hundred is squarely in the **compute-bound** region.
 
-Eso es lo que justifica todo lo anterior: en esta forma el trabajo está en la
-intensidad aritmética del kernel, no en las transferencias. `bench_matmul` imprime el
-punto de inflexión y la intensidad de cada forma para que la decisión quede a la vista
-en lugar de darse por supuesta.
+That is what justifies everything above: at this shape the work is in the
+kernel's arithmetic intensity, not in the transfers. `bench_matmul` prints the
+ridge point and each shape's intensity so the decision is visible rather than
+assumed.
 
-### Comprobar los índices sin tener GPU
+### Checking the indices without a GPU
 
-CI no tiene tarjeta, así que el job de CUDA sólo compila. Eso detecta errores de
-sintaxis y nada más: **un error de indexación compila sin inmutarse** y aparece
-semanas después como resultados incorrectos.
+CI has no card, so the CUDA job only compiles. That catches syntax errors and
+nothing else: **an indexing error compiles perfectly happily** and shows up weeks
+later as wrong results.
 
-`tests/test_cuda_indexing.cpp` cubre ese hueco. Reproduce la estructura del kernel
-con bucles —rejilla de bloques, 256 hilos, memoria compartida, barreras— usando las
-mismas expresiones de índice, y compara contra un producto de referencia sobre once
-formas elegidas por sus restos: 1×1×1, 127×128×129, 256×260×256, 130×4×130. Corre en
-cualquier máquina y en cada push.
+`tests/test_cuda_indexing.cpp` covers that gap. It reproduces the kernel's
+structure with loops — block grid, 256 threads, shared memory, barriers — using
+the same index expressions, and compares against a reference product over eleven
+shapes chosen for their remainders: 1×1×1, 127×128×129, 256×260×256, 130×4×130.
+It runs on any machine and on every push.
 
-El precio es que las expresiones están escritas dos veces y hay que mantenerlas en
-paralelo. Se asume a conciencia: la alternativa era no tener ninguna comprobación de
-los índices hasta llegar a una máquina con GPU, y para entonces el error ya está
-commiteado.
+The price is that the expressions are written twice and have to be maintained in
+parallel. That is accepted knowingly: the alternative was having no check on the
+indices at all until reaching a machine with a GPU, and by then the error is
+already committed.
 
-Lo que no cubre, y por eso sigue haciendo falta la paridad en el dispositivo: carreras
-entre hilos, coherencia real de la memoria compartida, alineación de las lecturas
-`float4` y, evidentemente, el rendimiento.
+What it does not cover, and why device parity is still needed: races between
+threads, real shared-memory coherence, `float4` load alignment and, obviously,
+performance.
 
-Cómo medirlo y qué mirar: **[docs/PROFILING.md](PROFILING.md)**.
-
----
-
-## Paridad: por qué la comparación es con tolerancia
-
-`tests/test_cuda_parity.cpp` calcula la misma expresión dos veces sobre
-exactamente los mismos datos, una con el backend apagado y otra encendido.
-
-Es la única forma de comprobar un kernel que sirva de algo: **los kernels no
-fallan devolviendo un error, fallan devolviendo números plausibles**.
-
-La comparación es con tolerancia relativa (~1e-5), no exacta, y eso no es una
-concesión. El compilador de dispositivo funde multiplicación y suma en una sola
-instrucción FMA, que redondea una vez donde la CPU redondea dos; la diferencia
-está en el último bit y se acumula con K. Exigir igualdad bit a bit entre CPU y
-GPU sería exigir que la GPU calcule *peor*.
-
-Lo que sí se mantiene es el determinismo dentro de cada lado: el orden de
-acumulación del kernel es fijo (k ascendente, el mismo que en CPU), así que dos
-ejecuciones en GPU dan exactamente lo mismo. La garantía de la Fase 5 —resultado
-idéntico bit a bit sea cual sea el número de hilos— sigue valiendo para la CPU.
-
-Durante la prueba los umbrales se ponen a cero. Con los umbrales normales todos
-estos casos irían a la CPU, que es justo lo contrario de lo que quiere una
-prueba de paridad: interesa ejercitar formas pequeñas y **con restos** —17×23×31,
-33×65×129—, porque los bordes de las teselas son quienes fallan. El último caso
-encadena un `TransformerBlock` entero con su paso hacia atrás: las pruebas por
-operación pueden pasar todas y el modelo dar otra cosa si una operación deja un
-tensor en el lado equivocado y otra lo lee sin sincronizar.
+How to measure it and what to look at: **[docs/PROFILING.md](PROFILING.md)**.
 
 ---
 
-## Los umbrales, otra vez
+## Parity: why the comparison is to a tolerance
 
-La misma lección de la Fase 5, en otra escala. Lanzar un kernel cuesta unos
-microsegundos, así que por debajo de cierto tamaño la GPU pierde contra **un
-solo núcleo** de CPU. Los valores por defecto:
+`tests/test_cuda_parity.cpp` computes the same expression twice over exactly the
+same data, once with the backend off and once with it on.
 
-| Operación | Umbral | Equivale a |
+It is the only way to check a kernel that is worth anything: **kernels do not
+fail by returning an error, they fail by returning plausible numbers**.
+
+The comparison is to a relative tolerance (~1e-5) rather than exact, and that is
+not a concession. The device compiler fuses multiply and add into a single FMA
+instruction, which rounds once where the CPU rounds twice; the difference is in
+the last bit and accumulates with K. Demanding bit-identical results between CPU
+and GPU would be demanding that the GPU compute *worse*.
+
+What does hold is determinism within each side: the kernel's accumulation order
+is fixed (k ascending, the same as on the CPU), so two GPU runs give exactly the
+same thing. The Phase 5 guarantee — identical bit for bit whatever the thread
+count — still holds for the CPU.
+
+During the test the thresholds are set to zero. At the normal thresholds all
+these cases would go to the CPU, which is the opposite of what a parity test
+wants: the point is to exercise small shapes **with remainders** — 17×23×31,
+33×65×129 — because the tile edges are what fail. The last case chains a whole
+`TransformerBlock` with its backward pass: the per-operation tests can all pass
+and the model still give something else if one operation leaves a tensor on the
+wrong side and another reads it without synchronising.
+
+---
+
+## The thresholds, again
+
+The same lesson as Phase 5, at another scale. Launching a kernel costs a few
+microseconds, so below a certain size the GPU loses to **a single CPU core**. The
+defaults:
+
+| Operation | Threshold | Equivalent to |
 |---|---|---|
-| `matmul` | 2²² operaciones | ~128³ |
-| elemento a elemento | 2²⁰ elementos | 4 MiB |
+| `matmul` | 2²² operations | ~128³ |
+| element-wise | 2²⁰ elements | 4 MiB |
 
-Se cambian sin recompilar con `ENGINE_CUDA_MIN_FLOPS` y
-`ENGINE_CUDA_MIN_ELEMENTS`, que es lo que permite barrerlos y encontrar el cruce
-en una máquina concreta en lugar de heredar el mío. `ENGINE_CUDA=0` apaga el
-backend entero sobre el mismo binario, para comparar de las dos formas sin
-recompilar nada.
-
----
-
-## Lo que deliberadamente no está en la GPU
-
-- **La pérdida y los optimizadores.** `cross_entropy` y los pasos de SGD y Adam
-  siguen en CPU, y son ahora el corte que queda en MNIST: una bajada de todos
-  los gradientes y una subida de todos los parámetros por paso. Es lo siguiente
-  que atacar, porque la cadena de delante ya no se rompe.
-- **`LayerNorm`.** Es la que queda, y la que rompe la cadena dos veces por
-  bloque. El forward tendría kernel sin dificultad; el que manda es el backward,
-  porque `dgamma` y `dbeta` acumulan **a través** de las filas y esa reducción
-  cruzada es un problema de diseño propio —el mismo que mantiene la versión de
-  CPU en serie—. Un forward acelerado con el backward en host resuelve la mitad,
-  así que se hace entera o no se hace.
-- **`Tensor::sum()` a un escalar.** El acumulador es `double` a propósito, y una
-  reducción en dos etapas sobre la GPU en `float` perdería justo lo que ese
-  cambio arregló. Hacerla bien pide acumular en `double` también en el
-  dispositivo, que no es difícil pero tampoco es gratis.
-- **Fusión de kernels.** Cada operación es un kernel y un viaje a memoria
-  global. Un `LayerNorm` fusionado o un `attention` fusionado ahorrarían la
-  mayor parte de ese tráfico. Es la siguiente optimización de verdad.
-- **Streams y solapamiento.** Todo va en el stream por defecto y las copias son
-  sincronizantes. Solapar transferencia y cálculo con memoria anclada es lo que
-  atacaría directamente el coste de PCIe.
-- **Tensor cores.** El motor es fp32 en todas partes. Usarlos exige fp16 o tf32
-  y una discusión de precisión que este proyecto no ha tenido.
-- **cuBLAS.** Por el mismo motivo que no hay BLAS en el camino de CPU: el
-  objetivo es implementarlo, no llamarlo. Un `matmul` con teselas se queda muy
-  por debajo de cuBLAS, y eso es información, no un defecto.
+They are changed without recompiling via `ENGINE_CUDA_MIN_FLOPS` and
+`ENGINE_CUDA_MIN_ELEMENTS`, which is what allows sweeping them and finding the
+crossover on a particular machine instead of inheriting mine. `ENGINE_CUDA=0`
+turns the whole backend off on the same binary, to compare both ways without
+recompiling anything.
 
 ---
 
-## Reproducir las medidas
+## What is deliberately not on the GPU
+
+- **The loss and the optimisers.** `cross_entropy` and the SGD and Adam steps
+  are still on the CPU, and they are now the remaining break in MNIST: one
+  download of every gradient and one upload of every parameter per step. It is
+  the next thing to attack, because the chain ahead of it no longer breaks.
+- **`LayerNorm`.** It is the one that is left, and it breaks the chain twice per
+  block. The forward would have a kernel without difficulty; the one that
+  decides is the backward, because `dgamma` and `dbeta` accumulate **across**
+  rows and that cross-row reduction is a design problem of its own — the same
+  one that keeps the CPU version serial. An accelerated forward with the
+  backward on the host solves half of it, so it gets done whole or not at all.
+- **`Tensor::sum()` to a scalar.** The accumulator is `double` on purpose, and a
+  two-stage GPU reduction in `float` would lose exactly what that change fixed.
+  Doing it properly means accumulating in `double` on the device too, which is
+  not hard but is not free either.
+- **Kernel fusion.** Every operation is one kernel and one trip to global
+  memory. A fused `LayerNorm` or a fused `attention` would save most of that
+  traffic. It is the next real optimisation.
+- **Streams and overlap.** Everything runs on the default stream and the copies
+  are synchronising. Overlapping transfer and compute with pinned memory is what
+  would attack the PCIe cost directly.
+- **Tensor cores.** The engine is fp32 everywhere. Using them requires fp16 or
+  tf32 and a precision discussion this project has not had.
+- **cuBLAS.** For the same reason there is no BLAS on the CPU path: the goal is
+  to implement it, not to call it. A tiled `matmul` falls well short of cuBLAS,
+  and that is information, not a defect.
+
+---
+
+## Reproducing the measurements
 
 ```bash
 cmake -B build-cuda -S . -DENGINE_CUDA=ON
@@ -351,21 +352,21 @@ cmake --build build-cuda --parallel
 ./build-cuda/bench
 ```
 
-La sección «CPU frente a GPU» imprime tres cosas, y la tercera es la que
-importa:
+The "CPU versus GPU" section prints three things, and the third is the one that
+matters:
 
-1. `matmul` de 64³ a 2048³, CPU contra GPU, **con los operandos ya residentes**.
-   Mide el kernel.
-2. El coste de las transferencias: la misma operación con los datos arriba
-   frente a la misma con ida y vuelta completa por iteración, que es lo que pasa
-   en un bucle de entrenamiento donde la pérdida y el optimizador siguen en CPU.
-3. El ancho de banda H2D y D2H medido, y el número de subidas y bajadas.
+1. `matmul` from 64³ to 2048³, CPU against GPU, **with the operands already
+   resident**. That measures the kernel.
+2. The cost of the transfers: the same operation with the data up there against
+   the same one with a full round trip per iteration, which is what happens in a
+   training loop where the loss and the optimiser are still on the CPU.
+3. The measured H2D and D2H bandwidth, and the number of uploads and downloads.
 
-Se informan **por separado a propósito**. En un motor real el enlace PCIe es el
-cuello de botella mucho antes que el cálculo, y una tabla CPU/GPU que esconda
-ese coste dentro del total no dice nada útil sobre el motor: dice cuánto ocupa
-la matriz.
+They are reported **separately on purpose**. In a real engine the PCIe link is
+the bottleneck long before the arithmetic is, and a CPU/GPU table that hides
+that cost inside the total says nothing useful about the engine: it says how big
+the matrix is.
 
-La bajada incluye la espera al kernel, porque `cudaMemcpy` sincroniza. Eso no es
-un defecto de la medida, es la medida: el coste real de leer un resultado desde
-el programa.
+The download includes waiting for the kernel, because `cudaMemcpy` synchronises.
+That is not a defect of the measurement, it is the measurement: the real cost of
+reading a result from the program.
