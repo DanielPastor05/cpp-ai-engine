@@ -5,7 +5,7 @@
 
 [![CI](https://github.com/DanielPastor05/cpp-ai-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/DanielPastor05/cpp-ai-engine/actions/workflows/ci.yml)
 
-Un motor de Inteligencia Artificial y Aprendizaje Profundo (Deep Learning) avanzado construido desde cero en **C++17**, sin dependencias externas, con backend de aceleración GPU en **CUDA** planificado.
+Un motor de Inteligencia Artificial y Aprendizaje Profundo (Deep Learning) avanzado construido desde cero en **C++17**, sin dependencias externas, con backend opcional de aceleración GPU en **CUDA** (apagado por defecto: sin toolkit ni tarjeta el motor compila y pasa las pruebas igual).
 
 ## 🚀 Hoja de Ruta del Proyecto
 
@@ -71,15 +71,22 @@ include/engine/
   transformer.hpp LayerNorm, Embedding, atención, MultiHeadAttention, TransformerBlock
   optim.hpp       Optimizer, SGD, Adam, recorte de gradiente, planificadores de lr
   serialize.hpp   Guardar y cargar pesos
+  cuda.hpp        Backend GPU: disponibilidad, umbrales, contadores, transferencias
+  data.hpp        Carga de MNIST y utilidades de conjuntos de datos
+  parallel.hpp    parallel_for con reparto determinista y el umbral por hilo
   random.hpp      global_rng() (aparte, porque <random> es cara de compilar)
-  detail/         TensorImpl, la representación interna de un nodo del grafo
-src/              Implementación de la librería
+  detail/         TensorImpl, Storage y las declaraciones de los kernels
+src/              Implementación de la librería (src/cuda/ los kernels)
 examples/         main.cpp (F1), autograd_demo.cpp (F2), nn_demo.cpp (F3),
-                  cnn_demo.cpp (F4), transformer_demo.cpp (F5)
+                  cnn_demo.cpp (F4), transformer_demo.cpp (F5), mnist_demo.cpp
 tests/            Suite de pruebas con verificación numérica de gradientes,
-                  repartida por áreas (tensor, autograd, nn, conv, transformer)
+                  repartida por áreas (tensor, autograd, nn, conv, transformer,
+                  referencia contra PyTorch, índices de los kernels y paridad
+                  CPU/GPU)
 bench/            Banco de pruebas de rendimiento (no se ejecuta en CI)
-.github/workflows/ci.yml   Compila y ejecuta las pruebas en GCC, Clang y MSVC
+.github/workflows/ci.yml   GCC, Clang, AppleClang y MSVC; ASan+UBSan;
+                  ThreadSanitizer; Debug con _GLIBCXX_ASSERTIONS; y un trabajo
+                  que compila y prueba el backend CUDA en un runner sin GPU
 ```
 
 ---
@@ -448,7 +455,11 @@ gradiente es un valor temporal del recorrido, y conservarlo haría que un segund
 ## ✅ Pruebas
 
 La suite cubre tensores, autograd, capas densas, convoluciones,
-atención y optimizadores con 368 comprobaciones, y se ejecutan en CI sobre GCC, Clang y MSVC. El grueso de la verificación de autograd es una **comprobación
+atención y optimizadores con **524 comprobaciones** (589 al compilar con
+`-DENGINE_CUDA=ON` sobre una máquina con tarjeta, que añade las de paridad
+CPU/GPU), y se ejecutan en CI sobre GCC, Clang, AppleClang y MSVC, más
+AddressSanitizer, UBSan, ThreadSanitizer y una compilación en Debug. El grueso
+de la verificación de autograd es una **comprobación
 numérica de gradientes** por diferencias centradas, que compara cada derivada
 analítica con `(f(x+h) - f(x-h)) / 2h`; también se verifica que los nodos
 intermedios del grafo se liberen al salir de ámbito, que `col2im` sea el adjunto

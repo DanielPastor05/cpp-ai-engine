@@ -256,10 +256,24 @@ void device_free(float* ptr) {
     // El destructor de Storage llama aquí, así que no puede lanzar: durante el
     // apagado del proceso el contexto de CUDA puede haberse destruido ya, y
     // eso no es un fallo que merezca terminar el programa.
-    if (context().memory_pools) {
-        cudaFreeAsync(ptr, 0);
-    } else {
-        cudaFree(ptr);
+    const cudaError_t status =
+        context().memory_pools ? cudaFreeAsync(ptr, 0) : cudaFree(ptr);
+
+    // No lanzar no es lo mismo que no enterarse. Sin esto, una doble liberación
+    // o un puntero que no salió de este asignador son completamente invisibles:
+    // el error se queda pegado al hilo y aparece luego en la siguiente llamada
+    // de CUDA que sí comprueba, señalando a un sitio que no tiene la culpa. Se
+    // avisa una vez, igual que con los kernels, y se limpia para no contaminar.
+    if (status != cudaSuccess && status != cudaErrorCudartUnloading) {
+        static bool reported = false;
+        if (!reported) {
+            reported = true;
+            std::fprintf(stderr,
+                         "\nengine: no se pudo liberar memoria de dispositivo (%s).\n"
+                         "  Los siguientes no se repiten aqui.\n\n",
+                         cudaGetErrorString(status));
+        }
+        cudaGetLastError();
     }
 }
 

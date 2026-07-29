@@ -108,7 +108,7 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
   cuda:
-    name: Linux / CUDA (solo compilacion)
+    name: Linux / CUDA (compilacion y pruebas sin GPU)
     # ubuntu-22.04 trae gcc-11, que es un compilador de host que nvcc acepta.
     # En 24.04 el gcc por defecto es mas nuevo de lo que soporta y la
     # compilacion falla antes de empezar.
@@ -145,6 +145,14 @@ jobs:
 
       - name: Compilar
         run: cmake --build build --parallel
+
+      # La paridad se omite sola cuando cuda::available() es falso, asi que lo
+      # que queda es justo lo que si tiene sentido aqui: la suite entera contra
+      # una biblioteca compilada con ENGINE_CUDA=ON, comprobando que el camino
+      # de respaldo sin tarjeta da los mismos numeros que la version sin CUDA, y
+      # test_cuda_indexing, que replica los indices de los kernels en CPU.
+      - name: Ejecutar las pruebas (sin GPU, la paridad se omite)
+        run: ctest --test-dir build --output-on-failure
 
   debug:
     name: Linux / Debug

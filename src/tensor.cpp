@@ -976,10 +976,14 @@ Tensor Tensor::softmax() const {
 
 // Reducción Suma a un escalar {1}
 Tensor Tensor::sum() const {
-    float total = 0.0f;
+    // El acumulador es double aunque los datos sean float, igual que en
+    // clip_grad_norm. Sumar un millon de valores en float pierde los bits bajos
+    // en cuanto el total crece frente a cada sumando, y de esta reduccion cuelga
+    // mean(), o sea mse_loss y el gradiente inicial de cualquier backward.
+    double total = 0.0;
     for (float v : data()) total += v;
     bool req_g = track(requires_grad());
-    Tensor res({1}, std::vector<float>{total}, req_g);
+    Tensor res({1}, std::vector<float>{static_cast<float>(total)}, req_g);
 
     if (req_g) {
         res.impl_->parents = { impl_ };

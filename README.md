@@ -279,7 +279,8 @@ ncu --set full -o p ./build-cuda/bench_matmul --kernel=register --size=2048 --it
 How to profile it and which metrics actually mean something:
 **[docs/PROFILING.md](docs/PROFILING.md)**.
 
-**CI has no GPU, so the CUDA job only compiles** — which catches a syntax error and
+**CI has no GPU, so the CUDA job builds the suite and runs it with the parity
+section skipping itself** — which catches a syntax error and a broken fallback, and
 nothing else. An indexing error compiles perfectly happily and shows up weeks later
 as wrong numbers. So the kernel's index arithmetic is *replayed on the CPU*: same
 block grid, same 256 threads, same shared-memory staging, same barriers, same index
