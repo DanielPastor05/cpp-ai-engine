@@ -28,20 +28,20 @@ namespace ops {
 
 namespace {
 
-constexpr int kTile = 32;       // lado del bloque compartido del matmul
-constexpr int kBlock = 256;     // hilos por bloque en los kernels 1D
-constexpr int kReduceBlock = 256; // potencia de dos: lo exige la reducción
+constexpr int kTile = 32;          // lado del bloque compartido del matmul
+constexpr int kBlock = 256;        // hilos por bloque en los kernels 1D
+constexpr int kReduceBlock = 256;  // potencia de dos: lo exige la reducción
 
 // Geometry of the register-tiled matmul. The five numbers are tied to each
 // other and cannot be changed independently:
 //   (kBM / kTM) * (kBN / kTN) == kRegBlock   -> one output square per thread
 //   kBM * kBK == kBN * kBK == 1024           -> a tile fits in 4 scalar load
 //                                               passes, or 1 vectorised
-constexpr int kBM = 128;        // filas de la salida por bloque
-constexpr int kBN = 128;        // columnas de la salida por bloque
-constexpr int kBK = 8;          // paso sobre K
-constexpr int kTM = 8;          // filas de la salida por hilo
-constexpr int kTN = 8;          // columnas de la salida por hilo
+constexpr int kBM = 128;                              // filas de la salida por bloque
+constexpr int kBN = 128;                              // columnas de la salida por bloque
+constexpr int kBK = 8;                                // paso sobre K
+constexpr int kTM = 8;                                // filas de la salida por hilo
+constexpr int kTN = 8;                                // columnas de la salida por hilo
 constexpr int kRegBlock = (kBM / kTM) * (kBN / kTN);  // 256 hilos
 
 static_assert(kRegBlock == 256, "los índices de carga suponen 256 hilos por bloque");
@@ -113,8 +113,8 @@ bool launch_ok(const char* what) {
                      "\nengine: el kernel %s no se pudo lanzar (%s).\n"
                      "  Se calcula en CPU, asi que los resultados son correctos pero lentos.\n"
                      "  Compilado con CUDA %d.%d, driver instalado CUDA %d.%d.\n",
-                     what, cudaGetErrorString(status),
-                     built / 1000, (built % 1000) / 10, drv / 1000, (drv % 1000) / 10);
+                     what, cudaGetErrorString(status), built / 1000, (built % 1000) / 10,
+                     drv / 1000, (drv % 1000) / 10);
 
         // The two hints are independent and can both apply: a binary with the wrong
         // architecture falls back to compiling the PTX, and that is when a driver
@@ -125,17 +125,17 @@ bool launch_ok(const char* what) {
                          "  El driver es mas antiguo que el toolkit: actualiza el driver de\n"
                          "  NVIDIA, o compila con una version de CUDA que el driver admita.\n");
         }
-        if (status == cudaErrorUnsupportedPtxVersion ||
-            status == cudaErrorNoKernelImageForDevice) {
+        if (status == cudaErrorUnsupportedPtxVersion || status == cudaErrorNoKernelImageForDevice) {
             const DeviceInfo info = device_info();
             std::fprintf(stderr,
                          "  El binario no lleva codigo nativo para esta tarjeta (cc %d.%d).\n"
                          "  Reconfigura con -DCMAKE_CUDA_ARCHITECTURES=%d%d\n",
-                         info.compute_major, info.compute_minor,
-                         info.compute_major, info.compute_minor);
+                         info.compute_major, info.compute_minor, info.compute_major,
+                         info.compute_minor);
         }
-        std::fprintf(stderr, "  Los siguientes fallos no se repiten aqui;"
-                             " se cuentan en cuda::kernels_failed().\n\n");
+        std::fprintf(stderr,
+                     "  Los siguientes fallos no se repiten aqui;"
+                     " se cuentan en cuda::kernels_failed().\n\n");
     }
     return false;
 }
@@ -165,10 +165,8 @@ __device__ inline float apply(float x, float y) {
 }
 
 template <int Op>
-__global__ void binary_contiguous(const float* __restrict__ a,
-                                  const float* __restrict__ b,
-                                  float* __restrict__ out,
-                                  long long n) {
+__global__ void binary_contiguous(const float* __restrict__ a, const float* __restrict__ b,
+                                  float* __restrict__ out, long long n) {
     // Grid-stride loop: this way the block count does not depend on n and
     // gridDim.x never overflows.
     const long long stride = (long long)blockDim.x * gridDim.x;
@@ -181,10 +179,8 @@ __global__ void binary_contiguous(const float* __restrict__ a,
 // walks the repetitions and the x axis the block being repeated.
 // A 64-bit modulo per element would cost far more here than on the CPU.
 template <int Op>
-__global__ void binary_broadcast(const float* __restrict__ a,
-                                 const float* __restrict__ b,
-                                 float* __restrict__ out,
-                                 long long inner) {
+__global__ void binary_broadcast(const float* __restrict__ a, const float* __restrict__ b,
+                                 float* __restrict__ out, long long inner) {
     const long long j = (long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (j >= inner) return;
     const long long i = (long long)blockIdx.y * inner + j;
@@ -210,8 +206,8 @@ __global__ void relu_grad(const float* __restrict__ x, const float* __restrict__
 //
 // initialize is uniform across the grid -- the caller decides it by looking at
 // whether the tensor already had a gradient -- so the branch splits no warp.
-__global__ void grad_accumulate(const float* __restrict__ g, float* __restrict__ out,
-                                long long n, bool initialize) {
+__global__ void grad_accumulate(const float* __restrict__ g, float* __restrict__ out, long long n,
+                                bool initialize) {
     const long long stride = (long long)blockDim.x * gridDim.x;
     for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
         out[i] = initialize ? g[i] : out[i] + g[i];
@@ -222,8 +218,8 @@ __global__ void grad_accumulate(const float* __restrict__ g, float* __restrict__
 // add = 0 and adding is mul = 1. With those values the product or the sum is
 // redundant, and it does not matter: the kernel is memory bound, not bound by
 // the two floating-point operations it does per element.
-__global__ void scalar_affine(const float* __restrict__ x, float* __restrict__ out,
-                              float mul, float add, long long n) {
+__global__ void scalar_affine(const float* __restrict__ x, float* __restrict__ out, float mul,
+                              float add, long long n) {
     const long long stride = (long long)blockDim.x * gridDim.x;
     for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
         out[i] = x[i] * mul + add;
@@ -357,7 +353,7 @@ __global__ void col2im_scatter(const float* __restrict__ cols, float* __restrict
         // valid, so no divisibility check is needed.
         const long long hp = h + d.padding;
         const long long wp = w + d.padding;
-        long long oh_lo = (hp - d.kernel_h + d.stride) / d.stride;   // techo de (hp-kH+1)/stride
+        long long oh_lo = (hp - d.kernel_h + d.stride) / d.stride;  // techo de (hp-kH+1)/stride
         long long ow_lo = (wp - d.kernel_w + d.stride) / d.stride;
         if (oh_lo < 0) oh_lo = 0;
         if (ow_lo < 0) ow_lo = 0;
@@ -419,7 +415,11 @@ __global__ void maxpool_windows(const float* __restrict__ input, float* __restri
                 const long long idx = ((b * d.channels + c) * d.height + h) * d.width + w;
                 const float v = input[idx];
                 // Strict, not >=: on a tie the first one wins, exactly as on the CPU.
-                if (!found || v > best) { best = v; best_idx = idx; found = true; }
+                if (!found || v > best) {
+                    best = v;
+                    best_idx = idx;
+                    found = true;
+                }
             }
         }
         out[i] = best;
@@ -427,8 +427,7 @@ __global__ void maxpool_windows(const float* __restrict__ input, float* __restri
     }
 }
 
-__global__ void maxpool_windows_grad(const float* __restrict__ argmax,
-                                     const float* __restrict__ g,
+__global__ void maxpool_windows_grad(const float* __restrict__ argmax, const float* __restrict__ g,
                                      float* __restrict__ dx, WindowDims d, long long n) {
     const long long spatial = (long long)d.out_h * d.out_w;
     const long long grid_stride = (long long)blockDim.x * gridDim.x;
@@ -478,11 +477,9 @@ __global__ void maxpool_windows_grad(const float* __restrict__ argmax,
 // rounds once instead of twice. That is why the parity test compares to a
 // tolerance rather than for exact equality.
 //
-__global__ void matmul_tiled(const float* __restrict__ A,
-                             const float* __restrict__ B,
-                             float* __restrict__ C,
-                             int M, int K, int N,
-                             long long a_stride, long long b_stride) {
+__global__ void matmul_tiled(const float* __restrict__ A, const float* __restrict__ B,
+                             float* __restrict__ C, int M, int K, int N, long long a_stride,
+                             long long b_stride) {
     __shared__ float As[kTile][kTile];
     __shared__ float Bs[kTile][kTile];
 
@@ -511,10 +508,10 @@ __global__ void matmul_tiled(const float* __restrict__ A,
 
         __syncthreads();
 
-        // As[ty][k] is a broadcast within the warp and Bs[k][tx] walks consecutive
-        // banks: neither access produces conflicts, so shared memory needs no
-        // padding.
-        #pragma unroll
+// As[ty][k] is a broadcast within the warp and Bs[k][tx] walks consecutive
+// banks: neither access produces conflicts, so shared memory needs no
+// padding.
+#pragma unroll
         for (int k = 0; k < kTile; ++k) {
             acc += As[threadIdx.y][k] * Bs[k][threadIdx.x];
         }
@@ -534,11 +531,9 @@ __global__ void matmul_tiled(const float* __restrict__ A,
 // It exists so the benchmark table has an honest lower bound. Each thread reads
 // both operands straight from global memory, so each element of A is read N
 // times and each of B M times.
-__global__ void matmul_naive(const float* __restrict__ A,
-                             const float* __restrict__ B,
-                             float* __restrict__ C,
-                             int M, int K, int N,
-                             long long a_stride, long long b_stride) {
+__global__ void matmul_naive(const float* __restrict__ A, const float* __restrict__ B,
+                             float* __restrict__ C, int M, int K, int N, long long a_stride,
+                             long long b_stride) {
     const long long batch = blockIdx.z;
     A += batch * a_stride;
     B += batch * b_stride;
@@ -595,10 +590,8 @@ __global__ void matmul_naive(const float* __restrict__ A,
 // multiples of 4 so the addresses are aligned, which the host side checks before
 // choosing this variant.
 template <bool UseVector4>
-__global__ void matmul_register_tiled(const float* __restrict__ A,
-                                      const float* __restrict__ B,
-                                      float* __restrict__ C,
-                                      int M, int K, int N,
+__global__ void matmul_register_tiled(const float* __restrict__ A, const float* __restrict__ B,
+                                      float* __restrict__ C, int M, int K, int N,
                                       long long a_stride, long long b_stride) {
     // No alignment attribute, deliberately: nothing reads these two matrices in
     // 16-byte blocks. The vectorised load acts on **global** memory, which is
@@ -622,23 +615,23 @@ __global__ void matmul_register_tiled(const float* __restrict__ A,
     const int thread_col = threadIdx.x % (kBN / kTN);  // [0, 16)
 
     float acc[kTM][kTN];
-    #pragma unroll
+#pragma unroll
     for (int i = 0; i < kTM; ++i) {
-        #pragma unroll
+#pragma unroll
         for (int j = 0; j < kTN; ++j) acc[i][j] = 0.0f;
     }
 
     // Load indices, distinct from the compute ones: to bring the tiles in it
     // matters that consecutive threads read consecutive positions, not that each
     // reads what it will later use.
-    const int a_load_row_v = threadIdx.x / (kBK / 4);   // [0, 128) con float4
+    const int a_load_row_v = threadIdx.x / (kBK / 4);  // [0, 128) con float4
     const int a_load_col_v = (threadIdx.x % (kBK / 4)) * 4;
-    const int b_load_row_v = threadIdx.x / (kBN / 4);   // [0, 8) con float4
+    const int b_load_row_v = threadIdx.x / (kBN / 4);  // [0, 8) con float4
     const int b_load_col_v = (threadIdx.x % (kBN / 4)) * 4;
 
-    const int a_load_row_s = threadIdx.x / kBK;         // [0, 32) escalar
+    const int a_load_row_s = threadIdx.x / kBK;  // [0, 32) escalar
     const int a_load_col_s = threadIdx.x % kBK;
-    const int b_load_row_s = threadIdx.x / kBN;         // [0, 2) escalar
+    const int b_load_row_s = threadIdx.x / kBN;  // [0, 2) escalar
     const int b_load_col_s = threadIdx.x % kBN;
 
     for (int k_base = 0; k_base < K; k_base += kBK) {
@@ -673,16 +666,16 @@ __global__ void matmul_register_tiled(const float* __restrict__ A,
                 Bs[b_load_row_v][b_load_col_v + 3] = v.w;
             }
         } else {
-            // Without vectorising, four passes per tile are needed: 256 threads
-            // against 1024 values.
-            #pragma unroll
+// Without vectorising, four passes per tile are needed: 256 threads
+// against 1024 values.
+#pragma unroll
             for (int off = 0; off < kBM; off += 256 / kBK) {
                 const int g_row = block_row + a_load_row_s + off;
                 const int g_col = k_base + a_load_col_s;
                 As[a_load_col_s][a_load_row_s + off] =
                     (g_row < M && g_col < K) ? A[(long long)g_row * K + g_col] : 0.0f;
             }
-            #pragma unroll
+#pragma unroll
             for (int off = 0; off < kBK; off += 256 / kBN) {
                 const int g_row = k_base + b_load_row_s + off;
                 const int g_col = block_col + b_load_col_s;
@@ -693,21 +686,21 @@ __global__ void matmul_register_tiled(const float* __restrict__ A,
 
         __syncthreads();
 
-        // The hot loop. The shared-memory reads are hoisted into registers before
-        // the products: without that the compiler would read from shared inside the
-        // double loop and the whole advantage would be lost.
-        #pragma unroll
+// The hot loop. The shared-memory reads are hoisted into registers before
+// the products: without that the compiler would read from shared inside the
+// double loop and the whole advantage would be lost.
+#pragma unroll
         for (int dot = 0; dot < kBK; ++dot) {
             float reg_m[kTM];
             float reg_n[kTN];
-            #pragma unroll
+#pragma unroll
             for (int i = 0; i < kTM; ++i) reg_m[i] = As[dot][thread_row * kTM + i];
-            #pragma unroll
+#pragma unroll
             for (int j = 0; j < kTN; ++j) reg_n[j] = Bs[dot][thread_col * kTN + j];
 
-            #pragma unroll
+#pragma unroll
             for (int i = 0; i < kTM; ++i) {
-                #pragma unroll
+#pragma unroll
                 for (int j = 0; j < kTN; ++j) acc[i][j] += reg_m[i] * reg_n[j];
             }
         }
@@ -715,11 +708,11 @@ __global__ void matmul_register_tiled(const float* __restrict__ A,
         __syncthreads();
     }
 
-    #pragma unroll
+#pragma unroll
     for (int i = 0; i < kTM; ++i) {
         const int row = block_row + thread_row * kTM + i;
         if (row >= M) continue;
-        #pragma unroll
+#pragma unroll
         for (int j = 0; j < kTN; ++j) {
             const int col = block_col + thread_col * kTN + j;
             if (col < N) C[(long long)row * N + col] = acc[i][j];
@@ -819,8 +812,8 @@ bool elementwise_worth_it(size_t n) {
 // Translates the geometry into the kernel's integers, or says it does not fit.
 // Both convolution entry points share these checks.
 bool window_dims(const WindowShape& s, WindowDims& d) {
-    const size_t all[] = {s.batch, s.channels, s.height, s.width, s.kernel_h,
-                          s.kernel_w, s.stride, s.padding, s.out_h, s.out_w};
+    const size_t all[] = {s.batch,    s.channels, s.height,  s.width, s.kernel_h,
+                          s.kernel_w, s.stride,   s.padding, s.out_h, s.out_w};
     for (size_t v : all) {
         if (v > kMaxInt) return false;
     }
@@ -841,25 +834,24 @@ bool window_dims(const WindowShape& s, WindowDims& d) {
 }
 
 template <int Op>
-bool launch_binary(const Storage& a, const Storage& b, Storage& out,
-                   size_t inner, size_t repeat) {
+bool launch_binary(const Storage& a, const Storage& b, Storage& out, size_t inner, size_t repeat) {
     const size_t n = a.size();
     if (repeat <= 1) {
-        binary_contiguous<Op><<<grid_for((long long)n), kBlock>>>(
-            a.device(), b.device(), out.device_write(), (long long)n);
+        binary_contiguous<Op><<<grid_for((long long)n), kBlock>>>(a.device(), b.device(),
+                                                                  out.device_write(), (long long)n);
         return launched_ok("binary_contiguous", out);
     }
     if (repeat > kMaxGridYZ) return false;
     const dim3 grid((unsigned)((inner + kBlock - 1) / kBlock), (unsigned)repeat);
-    binary_broadcast<Op><<<grid, kBlock>>>(
-        a.device(), b.device(), out.device_write(), (long long)inner);
+    binary_broadcast<Op>
+        <<<grid, kBlock>>>(a.device(), b.device(), out.device_write(), (long long)inner);
     return launched_ok("binary_broadcast", out);
 }
 
-} // namespace
+}  // namespace
 
-bool binary(Binary op, const Storage& a, const Storage& b, Storage& out,
-            size_t inner, size_t repeat) {
+bool binary(Binary op, const Storage& a, const Storage& b, Storage& out, size_t inner,
+            size_t repeat) {
     if (!elementwise_worth_it(a.size())) return false;
     if (inner == 0 || repeat == 0) return false;
     if (inner * repeat != a.size() || out.size() != a.size()) return false;
@@ -869,17 +861,20 @@ bool binary(Binary op, const Storage& a, const Storage& b, Storage& out,
     if (repeat > 1 && repeat > kMaxGridYZ) return false;
 
     switch (op) {
-        case Binary::Add: return launch_binary<0>(a, b, out, inner, repeat);
-        case Binary::Sub: return launch_binary<1>(a, b, out, inner, repeat);
-        case Binary::Mul: return launch_binary<2>(a, b, out, inner, repeat);
-        case Binary::Div: return launch_binary<3>(a, b, out, inner, repeat);
+        case Binary::Add:
+            return launch_binary<0>(a, b, out, inner, repeat);
+        case Binary::Sub:
+            return launch_binary<1>(a, b, out, inner, repeat);
+        case Binary::Mul:
+            return launch_binary<2>(a, b, out, inner, repeat);
+        case Binary::Div:
+            return launch_binary<3>(a, b, out, inner, repeat);
     }
     return false;
 }
 
-bool matmul(const Storage& a, const Storage& b, Storage& out,
-            size_t batch, size_t rows, size_t inner_dim, size_t cols,
-            bool a_batched, bool b_batched) {
+bool matmul(const Storage& a, const Storage& b, Storage& out, size_t batch, size_t rows,
+            size_t inner_dim, size_t cols, bool a_batched, bool b_batched) {
     if (!enabled()) return false;
     if (batch == 0 || rows == 0 || inner_dim == 0 || cols == 0) return false;
 
@@ -913,8 +908,7 @@ bool matmul(const Storage& a, const Storage& b, Storage& out,
 
     if (choice == MatmulKernel::RegisterTiled || choice == MatmulKernel::Vectorized) {
         if ((rows + kBM - 1) / kBM > kMaxGridYZ) return false;
-        const dim3 grid((unsigned)((cols + kBN - 1) / kBN),
-                        (unsigned)((rows + kBM - 1) / kBM),
+        const dim3 grid((unsigned)((cols + kBN - 1) / kBN), (unsigned)((rows + kBM - 1) / kBM),
                         (unsigned)batch);
         if (choice == MatmulKernel::Vectorized) {
             matmul_register_tiled<true><<<grid, kRegBlock>>>(
@@ -928,18 +922,17 @@ bool matmul(const Storage& a, const Storage& b, Storage& out,
 
     if ((rows + kTile - 1) / kTile > kMaxGridYZ) return false;
     const dim3 block(kTile, kTile);
-    const dim3 grid((unsigned)((cols + kTile - 1) / kTile),
-                    (unsigned)((rows + kTile - 1) / kTile),
+    const dim3 grid((unsigned)((cols + kTile - 1) / kTile), (unsigned)((rows + kTile - 1) / kTile),
                     (unsigned)batch);
 
     if (choice == MatmulKernel::Naive) {
-        matmul_naive<<<grid, block>>>(a.device(), b.device(), out.device_write(),
-                                      M, K, N, a_stride, b_stride);
+        matmul_naive<<<grid, block>>>(a.device(), b.device(), out.device_write(), M, K, N, a_stride,
+                                      b_stride);
         return launched_ok("matmul_naive", out);
     }
 
-    matmul_tiled<<<grid, block>>>(a.device(), b.device(), out.device_write(),
-                                  M, K, N, a_stride, b_stride);
+    matmul_tiled<<<grid, block>>>(a.device(), b.device(), out.device_write(), M, K, N, a_stride,
+                                  b_stride);
     return launched_ok("matmul_tiled", out);
 }
 
@@ -951,8 +944,8 @@ bool scalar(const Storage& x, Storage& out, float mul, float add) {
     return launched_ok("scalar_affine", out);
 }
 
-bool permute(const Storage& x, Storage& out,
-             const size_t* out_shape, const size_t* src_strides, size_t ndim) {
+bool permute(const Storage& x, Storage& out, const size_t* out_shape, const size_t* src_strides,
+             size_t ndim) {
     if (!elementwise_worth_it(x.size())) return false;
     if (ndim == 0 || ndim > (size_t)kMaxPermuteDims) return false;
     if (out.size() != x.size()) return false;
@@ -981,8 +974,8 @@ bool sum_axis(const Storage& x, Storage& out, size_t outer, size_t axis_len, siz
     if (out.size() != outer * inner) return false;
 
     const long long n = (long long)(outer * inner);
-    sum_over_axis<<<grid_for(n), kBlock>>>(x.device(), out.device_write(),
-                                           (long long)axis_len, (long long)inner, n);
+    sum_over_axis<<<grid_for(n), kBlock>>>(x.device(), out.device_write(), (long long)axis_len,
+                                           (long long)inner, n);
     return launched_ok("sum_over_axis", out);
 }
 
@@ -1112,8 +1105,8 @@ bool softmax(const Storage& x, Storage& out, size_t rows, size_t cols) {
     return launched_ok("softmax_rows", out);
 }
 
-bool softmax_backward(const Storage& y, const Storage& grad_out, Storage& out,
-                      size_t rows, size_t cols) {
+bool softmax_backward(const Storage& y, const Storage& grad_out, Storage& out, size_t rows,
+                      size_t cols) {
     if (!elementwise_worth_it(y.size())) return false;
     if (rows == 0 || cols == 0 || cols > kMaxInt) return false;
     if (rows * cols != y.size() || grad_out.size() != y.size() || out.size() != y.size()) {
@@ -1121,11 +1114,11 @@ bool softmax_backward(const Storage& y, const Storage& grad_out, Storage& out,
     }
     if (rows > (size_t)std::numeric_limits<int>::max()) return false;
 
-    softmax_rows_grad<<<(unsigned)rows, kReduceBlock>>>(
-        y.device(), grad_out.device(), out.device_write(), (int)cols);
+    softmax_rows_grad<<<(unsigned)rows, kReduceBlock>>>(y.device(), grad_out.device(),
+                                                        out.device_write(), (int)cols);
     return launched_ok("softmax_rows_grad", out);
 }
 
-} // namespace ops
-} // namespace cuda
-} // namespace engine
+}  // namespace ops
+}  // namespace cuda
+}  // namespace engine

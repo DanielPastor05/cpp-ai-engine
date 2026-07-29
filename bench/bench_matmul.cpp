@@ -29,17 +29,32 @@ namespace {
 
 struct Options {
     cuda::MatmulKernel kernel = cuda::MatmulKernel::Auto;
-    bool sweep = true;      // sin argumentos, se barre todo
+    bool sweep = true;  // sin argumentos, se barre todo
     size_t size = 2048;
-    size_t iters = 0;       // 0 = por tiempo, no por repeticiones
+    size_t iters = 0;  // 0 = por tiempo, no por repeticiones
 };
 
 bool parse_kernel(const std::string& value, cuda::MatmulKernel& out) {
-    if (value == "auto")       { out = cuda::MatmulKernel::Auto; return true; }
-    if (value == "naive")      { out = cuda::MatmulKernel::Naive; return true; }
-    if (value == "tiled")      { out = cuda::MatmulKernel::Tiled; return true; }
-    if (value == "register")   { out = cuda::MatmulKernel::RegisterTiled; return true; }
-    if (value == "vectorized") { out = cuda::MatmulKernel::Vectorized; return true; }
+    if (value == "auto") {
+        out = cuda::MatmulKernel::Auto;
+        return true;
+    }
+    if (value == "naive") {
+        out = cuda::MatmulKernel::Naive;
+        return true;
+    }
+    if (value == "tiled") {
+        out = cuda::MatmulKernel::Tiled;
+        return true;
+    }
+    if (value == "register") {
+        out = cuda::MatmulKernel::RegisterTiled;
+        return true;
+    }
+    if (value == "vectorized") {
+        out = cuda::MatmulKernel::Vectorized;
+        return true;
+    }
     return false;
 }
 
@@ -58,8 +73,9 @@ bool parse_args(int argc, char** argv, Options& opts) {
         } else if (arg.rfind("--iters=", 0) == 0) {
             opts.iters = static_cast<size_t>(std::stoul(arg.substr(8)));
         } else {
-            printf("Uso: bench_matmul [--kernel=auto|naive|tiled|register|vectorized]\n"
-                   "                  [--size=N] [--iters=N]\n");
+            printf(
+                "Uso: bench_matmul [--kernel=auto|naive|tiled|register|vectorized]\n"
+                "                  [--size=N] [--iters=N]\n");
             return false;
         }
     }
@@ -72,7 +88,7 @@ bool parse_args(int argc, char** argv, Options& opts) {
 // se mide el kernel, no el PCIe. El coste de las transferencias se mide en
 // bench.cpp, y por separado a propósito.
 double time_matmul(const Tensor& A, const Tensor& B, size_t iters, double min_seconds) {
-    { Tensor warm = A.matmul(B); }   // sube los operandos y compila el camino
+    { Tensor warm = A.matmul(B); }  // sube los operandos y compila el camino
     cuda::synchronize();
 
     const auto start = std::chrono::steady_clock::now();
@@ -83,8 +99,8 @@ double time_matmul(const Tensor& A, const Tensor& B, size_t iters, double min_se
         ++done;
         if (iters == 0) {
             cuda::synchronize();
-            elapsed = std::chrono::duration<double>(
-                          std::chrono::steady_clock::now() - start).count();
+            elapsed =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         }
     }
     cuda::synchronize();
@@ -102,11 +118,11 @@ void run_one(cuda::MatmulKernel kernel, size_t n, size_t iters, double peak) {
     const double gflops = 2.0 * (double)n * n * n / seconds / 1e9;
     const double share = (peak > 0.0) ? (gflops / peak * 100.0) : 0.0;
 
-    printf("  %-14s %10.3f ms %12.1f %11.1f%%\n",
-           cuda::matmul_kernel_name(kernel), seconds * 1000.0, gflops, share);
+    printf("  %-14s %10.3f ms %12.1f %11.1f%%\n", cuda::matmul_kernel_name(kernel),
+           seconds * 1000.0, gflops, share);
 }
 
-} // namespace
+}  // namespace
 
 int main(int argc, char** argv) {
     Options opts;
@@ -115,19 +131,19 @@ int main(int argc, char** argv) {
     engine::manual_seed(1);
 
     if (!cuda::available()) {
-        printf("Compilado sin CUDA o sin dispositivo utilizable.\n"
-               "  cmake -B build-cuda -S . -DENGINE_CUDA=ON\n");
+        printf(
+            "Compilado sin CUDA o sin dispositivo utilizable.\n"
+            "  cmake -B build-cuda -S . -DENGINE_CUDA=ON\n");
         return 0;
     }
 
     const cuda::DeviceInfo info = cuda::device_info();
     const double peak = cuda::peak_fp32_gflops();
 
-    printf("Dispositivo: %s (cc %d.%d, %d SM, %zu MiB)\n",
-           info.name.c_str(), info.compute_major, info.compute_minor,
-           info.multiprocessors, info.total_memory >> 20);
-    printf("Pico teorico: %.0f GFLOP/s en fp32, %.0f GB/s de ancho de banda\n",
-           peak, cuda::peak_bandwidth_gbs());
+    printf("Dispositivo: %s (cc %d.%d, %d SM, %zu MiB)\n", info.name.c_str(), info.compute_major,
+           info.compute_minor, info.multiprocessors, info.total_memory >> 20);
+    printf("Pico teorico: %.0f GFLOP/s en fp32, %.0f GB/s de ancho de banda\n", peak,
+           cuda::peak_bandwidth_gbs());
 
     // El punto de inflexion del modelo roofline: por debajo de esta intensidad
     // aritmetica manda la memoria, por encima manda el calculo. Un matmul de
@@ -143,8 +159,8 @@ int main(int argc, char** argv) {
 
     if (!opts.sweep) {
         const double intensity = (double)opts.size / 6.0;
-        printf("Forma %zux%zux%zu, intensidad aritmetica %.0f FLOP/byte (%s)\n",
-               opts.size, opts.size, opts.size, intensity,
+        printf("Forma %zux%zux%zu, intensidad aritmetica %.0f FLOP/byte (%s)\n", opts.size,
+               opts.size, opts.size, intensity,
                intensity > ridge ? "limitado por calculo" : "limitado por memoria");
         printf("  %-14s %10s %12s %11s\n", "kernel", "tiempo", "GFLOP/s", "% del pico");
         run_one(opts.kernel, opts.size, opts.iters, peak);
@@ -170,9 +186,10 @@ int main(int argc, char** argv) {
         printf("\n");
     }
 
-    printf("No se compara contra cuBLAS a proposito: el objetivo del proyecto es\n"
-           "implementar el kernel, no llamarlo. La referencia util es el pico\n"
-           "teorico de la tarjeta, que es la columna de la derecha.\n\n");
+    printf(
+        "No se compara contra cuBLAS a proposito: el objetivo del proyecto es\n"
+        "implementar el kernel, no llamarlo. La referencia util es el pico\n"
+        "teorico de la tarjeta, que es la columna de la derecha.\n\n");
 
     cuda::set_matmul_kernel(cuda::MatmulKernel::Auto);
     return 0;

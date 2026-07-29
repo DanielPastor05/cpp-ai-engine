@@ -35,8 +35,10 @@ private:
 public:
     // Public constructors
     Tensor();
-    explicit Tensor(const std::vector<size_t>& shape, float fill_value = 0.0f, bool requires_grad = false);
-    Tensor(const std::vector<size_t>& shape, const std::vector<float>& data, bool requires_grad = false);
+    explicit Tensor(const std::vector<size_t>& shape, float fill_value = 0.0f,
+                    bool requires_grad = false);
+    Tensor(const std::vector<size_t>& shape, const std::vector<float>& data,
+           bool requires_grad = false);
 
     // Static helper for wrapping a shared implementation
     static Tensor from_impl(std::shared_ptr<TensorImpl> impl);
@@ -44,8 +46,10 @@ public:
     // Factory methods
     static Tensor zeros(const std::vector<size_t>& shape, bool requires_grad = false);
     static Tensor ones(const std::vector<size_t>& shape, bool requires_grad = false);
-    static Tensor rand(const std::vector<size_t>& shape, float min_val = -1.0f, float max_val = 1.0f, bool requires_grad = false);
-    static Tensor randn(const std::vector<size_t>& shape, float mean = 0.0f, float stddev = 1.0f, bool requires_grad = false);
+    static Tensor rand(const std::vector<size_t>& shape, float min_val = -1.0f,
+                       float max_val = 1.0f, bool requires_grad = false);
+    static Tensor randn(const std::vector<size_t>& shape, float mean = 0.0f, float stddev = 1.0f,
+                        bool requires_grad = false);
 
     // Autograd and gradients
     bool requires_grad() const;
@@ -107,7 +111,7 @@ public:
     Tensor transpose() const;
     Tensor permute(const std::vector<size_t>& order) const;
     Tensor relu() const;
-    Tensor softmax() const;   // over the last axis
+    Tensor softmax() const;  // over the last axis
     Tensor reshape(const std::vector<size_t>& new_shape) const;
     // Reductions. With no argument they reduce to a {1} scalar; with an axis
     // they drop it (or leave it at 1 with keepdim), as in NumPy or PyTorch.
@@ -138,6 +142,6 @@ Tensor operator+(float scalar, const Tensor& t);
 Tensor operator-(float scalar, const Tensor& t);
 Tensor operator*(float scalar, const Tensor& t);
 
-} // namespace engine
+}  // namespace engine
 
-#endif // ENGINE_TENSOR_HPP
+#endif  // ENGINE_TENSOR_HPP

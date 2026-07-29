@@ -61,7 +61,7 @@ std::string gflops(double seconds, double flops) {
     return buf;
 }
 
-} // namespace
+}  // namespace
 
 int main() {
     engine::manual_seed(1);
@@ -69,7 +69,9 @@ int main() {
 
     section("matmul");
     {
-        struct Case { size_t M, K, N; };
+        struct Case {
+            size_t M, K, N;
+        };
         const Case cases[] = {{64, 64, 64}, {256, 256, 256}, {512, 128, 512}};
         for (const Case& c : cases) {
             Tensor A = Tensor::randn({c.M, c.K});
@@ -110,54 +112,51 @@ int main() {
         nn::Linear dense(512, 512);
         Tensor x = Tensor::randn({64, 512}, 0.0f, 1.0f, true);
         row("Linear(512,512) lote 64", time_op([&] {
-            dense.zero_grad();
-            dense(x).sum().backward();
-        }));
+                dense.zero_grad();
+                dense(x).sum().backward();
+            }));
 
         nn::Conv2d conv(8, 16, nn::Window2d(3, 3, 1, 1));
         Tensor img = Tensor::randn({16, 8, 16, 16}, 0.0f, 1.0f, true);
         row("Conv2d(8->16, 3x3) lote 16 de 16x16", time_op([&] {
-            conv.zero_grad();
-            conv(img).sum().backward();
-        }));
+                conv.zero_grad();
+                conv(img).sum().backward();
+            }));
 
         nn::MaxPool2d pool(2, 2);
         row("MaxPool2d 2x2", time_op([&] {
-            Tensor out = pool(img);
-            out.sum().backward();
-        }));
+                Tensor out = pool(img);
+                out.sum().backward();
+            }));
 
         nn::LayerNorm norm(256);
         Tensor seq = Tensor::randn({32, 16, 256}, 0.0f, 1.0f, true);
         row("LayerNorm(256) sobre (32,16,256)", time_op([&] {
-            norm.zero_grad();
-            norm(seq).sum().backward();
-        }));
+                norm.zero_grad();
+                norm(seq).sum().backward();
+            }));
 
         nn::TransformerBlock block(128, 4, 256);
         Tensor tokens = Tensor::randn({16, 32, 128}, 0.0f, 1.0f, true);
         row("TransformerBlock(128, 4 cabezas) (16,32,128)", time_op([&] {
-            block.zero_grad();
-            block(tokens).sum().backward();
-        }));
+                block.zero_grad();
+                block(tokens).sum().backward();
+            }));
     }
 
     section("iteracion de entrenamiento completa");
     {
-        nn::Sequential mlp{
-            nn::make<nn::Linear>(128, 256),
-            nn::make<nn::ReLU>(),
-            nn::make<nn::Linear>(256, 10)
-        };
+        nn::Sequential mlp{nn::make<nn::Linear>(128, 256), nn::make<nn::ReLU>(),
+                           nn::make<nn::Linear>(256, 10)};
         optim::Adam opt(mlp.parameters(), 0.001f);
         Tensor X = Tensor::randn({128, 128});
         std::vector<size_t> y(128, 3);
 
         row("MLP 128-256-10, lote 128", time_op([&] {
-            opt.zero_grad();
-            nn::cross_entropy_loss(mlp(X), y).backward();
-            opt.step();
-        }));
+                opt.zero_grad();
+                nn::cross_entropy_loss(mlp(X), y).backward();
+                opt.step();
+            }));
     }
 
     section("inferencia frente a entrenamiento");
@@ -191,16 +190,20 @@ int main() {
             engine::parallel::set_num_threads(threads);
             const double mm = time_op([&] { Tensor C = A.matmul(B); });
             const double add = time_op([&] { Tensor C = E1 + E2; });
-            if (threads == 1) { base_mm = mm; base_add = add; }
+            if (threads == 1) {
+                base_mm = mm;
+                base_add = add;
+            }
 
             char note[96];
-            snprintf(note, sizeof(note), "matmul %.2fx   suma %.2fx  (%s)",
-                     base_mm / mm, base_add / add, gflops(mm, 2.0 * 512 * 512 * 512).c_str());
+            snprintf(note, sizeof(note), "matmul %.2fx   suma %.2fx  (%s)", base_mm / mm,
+                     base_add / add, gflops(mm, 2.0 * 512 * 512 * 512).c_str());
             row(std::to_string(threads) + " hilo(s): matmul 512^3", mm, note);
         }
         engine::parallel::set_num_threads(original);
-        printf("\n  La suma escala peor: esta limitada por el ancho de banda de\n"
-               "  memoria, no por el calculo.\n");
+        printf(
+            "\n  La suma escala peor: esta limitada por el ancho de banda de\n"
+            "  memoria, no por el calculo.\n");
     }
 
     section("CPU frente a GPU");
@@ -208,13 +211,14 @@ int main() {
         namespace cuda = engine::cuda;
 
         if (!cuda::available()) {
-            printf("  Compilado sin CUDA o sin dispositivo utilizable.\n"
-                   "  Recompila con: cmake -B build-cuda -S . -DENGINE_CUDA=ON\n");
+            printf(
+                "  Compilado sin CUDA o sin dispositivo utilizable.\n"
+                "  Recompila con: cmake -B build-cuda -S . -DENGINE_CUDA=ON\n");
         } else {
             const cuda::DeviceInfo info = cuda::device_info();
-            printf("  Dispositivo: %s (cc %d.%d, %d SM, %zu MiB)\n\n",
-                   info.name.c_str(), info.compute_major, info.compute_minor,
-                   info.multiprocessors, info.total_memory >> 20);
+            printf("  Dispositivo: %s (cc %d.%d, %d SM, %zu MiB)\n\n", info.name.c_str(),
+                   info.compute_major, info.compute_minor, info.multiprocessors,
+                   info.total_memory >> 20);
 
             // Sin umbral: aqui interesa medir donde esta el cruce, no aplicarlo.
             const size_t saved_flops = cuda::min_matmul_flops();
@@ -222,7 +226,8 @@ int main() {
             cuda::set_thresholds(0, 0);
 
             printf("  matmul NxNxN, con los operandos ya residentes en el dispositivo:\n");
-            printf("  %-10s %12s %12s %10s %14s\n", "N", "CPU (ms)", "GPU (ms)", "ganancia", "GPU GFLOP/s");
+            printf("  %-10s %12s %12s %10s %14s\n", "N", "CPU (ms)", "GPU (ms)", "ganancia",
+                   "GPU GFLOP/s");
 
             const size_t sizes[] = {64, 128, 256, 512, 1024, 2048};
             for (size_t n : sizes) {
@@ -241,8 +246,8 @@ int main() {
                     cuda::synchronize();
                 });
 
-                printf("  %-10zu %12.3f %12.3f %9.2fx %14.1f\n",
-                       n, cpu * 1000.0, gpu * 1000.0, cpu / gpu, flops / gpu / 1e9);
+                printf("  %-10zu %12.3f %12.3f %9.2fx %14.1f\n", n, cpu * 1000.0, gpu * 1000.0,
+                       cpu / gpu, flops / gpu / 1e9);
             }
 
             // El numero que de verdad importa: cuanto cuesta cruzar el PCIe.
@@ -272,30 +277,38 @@ int main() {
                 // a subir y a bajar.
                 cuda::reset_transfer_stats();
                 const double round_trip = time_op([&] {
-                    A.data()[0] = A.data()[0];   // invalida el espejo del dispositivo
+                    A.data()[0] = A.data()[0];  // invalida el espejo del dispositivo
                     B.data()[0] = B.data()[0];
                     Tensor C = A.matmul(B);
-                    (void)C.data()[0];           // fuerza la bajada del resultado
+                    (void)C.data()[0];  // fuerza la bajada del resultado
                 });
                 const cuda::TransferStats trip_stats = cuda::transfer_stats();
 
                 const double mib = (double)(n * n * sizeof(float)) / (1024.0 * 1024.0);
-                printf("    matmul 1024^3, datos residentes      %8.3f ms  (%zu subidas, %zu bajadas)\n",
-                       resident * 1000.0, resident_stats.to_device_count,
-                       resident_stats.to_host_count);
-                printf("    matmul 1024^3, ida y vuelta completa %8.3f ms  (%zu subidas, %zu bajadas)\n",
-                       round_trip * 1000.0, trip_stats.to_device_count, trip_stats.to_host_count);
+                printf(
+                    "    matmul 1024^3, datos residentes      %8.3f ms  (%zu subidas, %zu "
+                    "bajadas)\n",
+                    resident * 1000.0, resident_stats.to_device_count,
+                    resident_stats.to_host_count);
+                printf(
+                    "    matmul 1024^3, ida y vuelta completa %8.3f ms  (%zu subidas, %zu "
+                    "bajadas)\n",
+                    round_trip * 1000.0, trip_stats.to_device_count, trip_stats.to_host_count);
                 printf("    penalizacion de la ida y vuelta      %8.2fx\n", round_trip / resident);
                 if (trip_stats.to_device_seconds > 0.0) {
-                    printf("    ancho de banda H2D                   %8.2f GB/s (%.1f MiB por matriz)\n",
-                           (double)trip_stats.to_device_bytes / trip_stats.to_device_seconds / 1e9, mib);
+                    printf(
+                        "    ancho de banda H2D                   %8.2f GB/s (%.1f MiB por "
+                        "matriz)\n",
+                        (double)trip_stats.to_device_bytes / trip_stats.to_device_seconds / 1e9,
+                        mib);
                 }
                 if (trip_stats.to_host_seconds > 0.0) {
                     printf("    ancho de banda D2H                   %8.2f GB/s\n",
                            (double)trip_stats.to_host_bytes / trip_stats.to_host_seconds / 1e9);
                 }
-                printf("\n    La bajada incluye la espera al kernel: cudaMemcpy sincroniza.\n"
-                       "    Es lo que se quiere medir, el coste real de leer un resultado.\n");
+                printf(
+                    "\n    La bajada incluye la espera al kernel: cudaMemcpy sincroniza.\n"
+                    "    Es lo que se quiere medir, el coste real de leer un resultado.\n");
             }
 
             printf("\n  Operaciones elemento a elemento (residentes):\n");
@@ -309,16 +322,17 @@ int main() {
                     Tensor C = A + B;
                     cuda::synchronize();
                 });
-                printf("    suma de %10zu valores   CPU %8.3f ms   GPU %8.3f ms   %5.2fx\n",
-                       n, cpu * 1000.0, gpu * 1000.0, cpu / gpu);
+                printf("    suma de %10zu valores   CPU %8.3f ms   GPU %8.3f ms   %5.2fx\n", n,
+                       cpu * 1000.0, gpu * 1000.0, cpu / gpu);
             }
 
             cuda::set_thresholds(saved_flops, saved_elems);
             cuda::set_enabled(true);
-            printf("\n  Umbrales de despacho en uso: %zu operaciones para matmul,\n"
-                   "  %zu elementos para las operaciones elemento a elemento.\n"
-                   "  Se cambian con ENGINE_CUDA_MIN_FLOPS y ENGINE_CUDA_MIN_ELEMENTS.\n",
-                   cuda::min_matmul_flops(), cuda::min_elementwise_elements());
+            printf(
+                "\n  Umbrales de despacho en uso: %zu operaciones para matmul,\n"
+                "  %zu elementos para las operaciones elemento a elemento.\n"
+                "  Se cambian con ENGINE_CUDA_MIN_FLOPS y ENGINE_CUDA_MIN_ELEMENTS.\n",
+                cuda::min_matmul_flops(), cuda::min_elementwise_elements());
         }
     }
 

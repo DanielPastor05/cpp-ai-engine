@@ -46,8 +46,8 @@ protected:
 // ---------------------------------------------------------
 class SGD : public Optimizer {
 public:
-    SGD(std::vector<Tensor> parameters, float lr = 0.01f,
-        float momentum = 0.0f, float weight_decay = 0.0f);
+    SGD(std::vector<Tensor> parameters, float lr = 0.01f, float momentum = 0.0f,
+        float weight_decay = 0.0f);
 
     void step() override;
 
@@ -66,9 +66,8 @@ private:
 // ---------------------------------------------------------
 class Adam : public Optimizer {
 public:
-    Adam(std::vector<Tensor> parameters, float lr = 0.001f,
-         float beta1 = 0.9f, float beta2 = 0.999f,
-         float eps = 1e-8f, float weight_decay = 0.0f);
+    Adam(std::vector<Tensor> parameters, float lr = 0.001f, float beta1 = 0.9f,
+         float beta2 = 0.999f, float eps = 1e-8f, float weight_decay = 0.0f);
 
     void step() override;
 
@@ -81,8 +80,8 @@ private:
     float eps_;
     float weight_decay_;
     size_t t_ = 0;
-    std::vector<std::vector<float>> m_; // primer momento
-    std::vector<std::vector<float>> v_; // segundo momento
+    std::vector<std::vector<float>> m_;  // primer momento
+    std::vector<std::vector<float>> v_;  // segundo momento
 };
 
 // ---------------------------------------------------------
@@ -165,7 +164,7 @@ private:
     float min_lr_;
 };
 
-} // namespace optim
-} // namespace engine
+}  // namespace optim
+}  // namespace engine
 
-#endif // ENGINE_OPTIM_HPP
+#endif  // ENGINE_OPTIM_HPP

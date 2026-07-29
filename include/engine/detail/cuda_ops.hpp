@@ -27,14 +27,13 @@ enum class Binary { Add, Sub, Mul, Div };
 // out = a `op` b, broadcasting by suffix: b has `inner` elements repeated
 // `repeat` times to cover a. Without broadcasting, inner == a.size() and
 // repeat == 1.
-bool binary(Binary op, const Storage& a, const Storage& b, Storage& out,
-            size_t inner, size_t repeat);
+bool binary(Binary op, const Storage& a, const Storage& b, Storage& out, size_t inner,
+            size_t repeat);
 
 // out = a x b, batched. An unbatched operand (a_batched/b_batched false) is
 // reused for every matrix in the batch, exactly as on the CPU path.
-bool matmul(const Storage& a, const Storage& b, Storage& out,
-            size_t batch, size_t rows, size_t inner_dim, size_t cols,
-            bool a_batched, bool b_batched);
+bool matmul(const Storage& a, const Storage& b, Storage& out, size_t batch, size_t rows,
+            size_t inner_dim, size_t cols, bool a_batched, bool b_batched);
 
 bool relu(const Storage& x, Storage& out);
 bool relu_backward(const Storage& x, const Storage& grad_out, Storage& out);
@@ -62,8 +61,8 @@ bool scalar(const Storage& x, Storage& out, float mul, float add);
 //
 // Both vectors describe the output over the input's memory, exactly as on the
 // CPU path: the caller has already computed them.
-bool permute(const Storage& x, Storage& out,
-             const size_t* out_shape, const size_t* src_strides, size_t ndim);
+bool permute(const Storage& x, Storage& out, const size_t* out_shape, const size_t* src_strides,
+             size_t ndim);
 
 // Sum over one axis, viewing the tensor as (outer, axis_len, inner). It is the
 // same decomposition AxisView uses in src/tensor.cpp.
@@ -110,11 +109,11 @@ bool maxpool_backward(const Storage& argmax, const Storage& grad_out, Storage& d
 // Softmax over the last axis: `rows` rows of `cols` contiguous values.
 bool softmax(const Storage& x, Storage& out, size_t rows, size_t cols);
 // y is the saved forward output, not the input.
-bool softmax_backward(const Storage& y, const Storage& grad_out, Storage& out,
-                      size_t rows, size_t cols);
+bool softmax_backward(const Storage& y, const Storage& grad_out, Storage& out, size_t rows,
+                      size_t cols);
 
-} // namespace ops
-} // namespace cuda
-} // namespace engine
+}  // namespace ops
+}  // namespace cuda
+}  // namespace engine
 
-#endif // ENGINE_DETAIL_CUDA_OPS_HPP
+#endif  // ENGINE_DETAIL_CUDA_OPS_HPP

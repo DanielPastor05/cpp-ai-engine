@@ -172,3 +172,74 @@ jobs:
 
       - name: Ejecutar las pruebas
         run: ctest --test-dir build --output-on-failure
+
+  lint:
+    name: Linux / clang-format + clang-tidy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The repository has carried .clang-format and .clang-tidy from the start
+      # without either ever running in CI. A configuration nobody enforces is
+      # worse than no configuration: it claims a standard the code does not
+      # actually meet. When this job was first added, 45 of the 46 source files
+      # failed the project's own format.
+      - name: Install the tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-18 clang-tidy-18
+          sudo update-alternatives --install /usr/bin/clang-format clang-format \
+            /usr/bin/clang-format-18 100
+          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy \
+            /usr/bin/clang-tidy-18 100
+
+      - name: Check the formatting
+        run: |
+          files=$(git ls-files '*.hpp' '*.cpp' '*.cu')
+          clang-format --dry-run --Werror --style=file $files
+
+      # compile_commands.json is what tells clang-tidy which flags each file was
+      # built with. Without it, every #include of a system header fails and the
+      # run is a wall of noise that says nothing.
+      - name: Configure with a compilation database
+        run: cmake -B build -S . -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      # The .cu files are excluded: clang-tidy would need the CUDA headers and a
+      # host/device split that adds nothing here. Everything else is checked.
+      - name: Run clang-tidy
+        run: |
+          files=$(git ls-files 'src/*.cpp' 'include/**/*.hpp')
+          clang-tidy -p build --warnings-as-errors='*' $files
+
+  coverage:
+    name: Linux / coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # "524 checks" is a number with no meaning attached until somebody says
+      # what fraction of the engine they actually reach.
+      - name: Install lcov
+        run: sudo apt-get update && sudo apt-get install -y lcov
+
+      - name: Build instrumented
+        run: >
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="--coverage -O0" &&
+          cmake --build build --parallel
+
+      - name: Run the tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Summarise
+        run: |
+          lcov --directory build --capture --output-file coverage.info \
+            --ignore-errors mismatch,gcov
+          lcov --remove coverage.info '/usr/*' '*/tests/*' '*/examples/*' '*/bench/*' \
+            --output-file coverage.info --ignore-errors unused
+          lcov --list coverage.info
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.info

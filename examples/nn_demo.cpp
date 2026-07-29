@@ -18,8 +18,7 @@ namespace optim = engine::optim;
 // Genera el clásico conjunto "espiral": K brazos entrelazados que ningún
 // clasificador lineal puede separar, así que obliga a la red a usar las capas
 // ocultas y la no linealidad de ReLU.
-void make_spiral(size_t points_per_class, size_t num_classes,
-                 Tensor& X, std::vector<size_t>& y) {
+void make_spiral(size_t points_per_class, size_t num_classes, Tensor& X, std::vector<size_t>& y) {
     const size_t N = points_per_class * num_classes;
     X = Tensor({N, 2}, 0.0f, false);
     y.assign(N, 0);
@@ -30,9 +29,7 @@ void make_spiral(size_t points_per_class, size_t num_classes,
     for (size_t c = 0; c < num_classes; ++c) {
         for (size_t i = 0; i < points_per_class; ++i) {
             const float r = static_cast<float>(i) / static_cast<float>(points_per_class);
-            const float t = static_cast<float>(c) * 4.0f
-                          + r * 4.0f
-                          + noise(engine::global_rng());
+            const float t = static_cast<float>(c) * 4.0f + r * 4.0f + noise(engine::global_rng());
 
             X.data()[idx * 2 + 0] = r * std::sin(t);
             X.data()[idx * 2 + 1] = r * std::cos(t);
@@ -43,8 +40,8 @@ void make_spiral(size_t points_per_class, size_t num_classes,
 }
 
 // Entrena un perceptrón multicapa y devuelve la exactitud final
-float train(const std::string& title, optim::Optimizer& opt, nn::Sequential& model,
-            const Tensor& X, const std::vector<size_t>& y, int epochs) {
+float train(const std::string& title, optim::Optimizer& opt, nn::Sequential& model, const Tensor& X,
+            const std::vector<size_t>& y, int epochs) {
     std::cout << "--- " << title << " ---\n";
 
     float acc = 0.0f;
@@ -66,8 +63,8 @@ float train(const std::string& title, optim::Optimizer& opt, nn::Sequential& mod
 
         acc = nn::accuracy(logits, y);
         if (epoch == 1 || epoch % 100 == 0) {
-            std::cout << "  Epoch " << std::setw(4) << epoch
-                      << " | Loss = " << std::fixed << std::setprecision(4) << loss.data()[0]
+            std::cout << "  Epoch " << std::setw(4) << epoch << " | Loss = " << std::fixed
+                      << std::setprecision(4) << loss.data()[0]
                       << " | Exactitud = " << std::setprecision(2) << (acc * 100.0f) << "%\n";
         }
     }
@@ -79,8 +76,8 @@ float train(const std::string& title, optim::Optimizer& opt, nn::Sequential& mod
 // recorren trozos de `batch_size` filas. Es lo que hace "estocástico" al
 // descenso de gradiente estocástico: cada paso usa una muestra distinta.
 float train_minibatch(const std::string& title, optim::Optimizer& opt, nn::Sequential& model,
-                      const Tensor& X, const std::vector<size_t>& y,
-                      int epochs, size_t batch_size) {
+                      const Tensor& X, const std::vector<size_t>& y, int epochs,
+                      size_t batch_size) {
     std::cout << "--- " << title << " ---\n";
 
     const size_t N = X.shape()[0];
@@ -114,9 +111,8 @@ float train_minibatch(const std::string& title, optim::Optimizer& opt, nn::Seque
         if (epoch == 1 || epoch % 20 == 0) {
             // La exactitud se mide sobre todo el conjunto, sin construir grafo
             engine::autograd::NoGradGuard no_grad;
-            std::cout << "  Epoch " << std::setw(4) << epoch
-                      << " | Loss media = " << std::fixed << std::setprecision(4)
-                      << (epoch_loss / static_cast<float>(num_batches))
+            std::cout << "  Epoch " << std::setw(4) << epoch << " | Loss media = " << std::fixed
+                      << std::setprecision(4) << (epoch_loss / static_cast<float>(num_batches))
                       << " | Exactitud = " << std::setprecision(2)
                       << (nn::accuracy(model(X), y) * 100.0f) << "%\n";
         }
@@ -143,10 +139,8 @@ int main() {
     nn::Linear dense(3, 2);
     dense.bias() = Tensor({1, 2}, {0.5f, -0.5f}, true);
 
-    Tensor batch({4, 3}, {1.0f, 0.0f, 0.0f,
-                          0.0f, 1.0f, 0.0f,
-                          0.0f, 0.0f, 1.0f,
-                          1.0f, 1.0f, 1.0f}, false);
+    Tensor batch({4, 3}, {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+                 false);
 
     Tensor dense_out = dense(batch);
     std::cout << dense.name() << " -> " << dense.num_parameters() << " parametros\n";
@@ -157,12 +151,11 @@ int main() {
     // 2. Softmax y entropía cruzada
     // ---------------------------------------------------------
     std::cout << "--- 2. Softmax y Entropia Cruzada ---\n";
-    Tensor logits({2, 3}, {2.0f, 1.0f, 0.1f,
-                           0.5f, 2.5f, 0.3f}, true);
+    Tensor logits({2, 3}, {2.0f, 1.0f, 0.1f, 0.5f, 2.5f, 0.3f}, true);
     Tensor probs = logits.softmax();
     probs.print("softmax(logits) (cada fila suma 1)");
 
-    std::vector<size_t> labels = {0, 1}; // ambas predicciones son correctas
+    std::vector<size_t> labels = {0, 1};  // ambas predicciones son correctas
     Tensor ce = nn::cross_entropy_loss(logits, labels);
     std::cout << "Entropia cruzada = " << std::fixed << std::setprecision(4) << ce.data()[0]
               << " (baja: el argmax coincide con la etiqueta)\n";
@@ -178,22 +171,19 @@ int main() {
     Tensor X;
     std::vector<size_t> y;
     make_spiral(points_per_class, num_classes, X, y);
-    std::cout << "Conjunto de datos: " << X.shape_str() << ", "
-              << num_classes << " clases entrelazadas (no separables linealmente)\n\n";
+    std::cout << "Conjunto de datos: " << X.shape_str() << ", " << num_classes
+              << " clases entrelazadas (no separables linealmente)\n\n";
 
     // Referencia: un clasificador lineal (una sola capa densa, sin activación)
-    nn::Sequential linear_model{ nn::make<nn::Linear>(2, num_classes) };
+    nn::Sequential linear_model{nn::make<nn::Linear>(2, num_classes)};
     optim::Adam linear_opt(linear_model.parameters(), 0.05f);
-    float linear_acc = train("Referencia: clasificador lineal (Adam)", linear_opt, linear_model, X, y, 300);
+    float linear_acc =
+        train("Referencia: clasificador lineal (Adam)", linear_opt, linear_model, X, y, 300);
 
     // Perceptrón multicapa: 2 -> 64 -> 32 -> 3
-    nn::Sequential mlp{
-        nn::make<nn::Linear>(2, 64),
-        nn::make<nn::ReLU>(),
-        nn::make<nn::Linear>(64, 32),
-        nn::make<nn::ReLU>(),
-        nn::make<nn::Linear>(32, num_classes)
-    };
+    nn::Sequential mlp{nn::make<nn::Linear>(2, 64), nn::make<nn::ReLU>(),
+                       nn::make<nn::Linear>(64, 32), nn::make<nn::ReLU>(),
+                       nn::make<nn::Linear>(32, num_classes)};
     mlp.summary();
     std::cout << "\n";
 
@@ -203,16 +193,13 @@ int main() {
     // El mismo modelo con SGD + momento, entrenado por mini-lotes: 50 épocas
     // de 10 pasos bastan donde el lote completo necesitaba 500 iteraciones.
     engine::manual_seed(42);
-    nn::Sequential mlp_sgd{
-        nn::make<nn::Linear>(2, 64),
-        nn::make<nn::ReLU>(),
-        nn::make<nn::Linear>(64, 32),
-        nn::make<nn::ReLU>(),
-        nn::make<nn::Linear>(32, num_classes)
-    };
+    nn::Sequential mlp_sgd{nn::make<nn::Linear>(2, 64), nn::make<nn::ReLU>(),
+                           nn::make<nn::Linear>(64, 32), nn::make<nn::ReLU>(),
+                           nn::make<nn::Linear>(32, num_classes)};
     optim::SGD sgd(mlp_sgd.parameters(), 0.1f, 0.9f);
-    float sgd_acc = train_minibatch("MLP 2-64-32-3 con SGD por mini-lotes (lr=0.1, momento=0.9, lote=32)",
-                                    sgd, mlp_sgd, X, y, 60, 32);
+    float sgd_acc =
+        train_minibatch("MLP 2-64-32-3 con SGD por mini-lotes (lr=0.1, momento=0.9, lote=32)", sgd,
+                        mlp_sgd, X, y, 60, 32);
 
     // ---------------------------------------------------------
     // 4. Resumen

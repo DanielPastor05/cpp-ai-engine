@@ -34,8 +34,8 @@ public:
 private:
     size_t normalized_size_;
     float eps_;
-    Tensor gamma_; // learned scale (normalized_size)
-    Tensor beta_;  // learned shift (normalized_size)
+    Tensor gamma_;  // learned scale (normalized_size)
+    Tensor beta_;   // learned shift (normalized_size)
 };
 
 // ---------------------------------------------------------
@@ -59,7 +59,7 @@ public:
 private:
     size_t num_embeddings_;
     size_t dim_;
-    Tensor weight_; // (num_embeddings, dim)
+    Tensor weight_;  // (num_embeddings, dim)
 };
 
 // ---------------------------------------------------------
@@ -82,8 +82,8 @@ Tensor causal_mask(size_t seq_len, float masked_value = -1e9f);
 // from growing with the dimension and saturating the softmax.
 // If attention_weights is passed, a copy of the attention weights detached from
 // the graph (..., seq, seq) is left there.
-Tensor scaled_dot_product_attention(const Tensor& query, const Tensor& key,
-                                    const Tensor& value, const Tensor* mask = nullptr,
+Tensor scaled_dot_product_attention(const Tensor& query, const Tensor& key, const Tensor& value,
+                                    const Tensor* mask = nullptr,
                                     Tensor* attention_weights = nullptr);
 
 // ---------------------------------------------------------
@@ -161,7 +161,7 @@ private:
     Linear ff2_;
 };
 
-} // namespace nn
-} // namespace engine
+}  // namespace nn
+}  // namespace engine
 
-#endif // ENGINE_TRANSFORMER_HPP
+#endif  // ENGINE_TRANSFORMER_HPP

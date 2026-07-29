@@ -37,7 +37,7 @@ const std::string kCheckpoint = "mnist_cnn.bin";
 void print_digit(const Tensor& images, size_t index, size_t label) {
     std::cout << "  Etiqueta " << label << ":\n";
     const float* img = images.data().data() + index * 28 * 28;
-    for (size_t r = 0; r < 28; r += 2) { // una fila de cada dos: las celdas son altas
+    for (size_t r = 0; r < 28; r += 2) {  // una fila de cada dos: las celdas son altas
         std::cout << "    ";
         for (size_t c = 0; c < 28; ++c) {
             const float v = img[r * 28 + c];
@@ -92,15 +92,17 @@ void print_confusion(nn::Sequential& model, const data::Dataset& set) {
     for (size_t r = 0; r < kNumClasses; ++r) {
         std::cout << "    " << r << " | ";
         for (size_t c = 0; c < kNumClasses; ++c) {
-            if (matrix[r][c] == 0) std::cout << std::setw(5) << ".";
-            else std::cout << std::setw(5) << matrix[r][c];
+            if (matrix[r][c] == 0)
+                std::cout << std::setw(5) << ".";
+            else
+                std::cout << std::setw(5) << matrix[r][c];
         }
         std::cout << "\n";
     }
     std::cout << "\n";
 }
 
-} // namespace
+}  // namespace
 
 int main() {
     std::cout << "====================================================\n";
@@ -113,8 +115,8 @@ int main() {
     // el optimizador siguen en CPU y la cortan una vez por paso.
     if (engine::cuda::available()) {
         const engine::cuda::DeviceInfo gpu = engine::cuda::device_info();
-        std::cout << "Backend: CUDA sobre " << gpu.name << " (cc " << gpu.compute_major
-                  << "." << gpu.compute_minor << "), convoluciones incluidas.\n";
+        std::cout << "Backend: CUDA sobre " << gpu.name << " (cc " << gpu.compute_major << "."
+                  << gpu.compute_minor << "), convoluciones incluidas.\n";
     } else {
         std::cout << "Backend: CPU, " << engine::parallel::num_threads() << " hilo(s).\n";
     }
@@ -137,9 +139,9 @@ int main() {
     data::Dataset test = data::load_mnist_test(paths);
 
     std::cout << "--- 1. Conjunto de datos ---\n";
-    std::cout << (paths.full ? "MNIST completo" : "Subconjunto del repositorio")
-              << ": " << train.size() << " imagenes de entrenamiento, "
-              << test.size() << " de prueba, de " << train.images.shape_str() << "\n";
+    std::cout << (paths.full ? "MNIST completo" : "Subconjunto del repositorio") << ": "
+              << train.size() << " imagenes de entrenamiento, " << test.size() << " de prueba, de "
+              << train.images.shape_str() << "\n";
     if (!paths.full) {
         std::cout << "(ejecuta tools/download_mnist.sh para el conjunto completo)\n";
     }
@@ -151,18 +153,17 @@ int main() {
     // 2. Modelo
     // ---------------------------------------------------------
     nn::Sequential model{
-        nn::make<nn::Conv2d>(1, 16, nn::Window2d(3, 3, 1, 1)),   // (N,1,28,28) -> (N,16,28,28)
+        nn::make<nn::Conv2d>(1, 16, nn::Window2d(3, 3, 1, 1)),  // (N,1,28,28) -> (N,16,28,28)
         nn::make<nn::ReLU>(),
-        nn::make<nn::MaxPool2d>(2, 2),                            // -> (N,16,14,14)
-        nn::make<nn::Conv2d>(16, 32, nn::Window2d(3, 3, 1, 1)),   // -> (N,32,14,14)
+        nn::make<nn::MaxPool2d>(2, 2),                           // -> (N,16,14,14)
+        nn::make<nn::Conv2d>(16, 32, nn::Window2d(3, 3, 1, 1)),  // -> (N,32,14,14)
         nn::make<nn::ReLU>(),
-        nn::make<nn::MaxPool2d>(2, 2),                            // -> (N,32,7,7)
-        nn::make<nn::Flatten>(),                                  // -> (N,1568)
+        nn::make<nn::MaxPool2d>(2, 2),  // -> (N,32,7,7)
+        nn::make<nn::Flatten>(),        // -> (N,1568)
         nn::make<nn::Dropout>(0.25f),
         nn::make<nn::Linear>(32 * 7 * 7, 128),
         nn::make<nn::ReLU>(),
-        nn::make<nn::Linear>(128, kNumClasses)
-    };
+        nn::make<nn::Linear>(128, kNumClasses)};
 
     std::cout << "--- 2. Arquitectura ---\n";
     model.summary();
@@ -180,8 +181,8 @@ int main() {
     std::vector<size_t> order(train.size());
     std::iota(order.begin(), order.end(), 0);
 
-    std::cout << "--- 3. Entrenamiento (" << epochs << " epocas, lotes de "
-              << batch_size << ") ---\n";
+    std::cout << "--- 3. Entrenamiento (" << epochs << " epocas, lotes de " << batch_size
+              << ") ---\n";
 
     const auto started = std::chrono::steady_clock::now();
     for (int epoch = 1; epoch <= epochs; ++epoch) {
@@ -215,13 +216,12 @@ int main() {
         const double elapsed =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 
-        std::cout << "  Epoca " << std::setw(2) << epoch
-                  << " | Loss = " << std::fixed << std::setprecision(4)
-                  << (epoch_loss / static_cast<float>(batches))
+        std::cout << "  Epoca " << std::setw(2) << epoch << " | Loss = " << std::fixed
+                  << std::setprecision(4) << (epoch_loss / static_cast<float>(batches))
                   << " | Prueba = " << std::setprecision(2) << (test_acc * 100.0f) << "%"
-                  << " | lr = " << std::scientific << std::setprecision(1)
-                  << opt.learning_rate() << std::defaultfloat
-                  << " | " << std::fixed << std::setprecision(1) << elapsed << " s\n";
+                  << " | lr = " << std::scientific << std::setprecision(1) << opt.learning_rate()
+                  << std::defaultfloat << " | " << std::fixed << std::setprecision(1) << elapsed
+                  << " s\n";
     }
     std::cout << "\n";
 
@@ -239,30 +239,28 @@ int main() {
     // ---------------------------------------------------------
     std::cout << "--- 5. Persistencia ---\n";
     engine::save_parameters(model, kCheckpoint);
-    std::cout << "Pesos guardados en " << kCheckpoint << " ("
-              << model.num_parameters() << " parametros).\n";
+    std::cout << "Pesos guardados en " << kCheckpoint << " (" << model.num_parameters()
+              << " parametros).\n";
 
     // Un modelo nuevo, con pesos aleatorios, que carga los guardados
     engine::manual_seed(999);
-    nn::Sequential restored{
-        nn::make<nn::Conv2d>(1, 16, nn::Window2d(3, 3, 1, 1)),
-        nn::make<nn::ReLU>(),
-        nn::make<nn::MaxPool2d>(2, 2),
-        nn::make<nn::Conv2d>(16, 32, nn::Window2d(3, 3, 1, 1)),
-        nn::make<nn::ReLU>(),
-        nn::make<nn::MaxPool2d>(2, 2),
-        nn::make<nn::Flatten>(),
-        nn::make<nn::Dropout>(0.25f),
-        nn::make<nn::Linear>(32 * 7 * 7, 128),
-        nn::make<nn::ReLU>(),
-        nn::make<nn::Linear>(128, kNumClasses)
-    };
+    nn::Sequential restored{nn::make<nn::Conv2d>(1, 16, nn::Window2d(3, 3, 1, 1)),
+                            nn::make<nn::ReLU>(),
+                            nn::make<nn::MaxPool2d>(2, 2),
+                            nn::make<nn::Conv2d>(16, 32, nn::Window2d(3, 3, 1, 1)),
+                            nn::make<nn::ReLU>(),
+                            nn::make<nn::MaxPool2d>(2, 2),
+                            nn::make<nn::Flatten>(),
+                            nn::make<nn::Dropout>(0.25f),
+                            nn::make<nn::Linear>(32 * 7 * 7, 128),
+                            nn::make<nn::ReLU>(),
+                            nn::make<nn::Linear>(128, kNumClasses)};
     std::cout << "Modelo nuevo sin entrenar: " << std::setprecision(2)
               << (evaluate(restored, test) * 100.0f) << "%\n";
 
     engine::load_parameters(restored, kCheckpoint);
-    std::cout << "El mismo tras cargar los pesos: "
-              << (evaluate(restored, test) * 100.0f) << "%\n\n";
+    std::cout << "El mismo tras cargar los pesos: " << (evaluate(restored, test) * 100.0f)
+              << "%\n\n";
 
     std::cout << "¡Entrenamiento con datos reales completado!\n";
     return 0;

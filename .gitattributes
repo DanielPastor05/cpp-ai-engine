@@ -1,0 +1,14 @@
+# The repository builds on Linux, macOS and Windows, so line endings are
+# normalised on the way in rather than left to whatever each machine does.
+* text=auto eol=lf
+
+# Binary assets: the PyTorch reference fixtures and the MNIST subset. Marking
+# them explicitly stops any end-of-line translation from corrupting them, which
+# would show up as a fixture mismatch and send somebody hunting a bug in the
+# engine instead of in git.
+*.bin binary
+*-ubyte binary
+
+# Generated or vendored content excluded from language statistics, so the
+# repository is reported as the C++ it is.
+docs/** linguist-documentation

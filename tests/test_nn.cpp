@@ -11,7 +11,6 @@ using namespace testing;
 
 namespace {
 
-
 void test_nn_layers() {
     section("nn: capas");
 
@@ -33,18 +32,19 @@ void test_nn_layers() {
     nn::Linear no_bias(4, 3, false);
     check(no_bias.parameters().size() == 1, "Linear sin sesgo expone un solo parametro");
 
-    nn::Sequential model{
-        nn::make<nn::Linear>(4, 8),
-        nn::make<nn::ReLU>(),
-        nn::make<nn::Linear>(8, 2)
-    };
+    nn::Sequential model{nn::make<nn::Linear>(4, 8), nn::make<nn::ReLU>(),
+                         nn::make<nn::Linear>(8, 2)};
     check(model.parameters().size() == 4, "Sequential agrega los parametros de sus capas");
     check(model.num_parameters() == 4 * 8 + 8 + 8 * 2 + 2, "Sequential suma bien los parametros");
     check(model(input).shape() == std::vector<size_t>({5, 2}), "Sequential encadena las capas");
 
-    check_throws([&] { nn::Sequential s; s.add(nullptr); }, "Sequential rechaza capas nulas");
+    check_throws(
+        [&] {
+            nn::Sequential s;
+            s.add(nullptr);
+        },
+        "Sequential rechaza capas nulas");
 }
-
 
 void test_softmax_and_losses() {
     section("nn: softmax y funciones de perdida");
@@ -85,11 +85,11 @@ void test_softmax_and_losses() {
     check_close(nn::mse_loss(pred, target).data()[0], 4.0f / 3.0f, "mse_loss calcula la media");
 
     // Métricas
-    check(nn::argmax_rows(logits) == std::vector<size_t>({2, 0}), "argmax_rows toma el maximo por fila");
+    check(nn::argmax_rows(logits) == std::vector<size_t>({2, 0}),
+          "argmax_rows toma el maximo por fila");
     check_close(nn::accuracy(logits, {2, 0}), 1.0f, "accuracy con todo correcto es 1");
     check_close(nn::accuracy(logits, {0, 0}), 0.5f, "accuracy con la mitad correcta es 0.5");
 }
-
 
 void test_optimizers() {
     section("optim: SGD y Adam");
@@ -141,24 +141,17 @@ void test_optimizers() {
     check_throws([&] { optim::Adam({w_sgd}, 0.1f, 1.5f); }, "un beta1 invalido lanza excepcion");
 }
 
-
 void test_end_to_end_training() {
     section("Entrenamiento de extremo a extremo");
 
     engine::manual_seed(123);
 
     // XOR: el caso mínimo que no es separable linealmente
-    Tensor X({4, 2}, {0, 0,
-                      0, 1,
-                      1, 0,
-                      1, 1}, false);
+    Tensor X({4, 2}, {0, 0, 0, 1, 1, 0, 1, 1}, false);
     std::vector<size_t> y = {0, 1, 1, 0};
 
-    nn::Sequential model{
-        nn::make<nn::Linear>(2, 16),
-        nn::make<nn::ReLU>(),
-        nn::make<nn::Linear>(16, 2)
-    };
+    nn::Sequential model{nn::make<nn::Linear>(2, 16), nn::make<nn::ReLU>(),
+                         nn::make<nn::Linear>(16, 2)};
     optim::Adam opt(model.parameters(), 0.1f);
 
     float first_loss = 0.0f;
@@ -190,7 +183,6 @@ void test_end_to_end_training() {
     }
     check(nn::accuracy(linear(X), y) < 1.0f, "un modelo lineal no resuelve el XOR (control)");
 }
-
 
 void test_activations() {
     section("nn: activaciones nuevas");
@@ -237,7 +229,8 @@ void test_train_eval_and_dropout() {
     Tensor x({1000}, 1.0f, false);
     Tensor trained = drop(x);
     size_t zeros = 0;
-    for (float v : trained.data()) if (v == 0.0f) ++zeros;
+    for (float v : trained.data())
+        if (v == 0.0f) ++zeros;
     check(zeros > 400 && zeros < 600, "en entrenamiento anula alrededor de la mitad");
 
     // La media se conserva gracias al escalado 1/(1-p)
@@ -259,11 +252,8 @@ void test_train_eval_and_dropout() {
     check_throws([&] { nn::Dropout(-0.1f); }, "una probabilidad negativa lanza excepcion");
 
     // El interruptor se propaga por el contenedor
-    nn::Sequential model{
-        nn::make<nn::Linear>(4, 4),
-        nn::make<nn::Dropout>(0.5f),
-        nn::make<nn::Linear>(4, 2)
-    };
+    nn::Sequential model{nn::make<nn::Linear>(4, 4), nn::make<nn::Dropout>(0.5f),
+                         nn::make<nn::Linear>(4, 2)};
     model.eval();
     check(!model.at(1).is_training(), "Sequential propaga eval() a sus capas");
     model.train();
@@ -286,15 +276,11 @@ void test_train_eval_and_dropout() {
 void test_named_parameters() {
     section("nn: parametros con nombre");
 
-    nn::Sequential model{
-        nn::make<nn::Linear>(3, 4),
-        nn::make<nn::ReLU>(),
-        nn::make<nn::Linear>(4, 2)
-    };
+    nn::Sequential model{nn::make<nn::Linear>(3, 4), nn::make<nn::ReLU>(),
+                         nn::make<nn::Linear>(4, 2)};
 
     auto named = model.named_parameters();
-    check(named.size() == model.parameters().size(),
-          "hay un nombre por cada parametro");
+    check(named.size() == model.parameters().size(), "hay un nombre por cada parametro");
 
     std::set<std::string> unique;
     for (const auto& entry : named) unique.insert(entry.first);
@@ -314,8 +300,8 @@ void test_clip_and_schedulers() {
     section("optim: recorte de gradiente y planificadores");
 
     // Recorte
-    Tensor a({2}, {3.0f, 4.0f}, true);   // norma 5
-    (a * 1.0f).sum().backward();          // gradiente (1, 1) -> norma sqrt(2)
+    Tensor a({2}, {3.0f, 4.0f}, true);  // norma 5
+    (a * 1.0f).sum().backward();        // gradiente (1, 1) -> norma sqrt(2)
     float norm = optim::clip_grad_norm({a}, 10.0f);
     check_close(norm, std::sqrt(2.0f), "clip devuelve la norma previa");
     check_close(a.grad().data()[0], 1.0f, "por debajo del limite no recorta");
@@ -351,7 +337,8 @@ void test_clip_and_schedulers() {
     check_close(opt.learning_rate(), 1.0f, "StepLR mantiene el lr dentro del escalon");
     step.step();
     check_close(opt.learning_rate(), 0.5f, "StepLR lo multiplica por gamma al cambiar de escalon");
-    step.step(); step.step();
+    step.step();
+    step.step();
     check_close(opt.learning_rate(), 0.25f, "StepLR acumula los escalones");
 
     optim::SGD opt2({w}, 1.0f);
@@ -365,7 +352,8 @@ void test_clip_and_schedulers() {
     optim::WarmupCosineLR warm(opt3, 3, 10, 0.0f);
     warm.step();
     check(opt3.learning_rate() < 0.5f, "durante el calentamiento el lr es bajo");
-    warm.step(); warm.step();
+    warm.step();
+    warm.step();
     check_close(opt3.learning_rate(), 1.0f, "al terminar el calentamiento llega al base", 1e-3f);
     for (int i = 0; i < 7; ++i) warm.step();
     check(opt3.learning_rate() < 0.01f, "despues desciende en coseno");
@@ -381,11 +369,8 @@ void test_serialization() {
     const std::string path = "test_weights.bin";
     engine::manual_seed(99);
 
-    nn::Sequential model{
-        nn::make<nn::Linear>(4, 6),
-        nn::make<nn::ReLU>(),
-        nn::make<nn::Linear>(6, 3)
-    };
+    nn::Sequential model{nn::make<nn::Linear>(4, 6), nn::make<nn::ReLU>(),
+                         nn::make<nn::Linear>(6, 3)};
     Tensor x = Tensor::randn({5, 4});
     Tensor before = model(x);
 
@@ -393,11 +378,8 @@ void test_serialization() {
 
     // Otro modelo con la misma arquitectura pero pesos distintos
     engine::manual_seed(1234);
-    nn::Sequential loaded{
-        nn::make<nn::Linear>(4, 6),
-        nn::make<nn::ReLU>(),
-        nn::make<nn::Linear>(6, 3)
-    };
+    nn::Sequential loaded{nn::make<nn::Linear>(4, 6), nn::make<nn::ReLU>(),
+                          nn::make<nn::Linear>(6, 3)};
     Tensor different = loaded(x);
     bool differs = false;
     for (size_t i = 0; i < before.size(); ++i) {
@@ -421,7 +403,7 @@ void test_serialization() {
     check(summary[0].second == std::vector<size_t>({4, 6}), "inspect devuelve las formas");
 
     // Una arquitectura distinta se rechaza en vez de cargarse mal
-    nn::Sequential wrong{ nn::make<nn::Linear>(4, 8) };
+    nn::Sequential wrong{nn::make<nn::Linear>(4, 8)};
     check_throws([&] { engine::load_parameters(wrong, path); },
                  "cargar en una arquitectura distinta lanza excepcion");
 
@@ -479,14 +461,14 @@ void test_serialization() {
     Tensor block_after = block2(seq);
     float block_diff = 0.0f;
     for (size_t i = 0; i < block_before.size(); ++i) {
-        block_diff = std::max(block_diff, std::fabs(block_before.data()[i] - block_after.data()[i]));
+        block_diff =
+            std::max(block_diff, std::fabs(block_before.data()[i] - block_after.data()[i]));
     }
     check_close(block_diff, 0.0f, "un TransformerBlock completo se guarda y se restaura");
 
     std::remove(path.c_str());
     std::remove("not_weights.bin");
 }
-
 
 void test_idx_reader() {
     section("data: lector del formato IDX");
@@ -518,7 +500,10 @@ void test_idx_reader() {
     check(max_v > 0.9f, "y llegan hasta el maximo (hay pixeles saturados)");
 
     for (size_t label : train.labels) {
-        if (label > 9) { check(false, "las etiquetas caen fuera de 0-9"); return; }
+        if (label > 9) {
+            check(false, "las etiquetas caen fuera de 0-9");
+            return;
+        }
     }
     check(true, "todas las etiquetas estan en el rango 0-9");
 
@@ -538,7 +523,7 @@ void test_idx_reader() {
                  "un directorio sin datos lanza excepcion");
 }
 
-} // namespace
+}  // namespace
 
 void run_nn_tests() {
     test_nn_layers();

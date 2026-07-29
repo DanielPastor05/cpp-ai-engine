@@ -56,8 +56,7 @@ std::string position_of(size_t flat, const std::vector<size_t>& shape) {
 //   - unas pocas al final  -> tratamiento de bordes
 //   - todas                -> la fórmula, no los índices
 //   - a intervalos regulares -> un paso o una transposición mal puestos
-void compare(const std::string& what, const std::function<Tensor()>& compute,
-             float tol = 1e-5f) {
+void compare(const std::string& what, const std::function<Tensor()>& compute, float tol = 1e-5f) {
     cuda::set_enabled(false);
     const Tensor on_cpu = compute();
     const std::vector<float> want = on_cpu.data();
@@ -84,8 +83,8 @@ void compare(const std::string& what, const std::function<Tensor()>& compute,
 
     if (got.size() != want.size()) {
         ++testing::g_failures;
-        std::cout << "  [FAIL] " << what << " (tamanos distintos: " << got.size()
-                  << " frente a " << want.size() << ")\n";
+        std::cout << "  [FAIL] " << what << " (tamanos distintos: " << got.size() << " frente a "
+                  << want.size() << ")\n";
         return;
     }
 
@@ -98,7 +97,10 @@ void compare(const std::string& what, const std::function<Tensor()>& compute,
     for (size_t i = 0; i < want.size(); ++i) {
         const float scale = std::max(1.0f, std::fabs(want[i]));
         const float error = std::fabs(got[i] - want[i]) / scale;
-        if (error > worst) { worst = error; worst_at = i; }
+        if (error > worst) {
+            worst = error;
+            worst_at = i;
+        }
         if (error > tol) {
             ++differing;
             if (first == want.size()) first = i;
@@ -116,8 +118,8 @@ void compare(const std::string& what, const std::function<Tensor()>& compute,
     std::cout << "  [FAIL] " << what << "\n"
               << "         error relativo maximo " << std::scientific << std::setprecision(3)
               << worst << " > " << tol << std::defaultfloat << "\n"
-              << "         difieren " << differing << " de " << want.size()
-              << " elementos, del " << first << " al " << last << "\n"
+              << "         difieren " << differing << " de " << want.size() << " elementos, del "
+              << first << " al " << last << "\n"
               << "         el peor en " << worst_at << " = " << position_of(worst_at, shape)
               << ": esperado " << want[worst_at] << ", obtenido " << got[worst_at] << "\n";
 
@@ -131,7 +133,7 @@ void compare(const std::string& what, const std::function<Tensor()>& compute,
     }
 }
 
-} // namespace
+}  // namespace
 
 void run_cuda_parity_tests() {
     testing::section("Paridad CPU / GPU (Fase 6)");
@@ -188,16 +190,18 @@ void run_cuda_parity_tests() {
             cuda::MatmulKernel::Vectorized,
         };
 
-        struct Case { size_t M, K, N; };
+        struct Case {
+            size_t M, K, N;
+        };
         const Case cases[] = {
-            {1, 1, 1},          // el caso degenerado
-            {17, 23, 31},       // por debajo de una sola tesela
-            {32, 32, 32},       // justo una tesela de 32
-            {33, 65, 129},      // restos en los tres ejes
-            {127, 128, 129},    // alrededor del bloque de 128
-            {128, 128, 128},    // exactamente un bloque
-            {129, 256, 257},    // más de un bloque, con resto
-            {256, 260, 256},    // K múltiplo de 4 pero no de 8: tesela K parcial
+            {1, 1, 1},        // el caso degenerado
+            {17, 23, 31},     // por debajo de una sola tesela
+            {32, 32, 32},     // justo una tesela de 32
+            {33, 65, 129},    // restos en los tres ejes
+            {127, 128, 129},  // alrededor del bloque de 128
+            {128, 128, 128},  // exactamente un bloque
+            {129, 256, 257},  // más de un bloque, con resto
+            {256, 260, 256},  // K múltiplo de 4 pero no de 8: tesela K parcial
         };
 
         for (cuda::MatmulKernel variant : variants) {
@@ -207,8 +211,8 @@ void run_cuda_parity_tests() {
             for (const Case& c : cases) {
                 Tensor A = Tensor::randn({c.M, c.K});
                 Tensor B = Tensor::randn({c.K, c.N});
-                compare(tag + "matmul " + std::to_string(c.M) + "x" + std::to_string(c.K) +
-                            "x" + std::to_string(c.N),
+                compare(tag + "matmul " + std::to_string(c.M) + "x" + std::to_string(c.K) + "x" +
+                            std::to_string(c.N),
                         [&] { return A.matmul(B); });
             }
 
@@ -294,13 +298,11 @@ void run_cuda_parity_tests() {
         compare("transpose por lotes (3,5,7,11)", [&] { return B4.transpose(); });
 
         // La permutacion de la atencion: (B, S, H, d) -> (B, H, S, d).
-        compare("permute (0,2,1,3) sobre (3,5,7,11)",
-                [&] { return B4.permute({0, 2, 1, 3}); });
+        compare("permute (0,2,1,3) sobre (3,5,7,11)", [&] { return B4.permute({0, 2, 1, 3}); });
         // Y una que lleva el primer eje al final, para que ningun stride se
         // quede en su sitio: un kernel que confundiera el orden de los ejes
         // seguiria acertando en la permutacion de la atencion, que deja dos.
-        compare("permute (3,1,2,0) sobre (3,5,7,11)",
-                [&] { return B4.permute({3, 1, 2, 0}); });
+        compare("permute (3,1,2,0) sobre (3,5,7,11)", [&] { return B4.permute({3, 1, 2, 0}); });
         // Ida y vuelta. El segundo permute lee lo que el primero dejo en el
         // dispositivo, asi que ademas comprueba el encadenado.
         compare("permute y su inversa sobre (3,5,7,11)",
@@ -361,19 +363,25 @@ void run_cuda_parity_tests() {
 
         compare("TransformerBlock: salida", [&] { return block(tokens); }, 1e-4f);
 
-        compare("TransformerBlock: gradiente de la entrada", [&] {
-            block.zero_grad();
-            tokens.zero_grad();
-            block(tokens).sum().backward();
-            return tokens.grad();
-        }, 1e-4f);
+        compare(
+            "TransformerBlock: gradiente de la entrada",
+            [&] {
+                block.zero_grad();
+                tokens.zero_grad();
+                block(tokens).sum().backward();
+                return tokens.grad();
+            },
+            1e-4f);
 
-        compare("TransformerBlock: gradiente del primer parametro", [&] {
-            block.zero_grad();
-            tokens.zero_grad();
-            block(tokens).sum().backward();
-            return block.parameters()[0].grad();
-        }, 1e-4f);
+        compare(
+            "TransformerBlock: gradiente del primer parametro",
+            [&] {
+                block.zero_grad();
+                tokens.zero_grad();
+                block(tokens).sum().backward();
+                return block.parameters()[0].grad();
+            },
+            1e-4f);
     }
 
     // --- contabilidad de transferencias ---
@@ -424,19 +432,25 @@ void run_cuda_parity_tests() {
 
         compare("Conv2d 3->5 (k3, s1, p1): salida", [&] { return conv(images); }, 1e-4f);
 
-        compare("Conv2d: gradiente de la entrada", [&] {
-            conv.zero_grad();
-            images.zero_grad();
-            conv(images).sum().backward();
-            return images.grad();
-        }, 1e-4f);
+        compare(
+            "Conv2d: gradiente de la entrada",
+            [&] {
+                conv.zero_grad();
+                images.zero_grad();
+                conv(images).sum().backward();
+                return images.grad();
+            },
+            1e-4f);
 
-        compare("Conv2d: gradiente del kernel", [&] {
-            conv.zero_grad();
-            images.zero_grad();
-            conv(images).sum().backward();
-            return conv.weight().grad();
-        }, 1e-4f);
+        compare(
+            "Conv2d: gradiente del kernel",
+            [&] {
+                conv.zero_grad();
+                images.zero_grad();
+                conv(images).sum().backward();
+                return conv.weight().grad();
+            },
+            1e-4f);
 
         // Con paso 2 y sin relleno las ventanas dejan de solaparse y aparecen
         // pixeles que no cubre ninguna. Es justo donde falla un col2im con el
@@ -444,14 +458,16 @@ void run_cuda_parity_tests() {
         nn::Conv2d strided(2, 3, nn::Window2d(3, 3, 2, 0));
         Tensor small = Tensor::randn({2, 2, 8, 8}, 0.0f, 1.0f, true);
 
-        compare("Conv2d con paso 2 y sin relleno: salida",
-                [&] { return strided(small); }, 1e-4f);
-        compare("Conv2d con paso 2: gradiente de la entrada", [&] {
-            strided.zero_grad();
-            small.zero_grad();
-            strided(small).sum().backward();
-            return small.grad();
-        }, 1e-4f);
+        compare("Conv2d con paso 2 y sin relleno: salida", [&] { return strided(small); }, 1e-4f);
+        compare(
+            "Conv2d con paso 2: gradiente de la entrada",
+            [&] {
+                strided.zero_grad();
+                small.zero_grad();
+                strided(small).sum().backward();
+                return small.grad();
+            },
+            1e-4f);
 
         // MaxPool2d con ventanas **solapadas** (kernel 3, paso 2): dos ventanas
         // pueden elegir el mismo pixel, y ese es el caso que obliga a acumular
@@ -563,8 +579,7 @@ void run_cuda_parity_tests() {
         for (size_t i = 0; identical && i < want.size(); ++i) {
             identical = (want[i] == got[i]);
         }
-        testing::check(identical,
-                       "acumular dos gradientes da el mismo bit en CPU y en GPU");
+        testing::check(identical, "acumular dos gradientes da el mismo bit en CPU y en GPU");
     }
 
     // --- coste de un paso completo, en transferencias ---
@@ -585,8 +600,8 @@ void run_cuda_parity_tests() {
         cuda::reset_transfer_stats();
         block(tokens).sum().backward();
         const cuda::TransferStats step = cuda::transfer_stats();
-        std::cout << "  Un paso del TransformerBlock: " << step.to_host_count
-                  << " bajadas y " << step.to_device_count << " subidas\n";
+        std::cout << "  Un paso del TransformerBlock: " << step.to_host_count << " bajadas y "
+                  << step.to_device_count << " subidas\n";
     }
 
     // Y el mismo recuento sobre una cadena que sólo usa operaciones con kernel.
@@ -608,26 +623,25 @@ void run_cuda_parity_tests() {
         for (int i = 0; i < 4; ++i) h = h.matmul(W).relu();
         h.sum().backward();
         const cuda::TransferStats chain = cuda::transfer_stats();
-        std::cout << "  Cuatro capas matmul+relu:    " << chain.to_host_count
-                  << " bajadas y " << chain.to_device_count << " subidas\n";
+        std::cout << "  Cuatro capas matmul+relu:    " << chain.to_host_count << " bajadas y "
+                  << chain.to_device_count << " subidas\n";
     }
 
     // Un resumen al final: cuantos kernels se ejecutaron de verdad. Si esta
     // linea dice cero, todo lo de arriba se calculo en CPU y no significa nada.
     testing::check(cuda::kernels_failed() == 0,
-                   "ningun kernel fallo al lanzarse (" +
-                       std::to_string(cuda::kernels_launched()) + " ejecutados, " +
-                       std::to_string(cuda::kernels_failed()) + " fallidos)");
+                   "ningun kernel fallo al lanzarse (" + std::to_string(cuda::kernels_launched()) +
+                       " ejecutados, " + std::to_string(cuda::kernels_failed()) + " fallidos)");
 
     cuda::set_thresholds(saved_flops, saved_elements);
     cuda::set_enabled(true);
 }
 
-#else // !ENGINE_CUDA
+#else  // !ENGINE_CUDA
 
 void run_cuda_parity_tests() {
     testing::section("Paridad CPU / GPU (Fase 6)");
     std::cout << "  (compilado sin CUDA: -DENGINE_CUDA=ON para incluir estas pruebas)\n";
 }
 
-#endif // ENGINE_CUDA
+#endif  // ENGINE_CUDA

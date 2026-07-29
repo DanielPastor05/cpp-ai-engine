@@ -10,8 +10,7 @@ int main() {
 
     // 1. Creación e inspección de Tensores 2D (Matrices)
     std::cout << "--- 1. Creacion e inspeccion de pasadas (Strides) ---\n";
-    Tensor A({2, 3}, {1.0f, 2.0f, 3.0f, 
-                      4.0f, 5.0f, 6.0f});
+    Tensor A({2, 3}, {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f});
     A.print("Matriz A (2x3)");
 
     std::cout << "Elemento en A[1, 2]: " << A({1, 2}) << " (Esperado: 6.0000)\n\n";
@@ -29,21 +28,17 @@ int main() {
 
     // 3. Función de Activación ReLU
     std::cout << "--- 3. Funciones de Activacion (ReLU) ---\n";
-    Tensor X({2, 3}, {-2.0f, 0.5f, -1.0f, 
-                      3.0f, -0.1f, 4.2f});
+    Tensor X({2, 3}, {-2.0f, 0.5f, -1.0f, 3.0f, -0.1f, 4.2f});
     X.print("Tensor Entrada X (con valores negativos)");
-    
+
     Tensor X_relu = X.relu();
     X_relu.print("X.relu()");
 
     // 4. Multiplicación Matricial (MatMul)
     std::cout << "--- 4. Multiplicacion Matricial (MatMul) ---\n";
-    Tensor M1({2, 3}, {1.0f, 2.0f, 3.0f,
-                       4.0f, 5.0f, 6.0f});
+    Tensor M1({2, 3}, {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f});
 
-    Tensor M2({3, 2}, {7.0f, 8.0f,
-                       9.0f, 1.0f,
-                       2.0f, 3.0f});
+    Tensor M2({3, 2}, {7.0f, 8.0f, 9.0f, 1.0f, 2.0f, 3.0f});
 
     M1.print("M1 (2x3)");
     M2.print("M2 (3x2)");

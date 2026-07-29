@@ -51,7 +51,7 @@ void parallel_for(size_t count, size_t min_per_thread,
 // True if the current thread is already inside a parallel region.
 bool inside_parallel_region();
 
-} // namespace parallel
-} // namespace engine
+}  // namespace parallel
+}  // namespace engine
 
-#endif // ENGINE_PARALLEL_HPP
+#endif  // ENGINE_PARALLEL_HPP

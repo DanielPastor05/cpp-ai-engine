@@ -59,8 +59,7 @@ void SGD::step() {
         const float* ENGINE_RESTRICT gp = g.data();
         float* ENGINE_RESTRICT wp = w.data();
         float* ENGINE_RESTRICT vp = momentum_ != 0.0f ? velocity_[i].data() : nullptr;
-        parallel::parallel_for(w.size(), parallel::kElementsPerThread,
-                               [&](size_t from, size_t to) {
+        parallel::parallel_for(w.size(), parallel::kElementsPerThread, [&](size_t from, size_t to) {
             for (size_t j = from; j < to; ++j) {
                 float grad = gp[j];
                 if (weight_decay_ != 0.0f) grad += weight_decay_ * wp[j];
@@ -79,10 +78,13 @@ void SGD::step() {
 // Adam
 // ---------------------------------------------------------
 
-Adam::Adam(std::vector<Tensor> parameters, float lr, float beta1, float beta2,
-           float eps, float weight_decay)
-    : Optimizer(std::move(parameters)), beta1_(beta1), beta2_(beta2),
-      eps_(eps), weight_decay_(weight_decay) {
+Adam::Adam(std::vector<Tensor> parameters, float lr, float beta1, float beta2, float eps,
+           float weight_decay)
+    : Optimizer(std::move(parameters)),
+      beta1_(beta1),
+      beta2_(beta2),
+      eps_(eps),
+      weight_decay_(weight_decay) {
     if (lr <= 0.0f) throw std::invalid_argument("Adam requiere un learning rate positivo.");
     if (beta1 < 0.0f || beta1 >= 1.0f || beta2 < 0.0f || beta2 >= 1.0f) {
         throw std::invalid_argument("Adam requiere beta1 y beta2 en el intervalo [0, 1).");
@@ -123,8 +125,7 @@ void Adam::step() {
         float* ENGINE_RESTRICT wp = w.data();
         float* ENGINE_RESTRICT mp = m_[i].data();
         float* ENGINE_RESTRICT vp = v_[i].data();
-        parallel::parallel_for(w.size(), parallel::kElementsPerThread,
-                               [&](size_t from, size_t to) {
+        parallel::parallel_for(w.size(), parallel::kElementsPerThread, [&](size_t from, size_t to) {
             for (size_t j = from; j < to; ++j) {
                 float grad = gp[j];
                 if (weight_decay_ != 0.0f) grad += weight_decay_ * wp[j];
@@ -211,10 +212,12 @@ float CosineAnnealingLR::compute(size_t epoch) const {
     return min_lr_ + (base_lr_ - min_lr_) * cosine;
 }
 
-WarmupCosineLR::WarmupCosineLR(Optimizer& optimizer, size_t warmup_epochs,
-                               size_t total_epochs, float min_lr)
-    : Scheduler(optimizer), warmup_epochs_(warmup_epochs),
-      total_epochs_(total_epochs), min_lr_(min_lr) {
+WarmupCosineLR::WarmupCosineLR(Optimizer& optimizer, size_t warmup_epochs, size_t total_epochs,
+                               float min_lr)
+    : Scheduler(optimizer),
+      warmup_epochs_(warmup_epochs),
+      total_epochs_(total_epochs),
+      min_lr_(min_lr) {
     if (total_epochs == 0) {
         throw std::invalid_argument("WarmupCosineLR necesita al menos una época.");
     }
@@ -236,5 +239,5 @@ float WarmupCosineLR::compute(size_t epoch) const {
     return min_lr_ + (base_lr_ - min_lr_) * cosine;
 }
 
-} // namespace optim
-} // namespace engine
+}  // namespace optim
+}  // namespace engine

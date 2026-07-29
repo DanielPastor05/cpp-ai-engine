@@ -21,8 +21,8 @@ uint32_t read_be_uint32(std::istream& in, const std::string& path) {
            (static_cast<uint32_t>(bytes[2]) << 8) | static_cast<uint32_t>(bytes[3]);
 }
 
-std::ifstream open_idx(const std::string& path, uint32_t expected_magic,
-                       uint32_t& count, std::vector<uint32_t>& dims) {
+std::ifstream open_idx(const std::string& path, uint32_t expected_magic, uint32_t& count,
+                       std::vector<uint32_t>& dims) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         throw std::runtime_error("No se pudo abrir: " + path);
@@ -50,7 +50,7 @@ bool file_exists(const std::string& path) {
     return static_cast<bool>(in);
 }
 
-} // namespace
+}  // namespace
 
 Tensor load_idx_images(const std::string& path, size_t max_samples) {
     uint32_t count = 0;
@@ -153,5 +153,5 @@ Dataset load_mnist_test(const MnistPaths& paths, size_t max_samples) {
     return set;
 }
 
-} // namespace data
-} // namespace engine
+}  // namespace data
+}  // namespace engine

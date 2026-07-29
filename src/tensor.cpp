@@ -102,8 +102,8 @@ BroadcastPlan plan_broadcast(const std::vector<size_t>& base, const std::vector<
 
 // Materialises the broadcast operand at the base's shape. Only used in the
 // derivatives, where having both shapes equal simplifies the formulas.
-Tensor expand_operand(const Tensor& other, const std::vector<size_t>& base_shape,
-                      size_t total, size_t inner) {
+Tensor expand_operand(const Tensor& other, const std::vector<size_t>& base_shape, size_t total,
+                      size_t inner) {
     // The accessors are hoisted out of the loop: data() is not a pointer, it is
     // the door to the host side, and calling it per element checks the device
     // mirror's validity once per value copied.
@@ -163,7 +163,7 @@ bool offer_to_device(cuda::ops::Binary op, const Tensor& a, const Tensor& b, Ten
                              out.get_impl()->storage, inner, repeat);
 }
 
-} // namespace
+}  // namespace
 
 // ---------------------------------------------------------
 // TensorImpl implementation
@@ -183,7 +183,8 @@ TensorImpl::TensorImpl(const std::vector<size_t>& s, const std::vector<float>& d
     size_t total_elements = 1;
     for (size_t dim : shape) total_elements *= dim;
     if (storage.size() != total_elements) {
-        throw std::invalid_argument("El número de elementos en data no coincide con la forma dada.");
+        throw std::invalid_argument(
+            "El número de elementos en data no coincide con la forma dada.");
     }
 }
 
@@ -215,12 +216,12 @@ size_t TensorImpl::get_flat_index(const std::vector<size_t>& indices) const {
 // The Tensor wrapper class
 // ---------------------------------------------------------
 
-Tensor::Tensor()
-    : impl_(std::make_shared<TensorImpl>(std::vector<size_t>{0}, 0.0f, false)) {}
+Tensor::Tensor() : impl_(std::make_shared<TensorImpl>(std::vector<size_t>{0}, 0.0f, false)) {}
 
 Tensor::Tensor(std::shared_ptr<TensorImpl> impl) : impl_(std::move(impl)) {
     if (!impl_) {
-        throw std::invalid_argument("No se puede construir un Tensor sobre una implementación nula.");
+        throw std::invalid_argument(
+            "No se puede construir un Tensor sobre una implementación nula.");
     }
 }
 
@@ -243,7 +244,8 @@ Tensor Tensor::ones(const std::vector<size_t>& shape, bool requires_grad) {
     return Tensor(shape, 1.0f, requires_grad);
 }
 
-Tensor Tensor::rand(const std::vector<size_t>& shape, float min_val, float max_val, bool requires_grad) {
+Tensor Tensor::rand(const std::vector<size_t>& shape, float min_val, float max_val,
+                    bool requires_grad) {
     Tensor t(shape, 0.0f, requires_grad);
     std::uniform_real_distribution<float> dis(min_val, max_val);
     for (size_t i = 0; i < t.size(); ++i) {
@@ -252,7 +254,8 @@ Tensor Tensor::rand(const std::vector<size_t>& shape, float min_val, float max_v
     return t;
 }
 
-Tensor Tensor::randn(const std::vector<size_t>& shape, float mean, float stddev, bool requires_grad) {
+Tensor Tensor::randn(const std::vector<size_t>& shape, float mean, float stddev,
+                     bool requires_grad) {
     Tensor t(shape, 0.0f, requires_grad);
     std::normal_distribution<float> dis(mean, stddev);
     for (size_t i = 0; i < t.size(); ++i) {
@@ -361,8 +364,8 @@ float& Tensor::operator()(size_t row, size_t col) {
 
 const float& Tensor::operator()(size_t row, size_t col) const {
     if (ndim() != 2) {
-        throw std::invalid_argument("La indexacion (fila, columna) requiere un tensor 2D, este es " +
-                                    shape_str() + ".");
+        throw std::invalid_argument(
+            "La indexacion (fila, columna) requiere un tensor 2D, este es " + shape_str() + ".");
     }
     if (row >= shape()[0] || col >= shape()[1]) {
         throw std::out_of_range("Índice (" + std::to_string(row) + ", " + std::to_string(col) +
@@ -379,15 +382,27 @@ const float& Tensor::at(size_t flat_index) const {
     return impl_->storage.at(flat_index);
 }
 
-const std::vector<size_t>& Tensor::shape() const { return impl_->shape; }
-const std::vector<size_t>& Tensor::strides() const { return impl_->strides; }
+const std::vector<size_t>& Tensor::shape() const {
+    return impl_->shape;
+}
+const std::vector<size_t>& Tensor::strides() const {
+    return impl_->strides;
+}
 // data() is the door to the host side. The mutable overload also marks the
 // device mirror stale, which is what keeps the two copies coherent without any
 // operation having to remember to do it.
-const std::vector<float>& Tensor::data() const { return impl_->storage.host(); }
-std::vector<float>& Tensor::data() { return impl_->storage.host_mut(); }
-size_t Tensor::size() const { return impl_->storage.size(); }
-size_t Tensor::ndim() const { return impl_->shape.size(); }
+const std::vector<float>& Tensor::data() const {
+    return impl_->storage.host();
+}
+std::vector<float>& Tensor::data() {
+    return impl_->storage.host_mut();
+}
+size_t Tensor::size() const {
+    return impl_->storage.size();
+}
+size_t Tensor::ndim() const {
+    return impl_->shape.size();
+}
 
 std::string Tensor::shape_str() const {
     std::string s = "(";
@@ -452,11 +467,12 @@ Tensor Tensor::operator+(const Tensor& other) const {
     }
 
     if (req_g) {
-        res.impl_->parents = { impl_, other.impl_ };
+        res.impl_->parents = {impl_, other.impl_};
         Tensor self_copy = *this;
         Tensor other_copy = other;
 
-        res.impl_->backward_fn = [self_copy, other_copy, broadcast, plan](const Tensor& grad_out) mutable {
+        res.impl_->backward_fn = [self_copy, other_copy, broadcast,
+                                  plan](const Tensor& grad_out) mutable {
             if (self_copy.requires_grad()) self_copy.add_grad(grad_out);
             if (!other_copy.requires_grad()) return;
             if (!broadcast) {
@@ -514,20 +530,20 @@ Tensor Tensor::operator-(const Tensor& other) const {
     }
 
     if (req_g) {
-        res.impl_->parents = { impl_, other.impl_ };
+        res.impl_->parents = {impl_, other.impl_};
         Tensor self_copy = *this;
         Tensor other_copy = other;
 
-        res.impl_->backward_fn =
-            [self_copy, other_copy, broadcast](const Tensor& grad_out) mutable {
-                if (self_copy.requires_grad()) self_copy.add_grad(grad_out);
-                if (!other_copy.requires_grad()) return;
-                // The broadcast operand collects the sum of all its copies.
-                // Subtraction does not need the plan: its derivative depends on the
-                // operand's shape, not its values.
-                Tensor d = grad_out * -1.0f;
-                other_copy.add_grad(broadcast ? fold_leading(d, other_copy.shape()) : d);
-            };
+        res.impl_->backward_fn = [self_copy, other_copy,
+                                  broadcast](const Tensor& grad_out) mutable {
+            if (self_copy.requires_grad()) self_copy.add_grad(grad_out);
+            if (!other_copy.requires_grad()) return;
+            // The broadcast operand collects the sum of all its copies.
+            // Subtraction does not need the plan: its derivative depends on the
+            // operand's shape, not its values.
+            Tensor d = grad_out * -1.0f;
+            other_copy.add_grad(broadcast ? fold_leading(d, other_copy.shape()) : d);
+        };
     }
     return res;
 }
@@ -569,21 +585,21 @@ Tensor Tensor::operator*(const Tensor& other) const {
     }
 
     if (req_g) {
-        res.impl_->parents = { impl_, other.impl_ };
+        res.impl_->parents = {impl_, other.impl_};
         Tensor self_copy = *this;
         Tensor other_copy = other;
 
-        res.impl_->backward_fn =
-            [self_copy, other_copy, broadcast, plan](const Tensor& grad_out) mutable {
-                const Tensor rhs = broadcast
-                    ? expand_operand(other_copy, self_copy.shape(), self_copy.size(), plan.inner)
-                    : other_copy;
-                if (self_copy.requires_grad()) self_copy.add_grad(grad_out * rhs);
-                if (other_copy.requires_grad()) {
-                    Tensor d = grad_out * self_copy;
-                    other_copy.add_grad(broadcast ? fold_leading(d, other_copy.shape()) : d);
-                }
-            };
+        res.impl_->backward_fn = [self_copy, other_copy, broadcast,
+                                  plan](const Tensor& grad_out) mutable {
+            const Tensor rhs = broadcast ? expand_operand(other_copy, self_copy.shape(),
+                                                          self_copy.size(), plan.inner)
+                                         : other_copy;
+            if (self_copy.requires_grad()) self_copy.add_grad(grad_out * rhs);
+            if (other_copy.requires_grad()) {
+                Tensor d = grad_out * self_copy;
+                other_copy.add_grad(broadcast ? fold_leading(d, other_copy.shape()) : d);
+            }
+        };
     }
     return res;
 }
@@ -625,22 +641,22 @@ Tensor Tensor::operator/(const Tensor& other) const {
     }
 
     if (req_g) {
-        res.impl_->parents = { impl_, other.impl_ };
+        res.impl_->parents = {impl_, other.impl_};
         Tensor self_copy = *this;
         Tensor other_copy = other;
 
-        res.impl_->backward_fn =
-            [self_copy, other_copy, broadcast, plan](const Tensor& grad_out) mutable {
-                const Tensor rhs = broadcast
-                    ? expand_operand(other_copy, self_copy.shape(), self_copy.size(), plan.inner)
-                    : other_copy;
-                if (self_copy.requires_grad()) self_copy.add_grad(grad_out / rhs);
-                if (other_copy.requires_grad()) {
-                    // d/db (a/b) = -a/b^2
-                    Tensor d = (grad_out * self_copy * -1.0f) / (rhs * rhs);
-                    other_copy.add_grad(broadcast ? fold_leading(d, other_copy.shape()) : d);
-                }
-            };
+        res.impl_->backward_fn = [self_copy, other_copy, broadcast,
+                                  plan](const Tensor& grad_out) mutable {
+            const Tensor rhs = broadcast ? expand_operand(other_copy, self_copy.shape(),
+                                                          self_copy.size(), plan.inner)
+                                         : other_copy;
+            if (self_copy.requires_grad()) self_copy.add_grad(grad_out / rhs);
+            if (other_copy.requires_grad()) {
+                // d/db (a/b) = -a/b^2
+                Tensor d = (grad_out * self_copy * -1.0f) / (rhs * rhs);
+                other_copy.add_grad(broadcast ? fold_leading(d, other_copy.shape()) : d);
+            }
+        };
     }
     return res;
 }
@@ -658,7 +674,7 @@ Tensor Tensor::operator+(float scalar) const {
         for (size_t i = 0; i < n; ++i) out[i] = lhs[i] + scalar;
     }
     if (req_g) {
-        res.impl_->parents = { impl_ };
+        res.impl_->parents = {impl_};
         Tensor self_copy = *this;
         res.impl_->backward_fn = [self_copy](const Tensor& grad_out) mutable {
             self_copy.add_grad(grad_out);
@@ -685,7 +701,7 @@ Tensor Tensor::operator*(float scalar) const {
         for (size_t i = 0; i < n; ++i) out[i] = lhs[i] * scalar;
     }
     if (req_g) {
-        res.impl_->parents = { impl_ };
+        res.impl_->parents = {impl_};
         Tensor self_copy = *this;
         res.impl_->backward_fn = [self_copy, scalar](const Tensor& grad_out) mutable {
             self_copy.add_grad(grad_out * scalar);
@@ -727,8 +743,8 @@ Tensor Tensor::transpose() const {
     std::vector<size_t> src_strides = strides();
     std::swap(src_strides[nd - 2], src_strides[nd - 1]);
 
-    if (!cuda::ops::permute(impl_->storage, res.impl_->storage,
-                            out_shape.data(), src_strides.data(), nd)) {
+    if (!cuda::ops::permute(impl_->storage, res.impl_->storage, out_shape.data(),
+                            src_strides.data(), nd)) {
         const float* ENGINE_RESTRICT src_base = data().data();
         float* ENGINE_RESTRICT dst_base = res.data().data();
         // Split by source row: each writes one whole column of the destination and
@@ -748,7 +764,7 @@ Tensor Tensor::transpose() const {
     }
 
     if (req_g) {
-        res.impl_->parents = { impl_ };
+        res.impl_->parents = {impl_};
         Tensor self_copy = *this;
         res.impl_->backward_fn = [self_copy](const Tensor& grad_out) mutable {
             self_copy.add_grad(grad_out.transpose());
@@ -784,8 +800,8 @@ Tensor Tensor::permute(const std::vector<size_t>& order) const {
     std::vector<size_t> src_strides(nd);
     for (size_t i = 0; i < nd; ++i) src_strides[i] = strides()[order[i]];
 
-    if (!cuda::ops::permute(impl_->storage, res.impl_->storage,
-                            out_shape.data(), src_strides.data(), nd)) {
+    if (!cuda::ops::permute(impl_->storage, res.impl_->storage, out_shape.data(),
+                            src_strides.data(), nd)) {
         const float* ENGINE_RESTRICT src_data = data().data();
         float* ENGINE_RESTRICT dst_data = res.data().data();
         // The carry counter is cheap per element but chains each one to the previous,
@@ -818,7 +834,7 @@ Tensor Tensor::permute(const std::vector<size_t>& order) const {
     }
 
     if (req_g) {
-        res.impl_->parents = { impl_ };
+        res.impl_->parents = {impl_};
         Tensor self_copy = *this;
         // The derivative is the inverse permutation
         std::vector<size_t> inverse(nd);
@@ -859,8 +875,8 @@ Tensor Tensor::matmul(const Tensor& B) const {
     const size_t N = B.shape()[nd_b - 1];
 
     if (K != K2) {
-        throw std::invalid_argument("Dimensiones incompatibles para MatMul: " +
-                                    shape_str() + " y " + B.shape_str() + ".");
+        throw std::invalid_argument("Dimensiones incompatibles para MatMul: " + shape_str() +
+                                    " y " + B.shape_str() + ".");
     }
 
     const size_t batch = product(batch_dims);
@@ -878,8 +894,8 @@ Tensor Tensor::matmul(const Tensor& B) const {
     // It is offered to the device first. If the device takes it, C stays resident
     // on the GPU and never comes down to host: only reading a value from the
     // program triggers the copy back.
-    if (!cuda::ops::matmul(impl_->storage, B.impl_->storage, C.impl_->storage,
-                           batch, M, K, N, a_batched, b_batched)) {
+    if (!cuda::ops::matmul(impl_->storage, B.impl_->storage, C.impl_->storage, batch, M, K, N,
+                           a_batched, b_batched)) {
         const std::vector<float>& a_data = data();
         const std::vector<float>& b_data = B.data();
         std::vector<float>& c_data = C.data();
@@ -901,30 +917,30 @@ Tensor Tensor::matmul(const Tensor& B) const {
         // start to finish, so the accumulation order never changes and the result is
         // identical bit for bit whatever the thread count.
         const size_t rows = batch * M;
-        parallel::parallel_for(rows, matmul_rows_per_thread(rows, K, N),
-                               [&](size_t from, size_t to) {
-            for (size_t row = from; row < to; ++row) {
-                const size_t b = row / M;
-                const size_t i = row % M;
+        parallel::parallel_for(
+            rows, matmul_rows_per_thread(rows, K, N), [&](size_t from, size_t to) {
+                for (size_t row = from; row < to; ++row) {
+                    const size_t b = row / M;
+                    const size_t i = row % M;
 
-                const float* ENGINE_RESTRICT a_row = a_data.data() + b * a_stride + i * K;
-                const float* ENGINE_RESTRICT bm = b_data.data() + b * b_stride;
-                float* ENGINE_RESTRICT c_row = c_data.data() + b * M * N + i * N;
+                    const float* ENGINE_RESTRICT a_row = a_data.data() + b * a_stride + i * K;
+                    const float* ENGINE_RESTRICT bm = b_data.data() + b * b_stride;
+                    float* ENGINE_RESTRICT c_row = c_data.data() + b * M * N + i * N;
 
-                for (size_t k = 0; k < K; ++k) {
-                    const float a_ik = a_row[k];
-                    if (a_ik == 0.0f) continue;
-                    const float* ENGINE_RESTRICT b_row = bm + k * N;
-                    for (size_t j = 0; j < N; ++j) {
-                        c_row[j] += a_ik * b_row[j];
+                    for (size_t k = 0; k < K; ++k) {
+                        const float a_ik = a_row[k];
+                        if (a_ik == 0.0f) continue;
+                        const float* ENGINE_RESTRICT b_row = bm + k * N;
+                        for (size_t j = 0; j < N; ++j) {
+                            c_row[j] += a_ik * b_row[j];
+                        }
                     }
                 }
-            }
-        });
+            });
     }
 
     if (req_g) {
-        C.impl_->parents = { impl_, B.impl_ };
+        C.impl_->parents = {impl_, B.impl_};
         Tensor self_copy = *this;
         Tensor B_copy = B;
 
@@ -935,15 +951,13 @@ Tensor Tensor::matmul(const Tensor& B) const {
             // sum of each element's contribution.
             if (self_copy.requires_grad()) {
                 Tensor dA = grad_out.matmul(B_copy.transpose());
-                self_copy.add_grad(dA.shape() == self_copy.shape()
-                                       ? dA
-                                       : fold_leading(dA, self_copy.shape()));
+                self_copy.add_grad(
+                    dA.shape() == self_copy.shape() ? dA : fold_leading(dA, self_copy.shape()));
             }
             if (B_copy.requires_grad()) {
                 Tensor dB = self_copy.transpose().matmul(grad_out);
-                B_copy.add_grad(dB.shape() == B_copy.shape()
-                                    ? dB
-                                    : fold_leading(dB, B_copy.shape()));
+                B_copy.add_grad(dB.shape() == B_copy.shape() ? dB
+                                                             : fold_leading(dB, B_copy.shape()));
             }
         };
     }
@@ -962,14 +976,13 @@ Tensor Tensor::relu() const {
     }
 
     if (req_g) {
-        res.impl_->parents = { impl_ };
+        res.impl_->parents = {impl_};
         Tensor self_copy = *this;
 
         res.impl_->backward_fn = [self_copy](const Tensor& grad_out) mutable {
             Tensor dX(self_copy.shape(), 0.0f, false);
             if (!cuda::ops::relu_backward(self_copy.get_impl()->storage,
-                                          grad_out.get_impl()->storage,
-                                          dX.get_impl()->storage)) {
+                                          grad_out.get_impl()->storage, dX.get_impl()->storage)) {
                 const size_t n = self_copy.size();
                 const float* ENGINE_RESTRICT x = self_copy.data().data();
                 const float* ENGINE_RESTRICT g = grad_out.data().data();
@@ -1012,7 +1025,7 @@ Tensor Tensor::softmax() const {
     }
 
     if (req_g) {
-        res.impl_->parents = { impl_ };
+        res.impl_->parents = {impl_};
         Tensor self_copy = *this;
         // Softmax's Jacobian depends on its output, so a copy detached from the graph
         // is saved (the same thing PyTorch does with save_for_backward).
@@ -1022,8 +1035,8 @@ Tensor Tensor::softmax() const {
             // dX_ij = y_ij * (dY_ij - sum_k dY_ik * y_ik)
             Tensor dX(self_copy.shape(), 0.0f, false);
             if (!cuda::ops::softmax_backward(saved.get_impl()->storage,
-                                             grad_out.get_impl()->storage,
-                                             dX.get_impl()->storage, rows, cols)) {
+                                             grad_out.get_impl()->storage, dX.get_impl()->storage,
+                                             rows, cols)) {
                 const float* ENGINE_RESTRICT y = saved.data().data();
                 const float* ENGINE_RESTRICT g = grad_out.data().data();
                 float* ENGINE_RESTRICT out = dX.data().data();
@@ -1053,7 +1066,7 @@ Tensor Tensor::sum() const {
     Tensor res({1}, std::vector<float>{static_cast<float>(total)}, req_g);
 
     if (req_g) {
-        res.impl_->parents = { impl_ };
+        res.impl_->parents = {impl_};
         Tensor self_copy = *this;
 
         res.impl_->backward_fn = [self_copy](const Tensor& grad_out) mutable {
@@ -1093,7 +1106,7 @@ Tensor Tensor::reshape(const std::vector<size_t>& new_shape) const {
     Tensor res = clone_with_shape(impl_->storage, new_shape, req_g);
 
     if (req_g) {
-        res.impl_->parents = { impl_ };
+        res.impl_->parents = {impl_};
         Tensor self_copy = *this;
         res.impl_->backward_fn = [self_copy](const Tensor& grad_out) mutable {
             self_copy.add_grad(grad_out.reshape(self_copy.shape()));
@@ -1101,7 +1114,6 @@ Tensor Tensor::reshape(const std::vector<size_t>& new_shape) const {
     }
     return res;
 }
-
 
 // ---------------------------------------------------------
 // Reductions along an axis
@@ -1132,7 +1144,7 @@ std::vector<size_t> reduced_shape(const std::vector<size_t>& shape, size_t axis,
         out[axis] = 1;
     } else {
         out.erase(out.begin() + static_cast<long>(axis));
-        if (out.empty()) out.push_back(1); // reducir un tensor 1D deja un escalar {1}
+        if (out.empty()) out.push_back(1);  // reducir un tensor 1D deja un escalar {1}
     }
     return out;
 }
@@ -1144,7 +1156,7 @@ void check_axis(size_t axis, size_t ndim, const std::string& what, const std::st
     }
 }
 
-} // namespace
+}  // namespace
 
 Tensor Tensor::sum(size_t axis, bool keepdim) const {
     check_axis(axis, ndim(), "sum", shape_str());
@@ -1166,7 +1178,7 @@ Tensor Tensor::sum(size_t axis, bool keepdim) const {
     }
 
     if (req_g) {
-        res.impl_->parents = { impl_ };
+        res.impl_->parents = {impl_};
         Tensor self_copy = *this;
         res.impl_->backward_fn = [self_copy, v](const Tensor& grad_out) mutable {
             // Each element contributed once, so it receives the whole gradient
@@ -1206,7 +1218,10 @@ Tensor Tensor::max(size_t axis, bool keepdim) const {
             size_t best_a = 0;
             for (size_t a = 1; a < v.axis_len; ++a) {
                 const float value = data()[(o * v.axis_len + a) * v.inner + i];
-                if (value > best) { best = value; best_a = a; }
+                if (value > best) {
+                    best = value;
+                    best_a = a;
+                }
             }
             res.data()[o * v.inner + i] = best;
             argmax[o * v.inner + i] = (o * v.axis_len + best_a) * v.inner + i;
@@ -1214,7 +1229,7 @@ Tensor Tensor::max(size_t axis, bool keepdim) const {
     }
 
     if (req_g) {
-        res.impl_->parents = { impl_ };
+        res.impl_->parents = {impl_};
         Tensor self_copy = *this;
         res.impl_->backward_fn = [self_copy, argmax](const Tensor& grad_out) mutable {
             // Only the maximum influenced the output
@@ -1255,7 +1270,7 @@ Tensor Tensor::slice(size_t axis, size_t start, size_t count) const {
     }
 
     if (req_g) {
-        res.impl_->parents = { impl_ };
+        res.impl_->parents = {impl_};
         Tensor self_copy = *this;
         res.impl_->backward_fn = [self_copy, v, start, count](const Tensor& grad_out) mutable {
             // The gradient goes back to its slot; the rest of the tensor gets zero
@@ -1280,7 +1295,8 @@ Tensor Tensor::concat(const std::vector<Tensor>& parts, size_t axis) {
     bool req_g = false;
     for (const Tensor& t : parts) {
         if (t.ndim() != first.size()) {
-            throw std::invalid_argument("concat necesita el mismo número de ejes en todas las partes.");
+            throw std::invalid_argument(
+                "concat necesita el mismo número de ejes en todas las partes.");
         }
         for (size_t d = 0; d < first.size(); ++d) {
             if (d != axis && t.shape()[d] != first[d]) {
@@ -1326,8 +1342,9 @@ Tensor Tensor::concat(const std::vector<Tensor>& parts, size_t axis) {
                 if (t.requires_grad()) {
                     Tensor d(t.shape(), 0.0f, false);
                     for (size_t o = 0; o < v.outer; ++o) {
-                        std::copy_n(grad_out.data().data() + (o * out_view.axis_len + off) * v.inner,
-                                    len * v.inner, d.data().data() + o * len * v.inner);
+                        std::copy_n(
+                            grad_out.data().data() + (o * out_view.axis_len + off) * v.inner,
+                            len * v.inner, d.data().data() + o * len * v.inner);
                     }
                     t.add_grad(d);
                 }
@@ -1341,16 +1358,17 @@ Tensor Tensor::concat(const std::vector<Tensor>& parts, size_t axis) {
 Tensor Tensor::stack(const std::vector<Tensor>& parts, size_t axis) {
     if (parts.empty()) throw std::invalid_argument("stack necesita al menos un tensor.");
     if (axis > parts[0].ndim()) {
-        throw std::out_of_range("stack: el eje " + std::to_string(axis) +
-                                " no cabe en un tensor " + parts[0].shape_str() + ".");
+        throw std::out_of_range("stack: el eje " + std::to_string(axis) + " no cabe en un tensor " +
+                                parts[0].shape_str() + ".");
     }
     // Stacking is concatenating after inserting a size-1 axis into each part
     std::vector<Tensor> expanded;
     expanded.reserve(parts.size());
     for (const Tensor& t : parts) {
         if (t.shape() != parts[0].shape()) {
-            throw std::invalid_argument("stack necesita que todas las partes tengan la misma forma: " +
-                                        parts[0].shape_str() + " frente a " + t.shape_str() + ".");
+            throw std::invalid_argument(
+                "stack necesita que todas las partes tengan la misma forma: " +
+                parts[0].shape_str() + " frente a " + t.shape_str() + ".");
         }
         std::vector<size_t> s = t.shape();
         s.insert(s.begin() + static_cast<long>(axis), 1);
@@ -1392,7 +1410,7 @@ Tensor Tensor::select_rows(const std::vector<size_t>& indices) const {
     }
 
     if (req_g) {
-        res.impl_->parents = { impl_ };
+        res.impl_->parents = {impl_};
         Tensor self_copy = *this;
         std::vector<size_t> idx_copy = indices;
 
@@ -1415,9 +1433,15 @@ Tensor Tensor::select_rows(const std::vector<size_t>& indices) const {
 // Scalar-on-the-left operators
 // ---------------------------------------------------------
 
-Tensor operator+(float scalar, const Tensor& t) { return t + scalar; }
-Tensor operator*(float scalar, const Tensor& t) { return t * scalar; }
-Tensor operator-(float scalar, const Tensor& t) { return (t * -1.0f) + scalar; }
+Tensor operator+(float scalar, const Tensor& t) {
+    return t + scalar;
+}
+Tensor operator*(float scalar, const Tensor& t) {
+    return t * scalar;
+}
+Tensor operator-(float scalar, const Tensor& t) {
+    return (t * -1.0f) + scalar;
+}
 
 // Console printing
 void Tensor::print(const std::string& name) const {
@@ -1466,4 +1490,4 @@ void Tensor::print(const std::string& name) const {
     std::cout << "\n";
 }
 
-} // namespace engine
+}  // namespace engine

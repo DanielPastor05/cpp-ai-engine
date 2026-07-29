@@ -64,8 +64,8 @@ private:
     size_t out_channels_;
     Window2d window_;
     bool use_bias_;
-    Tensor weight_; // (out_channels, in_channels, kernel_h, kernel_w)
-    Tensor bias_;   // (out_channels)
+    Tensor weight_;  // (out_channels, in_channels, kernel_h, kernel_w)
+    Tensor bias_;    // (out_channels)
 };
 
 // Max pooling. Propagates the gradient only to each window's winning position,
@@ -90,7 +90,7 @@ public:
     std::string name() const override { return "Flatten"; }
 };
 
-} // namespace nn
-} // namespace engine
+}  // namespace nn
+}  // namespace engine
 
-#endif // ENGINE_CONV_HPP
+#endif  // ENGINE_CONV_HPP

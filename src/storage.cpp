@@ -165,6 +165,6 @@ void Storage::revert_device_write() {
     device_valid_ = false;
 }
 
-#endif // ENGINE_CUDA
+#endif  // ENGINE_CUDA
 
-} // namespace engine
+}  // namespace engine

@@ -59,8 +59,7 @@ public:
     }
 
     // Splits [0, count) into `chunks` contiguous pieces and waits for them.
-    void run(size_t count, size_t chunks,
-             const std::function<void(size_t, size_t)>& body) {
+    void run(size_t count, size_t chunks, const std::function<void(size_t, size_t)>& body) {
         std::unique_lock<std::mutex> lock(mutex_);
 
         body_ = &body;
@@ -173,13 +172,19 @@ private:
     std::exception_ptr error_;
 };
 
-} // namespace
+}  // namespace
 
-size_t num_threads() { return Pool::instance().size(); }
+size_t num_threads() {
+    return Pool::instance().size();
+}
 
-void set_num_threads(size_t threads) { Pool::instance().resize(threads); }
+void set_num_threads(size_t threads) {
+    Pool::instance().resize(threads);
+}
 
-bool inside_parallel_region() { return g_inside_region; }
+bool inside_parallel_region() {
+    return g_inside_region;
+}
 
 void parallel_for(size_t count, size_t min_per_thread,
                   const std::function<void(size_t, size_t)>& body) {
@@ -189,8 +194,7 @@ void parallel_for(size_t count, size_t min_per_thread,
 
     // Runs inline when splitting does not pay: a single thread, inside another
     // parallel region, or less work than the per-thread minimum.
-    if (threads == 1 || g_inside_region || min_per_thread == 0 ||
-        count < min_per_thread * 2) {
+    if (threads == 1 || g_inside_region || min_per_thread == 0 || count < min_per_thread * 2) {
         body(0, count);
         return;
     }
@@ -203,5 +207,5 @@ void parallel_for(size_t count, size_t min_per_thread,
     Pool::instance().run(count, chunks, body);
 }
 
-} // namespace parallel
-} // namespace engine
+}  // namespace parallel
+}  // namespace engine

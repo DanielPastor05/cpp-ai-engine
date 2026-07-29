@@ -48,8 +48,8 @@ inline void check_close(float actual, float expected, const std::string& what, f
         std::cout << "  [ ok ] " << what << "\n";
     } else {
         ++g_failures;
-        std::cout << "  [FAIL] " << what << " (obtenido " << actual
-                  << ", esperado " << expected << ")\n";
+        std::cout << "  [FAIL] " << what << " (obtenido " << actual << ", esperado " << expected
+                  << ")\n";
     }
 }
 
@@ -76,8 +76,7 @@ inline void section(const std::string& title) {
 // Comprueba el gradiente analítico de `loss_fn` respecto a `input` contra la
 // aproximación por diferencias centradas: (f(x+h) - f(x-h)) / 2h.
 inline void check_gradient(const std::string& what, Tensor input,
-                    const std::function<Tensor(Tensor&)>& loss_fn,
-                    float tol = 2e-2f) {
+                           const std::function<Tensor(Tensor&)>& loss_fn, float tol = 2e-2f) {
     input.set_requires_grad(true);
     input.zero_grad();
 
@@ -96,7 +95,7 @@ inline void check_gradient(const std::string& what, Tensor input,
     float max_error = 0.0f;
 
     for (size_t i = 0; i < input.size(); ++i) {
-        engine::autograd::NoGradGuard no_grad; // las evaluaciones numéricas no necesitan grafo
+        engine::autograd::NoGradGuard no_grad;  // las evaluaciones numéricas no necesitan grafo
         const float original = input.data()[i];
 
         input.data()[i] = original + h;
@@ -121,7 +120,7 @@ inline void check_gradient(const std::string& what, Tensor input,
     }
 }
 
-} // namespace testing
+}  // namespace testing
 
 // Cada fichero de prueba expone su bloque; test_main.cpp los encadena.
 void run_tensor_tests();
@@ -133,4 +132,4 @@ void run_reference_tests();
 void run_cuda_parity_tests();
 void run_cuda_indexing_tests();
 
-#endif // ENGINE_TEST_SUPPORT_HPP
+#endif  // ENGINE_TEST_SUPPORT_HPP

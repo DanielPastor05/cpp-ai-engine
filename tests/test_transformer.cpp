@@ -4,7 +4,6 @@ using namespace testing;
 
 namespace {
 
-
 void test_layernorm_and_embedding() {
     section("transformer: LayerNorm y Embedding");
 
@@ -13,8 +12,7 @@ void test_layernorm_and_embedding() {
     nn::LayerNorm norm(4);
     check(norm.num_parameters() == 8, "LayerNorm tiene gamma y beta (4 + 4)");
 
-    Tensor x({2, 4}, {1.0f, 2.0f, 3.0f, 4.0f,
-                      10.0f, 10.0f, 10.0f, 10.0f}, false);
+    Tensor x({2, 4}, {1.0f, 2.0f, 3.0f, 4.0f, 10.0f, 10.0f, 10.0f, 10.0f}, false);
     Tensor normed = norm(x);
     check(normed.shape() == x.shape(), "LayerNorm conserva la forma");
 
@@ -47,9 +45,8 @@ void test_layernorm_and_embedding() {
 
     Tensor gx = Tensor::randn({3, 4});
     Tensor w_norm = Tensor::randn({3, 4});
-    check_gradient("gradiente de LayerNorm respecto a la entrada", gx, [&](Tensor& t) {
-        return (norm(t) * w_norm).sum();
-    });
+    check_gradient("gradiente de LayerNorm respecto a la entrada", gx,
+                   [&](Tensor& t) { return (norm(t) * w_norm).sum(); });
     {
         nn::LayerNorm n2(4);
         Tensor fixed = Tensor::randn({3, 4});
@@ -62,10 +59,10 @@ void test_layernorm_and_embedding() {
 
     // Embedding
     nn::Embedding emb(5, 3);
-    check(emb.weight().shape() == std::vector<size_t>({5, 3}), "Embedding crea una tabla (vocab, dim)");
+    check(emb.weight().shape() == std::vector<size_t>({5, 3}),
+          "Embedding crea una tabla (vocab, dim)");
 
-    Tensor ids({2, 3}, {0, 1, 2,
-                        4, 4, 0}, false);
+    Tensor ids({2, 3}, {0, 1, 2, 4, 4, 0}, false);
     Tensor vectors = emb(ids);
     check(vectors.shape() == std::vector<size_t>({2, 3, 3}), "Embedding da (batch, seq, dim)");
     check_close(vectors.data()[0], emb.weight().data()[0], "busca la fila correcta del token 0");
@@ -83,20 +80,13 @@ void test_layernorm_and_embedding() {
     check_close(emb.weight().grad().data()[9], 0.0f, "un token ausente no recibe gradiente");
 }
 
-
 void test_attention() {
     section("transformer: atencion");
 
     // Claves ortogonales: cada consulta debe recuperar su valor
-    Tensor Q({3, 3}, {20, 0, 0,
-                      0, 20, 0,
-                      0, 0, 20}, false);
-    Tensor K({3, 3}, {1, 0, 0,
-                      0, 1, 0,
-                      0, 0, 1}, false);
-    Tensor V({3, 2}, {10, 100,
-                      20, 200,
-                      30, 300}, false);
+    Tensor Q({3, 3}, {20, 0, 0, 0, 20, 0, 0, 0, 20}, false);
+    Tensor K({3, 3}, {1, 0, 0, 0, 1, 0, 0, 0, 1}, false);
+    Tensor V({3, 2}, {10, 100, 20, 200, 30, 300}, false);
 
     Tensor weights;
     Tensor out = nn::scaled_dot_product_attention(Q, K, V, nullptr, &weights);
@@ -122,9 +112,9 @@ void test_attention() {
     check_close(mw.data()[1], 0.0f, "una posicion no atiende al futuro");
     check_close(mw.data()[4] + mw.data()[5], 1.0f, "la segunda posicion reparte entre 2 tokens");
 
-    check_throws([&] {
-        nn::scaled_dot_product_attention(Tensor({3, 4}, 1.0f), Tensor({3, 5}, 1.0f), V);
-    }, "query y key con d_k distinto lanzan excepcion");
+    check_throws(
+        [&] { nn::scaled_dot_product_attention(Tensor({3, 4}, 1.0f), Tensor({3, 5}, 1.0f), V); },
+        "query y key con d_k distinto lanzan excepcion");
 
     // Gradiente de la atencion
     Tensor gq = Tensor::randn({2, 4, 3});
@@ -143,7 +133,6 @@ void test_attention() {
         return (nn::scaled_dot_product_attention(t, t, t, &causal) * w_attn).sum();
     });
 }
-
 
 void test_positional_encoding() {
     section("transformer: codificacion posicional");
@@ -170,7 +159,6 @@ void test_positional_encoding() {
     check_throws([&] { nn::positional_encoding(0, 4); }, "una longitud nula lanza excepcion");
 }
 
-
 void test_multihead_and_block() {
     section("transformer: MultiHeadAttention y TransformerBlock");
 
@@ -180,12 +168,12 @@ void test_multihead_and_block() {
     mha.keep_attention(true);
     Tensor x = Tensor::randn({2, 5, 8});
     Tensor out = mha(x);
-    check(out.shape() == std::vector<size_t>({2, 5, 8}), "MultiHeadAttention conserva (B, S, d_model)");
+    check(out.shape() == std::vector<size_t>({2, 5, 8}),
+          "MultiHeadAttention conserva (B, S, d_model)");
     check(mha.num_parameters() == 4 * (8 * 8 + 8), "MHA tiene 4 proyecciones de d_model x d_model");
     check(mha.last_attention().shape() == std::vector<size_t>({2, 2, 5, 5}),
           "los pesos de atencion son (B, H, S, S)");
-    check(!mha.last_attention().requires_grad(),
-          "los pesos guardados estan desligados del grafo");
+    check(!mha.last_attention().requires_grad(), "los pesos guardados estan desligados del grafo");
 
     // Por defecto no se guardan: es una copia de (B, H, S, S) por paso
     nn::MultiHeadAttention quiet(8, 2);
@@ -209,38 +197,32 @@ void test_multihead_and_block() {
 
     Tensor gx = Tensor::randn({2, 3, 8});
     Tensor w_mha = Tensor::randn({2, 3, 8});
-    check_gradient("gradiente de MultiHeadAttention", gx, [&](Tensor& t) {
-        return (mha(t) * w_mha).sum();
-    });
+    check_gradient("gradiente de MultiHeadAttention", gx,
+                   [&](Tensor& t) { return (mha(t) * w_mha).sum(); });
 
     // TransformerBlock
     nn::TransformerBlock block(8, 2, 16);
     Tensor block_out = block(x);
     check(block_out.shape() == x.shape(), "TransformerBlock conserva la forma");
-    check(block.num_parameters() ==
-              4 * (8 * 8 + 8)      // atencion
-              + 2 * (8 + 8)        // dos LayerNorm
-              + (8 * 16 + 16)      // ff1
-              + (16 * 8 + 8),      // ff2
+    check(block.num_parameters() == 4 * (8 * 8 + 8)      // atencion
+                                        + 2 * (8 + 8)    // dos LayerNorm
+                                        + (8 * 16 + 16)  // ff1
+                                        + (16 * 8 + 8),  // ff2
           "TransformerBlock suma atencion, normalizaciones y red densa");
 
-    check_throws([&] { nn::TransformerBlock(8, 2, 0); },
-                 "una capa oculta nula lanza excepcion");
+    check_throws([&] { nn::TransformerBlock(8, 2, 0); }, "una capa oculta nula lanza excepcion");
 
     Tensor gb = Tensor::randn({2, 3, 8});
     Tensor w_block = Tensor::randn({2, 3, 8});
     Tensor block_mask = nn::causal_mask(3);
 
-    check_gradient("gradiente de TransformerBlock", gb, [&](Tensor& t) {
-        return (block(t) * w_block).sum();
-    });
+    check_gradient("gradiente de TransformerBlock", gb,
+                   [&](Tensor& t) { return (block(t) * w_block).sum(); });
 
     // Con mascara causal el gradiente debe seguir siendo correcto
-    check_gradient("gradiente de TransformerBlock con mascara causal", gb, [&](Tensor& t) {
-        return (block.forward(t, &block_mask) * w_block).sum();
-    });
+    check_gradient("gradiente de TransformerBlock con mascara causal", gb,
+                   [&](Tensor& t) { return (block.forward(t, &block_mask) * w_block).sum(); });
 }
-
 
 void test_transformer_training() {
     section("transformer: entrenamiento");
@@ -269,8 +251,7 @@ void test_transformer_training() {
     Tensor pe = nn::positional_encoding(seq, 16);
 
     std::vector<Tensor> params;
-    for (nn::Module* m : {static_cast<nn::Module*>(&emb),
-                          static_cast<nn::Module*>(&block),
+    for (nn::Module* m : {static_cast<nn::Module*>(&emb), static_cast<nn::Module*>(&block),
                           static_cast<nn::Module*>(&head)}) {
         std::vector<Tensor> sub = m->parameters();
         params.insert(params.end(), sub.begin(), sub.end());
@@ -298,7 +279,7 @@ void test_transformer_training() {
     check_close(nn::accuracy(forward(X), y), 1.0f, "el transformer aprende la tarea al 100%");
 }
 
-} // namespace
+}  // namespace
 
 void run_transformer_tests() {
     test_layernorm_and_embedding();

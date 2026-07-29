@@ -16,45 +16,80 @@
 namespace engine {
 namespace cuda {
 
-bool available() { return false; }
-bool enabled() { return false; }
+bool available() {
+    return false;
+}
+bool enabled() {
+    return false;
+}
 void set_enabled(bool) {}
 
-DeviceInfo device_info() { return DeviceInfo{}; }
+DeviceInfo device_info() {
+    return DeviceInfo{};
+}
 void synchronize() {}
 
-int compiled_version() { return 0; }
-int runtime_version() { return 0; }
-int driver_version() { return 0; }
-size_t kernels_launched() { return 0; }
-size_t kernels_failed() { return 0; }
+int compiled_version() {
+    return 0;
+}
+int runtime_version() {
+    return 0;
+}
+int driver_version() {
+    return 0;
+}
+size_t kernels_launched() {
+    return 0;
+}
+size_t kernels_failed() {
+    return 0;
+}
 void reset_kernel_counters() {}
 
-double peak_fp32_gflops() { return 0.0; }
-double peak_bandwidth_gbs() { return 0.0; }
+double peak_fp32_gflops() {
+    return 0.0;
+}
+double peak_bandwidth_gbs() {
+    return 0.0;
+}
 
-MatmulKernel matmul_kernel() { return MatmulKernel::Auto; }
+MatmulKernel matmul_kernel() {
+    return MatmulKernel::Auto;
+}
 void set_matmul_kernel(MatmulKernel) {}
-MatmulKernel resolve_matmul_kernel(size_t, size_t, size_t) { return MatmulKernel::Auto; }
+MatmulKernel resolve_matmul_kernel(size_t, size_t, size_t) {
+    return MatmulKernel::Auto;
+}
 
 // This one does return something useful without CUDA: the benchmark and the
 // tests print the variant's name even with no device.
 const char* matmul_kernel_name(MatmulKernel kernel) {
     switch (kernel) {
-        case MatmulKernel::Auto: return "auto";
-        case MatmulKernel::Naive: return "naive";
-        case MatmulKernel::Tiled: return "tiled";
-        case MatmulKernel::RegisterTiled: return "register";
-        case MatmulKernel::Vectorized: return "vectorized";
+        case MatmulKernel::Auto:
+            return "auto";
+        case MatmulKernel::Naive:
+            return "naive";
+        case MatmulKernel::Tiled:
+            return "tiled";
+        case MatmulKernel::RegisterTiled:
+            return "register";
+        case MatmulKernel::Vectorized:
+            return "vectorized";
     }
     return "desconocido";
 }
 
-size_t min_matmul_flops() { return 0; }
-size_t min_elementwise_elements() { return 0; }
+size_t min_matmul_flops() {
+    return 0;
+}
+size_t min_elementwise_elements() {
+    return 0;
+}
 void set_thresholds(size_t, size_t) {}
 
-TransferStats transfer_stats() { return TransferStats{}; }
+TransferStats transfer_stats() {
+    return TransferStats{};
+}
 void reset_transfer_stats() {}
 
 namespace detail {
@@ -79,32 +114,56 @@ void copy_device_to_device(float*, const float*, size_t) {
     throw std::logic_error("El motor se compilo sin CUDA: no hay memoria de dispositivo.");
 }
 
-} // namespace detail
+}  // namespace detail
 
 namespace ops {
 
-bool binary(Binary, const Storage&, const Storage&, Storage&, size_t, size_t) { return false; }
+bool binary(Binary, const Storage&, const Storage&, Storage&, size_t, size_t) {
+    return false;
+}
 bool matmul(const Storage&, const Storage&, Storage&, size_t, size_t, size_t, size_t, bool, bool) {
     return false;
 }
-bool scalar(const Storage&, Storage&, float, float) { return false; }
-bool im2col(const Storage&, Storage&, const WindowShape&) { return false; }
-bool col2im(const Storage&, Storage&, const WindowShape&) { return false; }
-bool maxpool(const Storage&, Storage&, Storage&, const WindowShape&) { return false; }
+bool scalar(const Storage&, Storage&, float, float) {
+    return false;
+}
+bool im2col(const Storage&, Storage&, const WindowShape&) {
+    return false;
+}
+bool col2im(const Storage&, Storage&, const WindowShape&) {
+    return false;
+}
+bool maxpool(const Storage&, Storage&, Storage&, const WindowShape&) {
+    return false;
+}
 bool maxpool_backward(const Storage&, const Storage&, Storage&, const WindowShape&) {
     return false;
 }
-bool permute(const Storage&, Storage&, const size_t*, const size_t*, size_t) { return false; }
-bool sum_axis(const Storage&, Storage&, size_t, size_t, size_t) { return false; }
-bool relu(const Storage&, Storage&) { return false; }
-bool relu_backward(const Storage&, const Storage&, Storage&) { return false; }
-bool accumulate_grad(Storage&, const Storage&, bool) { return false; }
-bool softmax(const Storage&, Storage&, size_t, size_t) { return false; }
-bool softmax_backward(const Storage&, const Storage&, Storage&, size_t, size_t) { return false; }
+bool permute(const Storage&, Storage&, const size_t*, const size_t*, size_t) {
+    return false;
+}
+bool sum_axis(const Storage&, Storage&, size_t, size_t, size_t) {
+    return false;
+}
+bool relu(const Storage&, Storage&) {
+    return false;
+}
+bool relu_backward(const Storage&, const Storage&, Storage&) {
+    return false;
+}
+bool accumulate_grad(Storage&, const Storage&, bool) {
+    return false;
+}
+bool softmax(const Storage&, Storage&, size_t, size_t) {
+    return false;
+}
+bool softmax_backward(const Storage&, const Storage&, Storage&, size_t, size_t) {
+    return false;
+}
 
-} // namespace ops
+}  // namespace ops
 
-} // namespace cuda
-} // namespace engine
+}  // namespace cuda
+}  // namespace engine
 
-#endif // !ENGINE_CUDA
+#endif  // !ENGINE_CUDA

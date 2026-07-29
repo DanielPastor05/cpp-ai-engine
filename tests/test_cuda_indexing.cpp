@@ -34,8 +34,7 @@ constexpr int kBM = 128, kBN = 128, kBK = 8, kTM = 8, kTN = 8;
 constexpr int kRegBlock = (kBM / kTM) * (kBN / kTN);
 
 // Reproduce un lanzamiento completo del kernel sobre una matriz 2D.
-void simulate_kernel(const float* A, const float* B, float* C,
-                     int M, int K, int N, bool use_vec4) {
+void simulate_kernel(const float* A, const float* B, float* C, int M, int K, int N, bool use_vec4) {
     const int grid_x = (N + kBN - 1) / kBN;
     const int grid_y = (M + kBM - 1) / kBM;
 
@@ -83,7 +82,8 @@ void simulate_kernel(const float* A, const float* B, float* C,
                             const int g_row = block_row + a_r + off;
                             const int g_col = k_base + a_c;
                             As[a_c][a_r + off] = (g_row < M && g_col < K)
-                                ? A[static_cast<size_t>(g_row) * K + g_col] : 0.0f;
+                                                     ? A[static_cast<size_t>(g_row) * K + g_col]
+                                                     : 0.0f;
                         }
                         const int b_r = tid / kBN;
                         const int b_c = tid % kBN;
@@ -91,7 +91,8 @@ void simulate_kernel(const float* A, const float* B, float* C,
                             const int g_row = k_base + b_r + off;
                             const int g_col = block_col + b_c;
                             Bs[b_r + off][b_c] = (g_row < K && g_col < N)
-                                ? B[static_cast<size_t>(g_row) * N + g_col] : 0.0f;
+                                                     ? B[static_cast<size_t>(g_row) * N + g_col]
+                                                     : 0.0f;
                         }
                     }
                 }
@@ -160,31 +161,31 @@ void check_shape(int M, int K, int N, bool use_vec4) {
     }
 
     const std::string what = std::string(use_vec4 ? "vectorized" : "register ") + " " +
-                             std::to_string(M) + "x" + std::to_string(K) + "x" +
-                             std::to_string(N);
+                             std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N);
     testing::check(worst < 1e-5f, "indices de " + what);
 }
 
-} // namespace
+}  // namespace
 
 void run_cuda_indexing_tests() {
     testing::section("Indices del kernel con teselado de registros (simulados en CPU)");
 
-    struct Case { int M, K, N; };
+    struct Case {
+        int M, K, N;
+    };
     // Los tamaños interesantes son los que no encajan: el bloque es de 128x128
     // y el paso sobre K es de 8, así que los fallos viven justo en los restos.
     const Case cases[] = {
-        {1, 1, 1},          // degenerado
-        {17, 23, 31},       // mucho menor que un bloque
-        {32, 32, 32},
-        {33, 65, 129},      // resto en los tres ejes
-        {127, 128, 129},    // uno por debajo y uno por encima del bloque
-        {128, 128, 128},    // exactamente un bloque
-        {129, 256, 257},    // más de un bloque, con resto
-        {256, 260, 256},    // K múltiplo de 4 pero no de 8: última tesela parcial
-        {131, 133, 135},    // nada alineado
-        {200, 8, 200},      // una sola tesela de K
-        {130, 4, 130},      // K menor que el paso
+        {1, 1, 1},                       // degenerado
+        {17, 23, 31},                    // mucho menor que un bloque
+        {32, 32, 32},    {33, 65, 129},  // resto en los tres ejes
+        {127, 128, 129},                 // uno por debajo y uno por encima del bloque
+        {128, 128, 128},                 // exactamente un bloque
+        {129, 256, 257},                 // más de un bloque, con resto
+        {256, 260, 256},                 // K múltiplo de 4 pero no de 8: última tesela parcial
+        {131, 133, 135},                 // nada alineado
+        {200, 8, 200},                   // una sola tesela de K
+        {130, 4, 130},                   // K menor que el paso
     };
 
     for (const Case& c : cases) {

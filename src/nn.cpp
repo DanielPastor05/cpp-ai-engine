@@ -18,7 +18,7 @@ namespace {
 // Constants of the GELU approximation. They live at file scope rather than
 // inside the function: MSVC requires them captured explicitly if they are local
 // and used from a lambda with no default capture, even as constant expressions.
-constexpr float kGeluAlpha = 0.7978845608f; // sqrt(2/pi)
+constexpr float kGeluAlpha = 0.7978845608f;  // sqrt(2/pi)
 constexpr float kGeluBeta = 0.044715f;
 
 // Registers an element-wise activation whose derivative can be written as a
@@ -28,27 +28,26 @@ Tensor unary_with_grad(const Tensor& input, Tensor out, Derivative derivative) {
     if (!autograd::grad_enabled() || !input.requires_grad()) return out;
 
     out.set_requires_grad(true);
-    out.get_impl()->parents = { input.get_impl() };
+    out.get_impl()->parents = {input.get_impl()};
     Tensor input_copy = input;
     Tensor saved = out.detach();
 
-    out.get_impl()->backward_fn =
-        [input_copy, saved, derivative](const Tensor& grad_out) mutable {
-            Tensor dX(input_copy.shape(), 0.0f, false);
-            const size_t n = dX.size();
-            const float* ENGINE_RESTRICT g = grad_out.data().data();
-            const float* ENGINE_RESTRICT x = input_copy.data().data();
-            const float* ENGINE_RESTRICT y = saved.data().data();
-            float* ENGINE_RESTRICT dx = dX.data().data();
-            parallel::parallel_for(n, parallel::kElementsPerThread, [&](size_t from, size_t to) {
-                for (size_t i = from; i < to; ++i) dx[i] = g[i] * derivative(x[i], y[i]);
-            });
-            input_copy.add_grad(dX);
-        };
+    out.get_impl()->backward_fn = [input_copy, saved, derivative](const Tensor& grad_out) mutable {
+        Tensor dX(input_copy.shape(), 0.0f, false);
+        const size_t n = dX.size();
+        const float* ENGINE_RESTRICT g = grad_out.data().data();
+        const float* ENGINE_RESTRICT x = input_copy.data().data();
+        const float* ENGINE_RESTRICT y = saved.data().data();
+        float* ENGINE_RESTRICT dx = dX.data().data();
+        parallel::parallel_for(n, parallel::kElementsPerThread, [&](size_t from, size_t to) {
+            for (size_t i = from; i < to; ++i) dx[i] = g[i] * derivative(x[i], y[i]);
+        });
+        input_copy.add_grad(dX);
+    };
     return out;
 }
 
-} // namespace
+}  // namespace
 
 // ---------------------------------------------------------
 // Module
@@ -99,8 +98,9 @@ Linear::Linear(size_t in_features, size_t out_features, bool use_bias)
 
 Tensor Linear::forward(const Tensor& input) {
     if (input.ndim() < 2) {
-        throw std::invalid_argument("Linear espera al menos 2 dimensiones (..., in_features), recibió " +
-                                    input.shape_str() + ".");
+        throw std::invalid_argument(
+            "Linear espera al menos 2 dimensiones (..., in_features), recibió " +
+            input.shape_str() + ".");
     }
     if (input.shape().back() != in_features_) {
         throw std::invalid_argument("Linear con in_features=" + std::to_string(in_features_) +
@@ -111,13 +111,12 @@ Tensor Linear::forward(const Tensor& input) {
     // (batch, sequence, d_model) in a Transformer -- the leading axes are
     // flattened, the projection is applied, and the shape is restored.
     const bool needs_reshape = input.ndim() > 2;
-    Tensor flat = needs_reshape
-                      ? input.reshape({input.size() / in_features_, in_features_})
-                      : input;
+    Tensor flat =
+        needs_reshape ? input.reshape({input.size() / in_features_, in_features_}) : input;
 
     Tensor out = flat.matmul(weight_);
     if (use_bias_) {
-        out = out + bias_; // difusión del vector fila sobre todo el lote
+        out = out + bias_;  // difusión del vector fila sobre todo el lote
     }
 
     if (needs_reshape) {
@@ -129,8 +128,8 @@ Tensor Linear::forward(const Tensor& input) {
 }
 
 std::vector<Tensor> Linear::parameters() {
-    if (use_bias_) return { weight_, bias_ };
-    return { weight_ };
+    if (use_bias_) return {weight_, bias_};
+    return {weight_};
 }
 
 std::string Linear::name() const {
@@ -232,7 +231,7 @@ Tensor Dropout::forward(const Tensor& input) {
     if (!autograd::grad_enabled() || !input.requires_grad()) return out;
 
     out.set_requires_grad(true);
-    out.get_impl()->parents = { input.get_impl() };
+    out.get_impl()->parents = {input.get_impl()};
     Tensor input_copy = input;
     out.get_impl()->backward_fn = [input_copy, mask](const Tensor& grad_out) mutable {
         Tensor dX(input_copy.shape(), 0.0f, false);
@@ -250,8 +249,7 @@ std::string Dropout::name() const {
 // Sequential
 // ---------------------------------------------------------
 
-Sequential::Sequential(std::initializer_list<std::shared_ptr<Module>> layers)
-    : layers_(layers) {
+Sequential::Sequential(std::initializer_list<std::shared_ptr<Module>> layers) : layers_(layers) {
     for (const auto& layer : layers_) {
         if (!layer) throw std::invalid_argument("Sequential no admite capas nulas.");
     }
@@ -283,7 +281,8 @@ void Sequential::train(bool mode) {
     for (const auto& layer : layers_) layer->train(mode);
 }
 
-std::vector<std::pair<std::string, Tensor>> Sequential::named_parameters(const std::string& prefix) {
+std::vector<std::pair<std::string, Tensor>> Sequential::named_parameters(
+    const std::string& prefix) {
     std::vector<std::pair<std::string, Tensor>> named;
     for (size_t i = 0; i < layers_.size(); ++i) {
         // The index goes in the name so that two identical layers do not collide
@@ -326,8 +325,9 @@ Tensor mse_loss(const Tensor& prediction, const Tensor& target) {
 
 Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targets) {
     if (logits.ndim() != 2) {
-        throw std::invalid_argument("cross_entropy_loss espera logits 2D (batch, clases), recibió " +
-                                    logits.shape_str() + ".");
+        throw std::invalid_argument(
+            "cross_entropy_loss espera logits 2D (batch, clases), recibió " + logits.shape_str() +
+            ".");
     }
     const size_t N = logits.shape()[0];
     const size_t C = logits.shape()[1];
@@ -377,31 +377,31 @@ Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targe
     Tensor loss({1}, std::vector<float>{total_loss / static_cast<float>(N)}, req_g);
 
     if (req_g) {
-        loss.get_impl()->parents = { logits.get_impl() };
+        loss.get_impl()->parents = {logits.get_impl()};
         Tensor logits_copy = logits;
 
-        loss.get_impl()->backward_fn =
-            [logits_copy, probs, targets, N, C](const Tensor& grad_out) mutable {
-                // dL/dlogits = (softmax(logits) - one_hot(y)) / N
-                const float scale = grad_out.data()[0] / static_cast<float>(N);
-                Tensor dX(logits_copy.shape(), 0.0f, false);
-                // This one is split, unlike the forward: it is a per-element
-                // write and accumulates nothing.
-                const float* ENGINE_RESTRICT pr = probs.data().data();
-                float* ENGINE_RESTRICT dx = dX.data().data();
-                const size_t rows_per_thread =
-                    std::max<size_t>(1, parallel::kElementsPerThread / std::max<size_t>(1, C));
-                parallel::parallel_for(N, rows_per_thread, [&](size_t from, size_t to) {
-                    for (size_t i = from; i < to; ++i) {
-                        for (size_t j = 0; j < C; ++j) {
-                            float g = pr[i * C + j];
-                            if (j == targets[i]) g -= 1.0f;
-                            dx[i * C + j] = g * scale;
-                        }
+        loss.get_impl()->backward_fn = [logits_copy, probs, targets, N,
+                                        C](const Tensor& grad_out) mutable {
+            // dL/dlogits = (softmax(logits) - one_hot(y)) / N
+            const float scale = grad_out.data()[0] / static_cast<float>(N);
+            Tensor dX(logits_copy.shape(), 0.0f, false);
+            // This one is split, unlike the forward: it is a per-element
+            // write and accumulates nothing.
+            const float* ENGINE_RESTRICT pr = probs.data().data();
+            float* ENGINE_RESTRICT dx = dX.data().data();
+            const size_t rows_per_thread =
+                std::max<size_t>(1, parallel::kElementsPerThread / std::max<size_t>(1, C));
+            parallel::parallel_for(N, rows_per_thread, [&](size_t from, size_t to) {
+                for (size_t i = from; i < to; ++i) {
+                    for (size_t j = 0; j < C; ++j) {
+                        float g = pr[i * C + j];
+                        if (j == targets[i]) g -= 1.0f;
+                        dx[i * C + j] = g * scale;
                     }
-                });
-                logits_copy.add_grad(dX);
-            };
+                }
+            });
+            logits_copy.add_grad(dX);
+        };
     }
     return loss;
 }
@@ -412,7 +412,8 @@ Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targe
 
 std::vector<size_t> argmax_rows(const Tensor& logits) {
     if (logits.ndim() != 2) {
-        throw std::invalid_argument("argmax_rows espera un tensor 2D, recibió " + logits.shape_str() + ".");
+        throw std::invalid_argument("argmax_rows espera un tensor 2D, recibió " +
+                                    logits.shape_str() + ".");
     }
     const size_t N = logits.shape()[0];
     const size_t C = logits.shape()[1];
@@ -428,7 +429,8 @@ std::vector<size_t> argmax_rows(const Tensor& logits) {
 float accuracy(const Tensor& logits, const std::vector<size_t>& targets) {
     std::vector<size_t> predictions = argmax_rows(logits);
     if (predictions.size() != targets.size()) {
-        throw std::invalid_argument("accuracy recibió un número de etiquetas distinto al de predicciones.");
+        throw std::invalid_argument(
+            "accuracy recibió un número de etiquetas distinto al de predicciones.");
     }
     if (targets.empty()) return 0.0f;
 
@@ -439,5 +441,5 @@ float accuracy(const Tensor& logits, const std::vector<size_t>& targets) {
     return static_cast<float>(hits) / static_cast<float>(targets.size());
 }
 
-} // namespace nn
-} // namespace engine
+}  // namespace nn
+}  // namespace engine

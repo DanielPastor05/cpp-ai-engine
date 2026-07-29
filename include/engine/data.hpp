@@ -44,7 +44,7 @@ struct MnistPaths {
     std::string train_labels;
     std::string test_images;
     std::string test_labels;
-    bool full = false; // true si es el conjunto completo, false si el subconjunto
+    bool full = false;  // true si es el conjunto completo, false si el subconjunto
 };
 
 // Looks for MNIST in the given directory. It prefers the full set
@@ -56,7 +56,7 @@ MnistPaths find_mnist(const std::string& directory = "data/mnist");
 Dataset load_mnist_train(const MnistPaths& paths, size_t max_samples = 0);
 Dataset load_mnist_test(const MnistPaths& paths, size_t max_samples = 0);
 
-} // namespace data
-} // namespace engine
+}  // namespace data
+}  // namespace engine
 
-#endif // ENGINE_DATA_HPP
+#endif  // ENGINE_DATA_HPP

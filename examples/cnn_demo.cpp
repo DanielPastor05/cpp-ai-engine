@@ -15,8 +15,8 @@ using engine::Tensor;
 namespace nn = engine::nn;
 namespace optim = engine::optim;
 
-constexpr size_t kImageSize = 12;   // imágenes de 12x12
-constexpr size_t kNumClasses = 3;   // barra horizontal, barra vertical, cruz
+constexpr size_t kImageSize = 12;  // imágenes de 12x12
+constexpr size_t kNumClasses = 3;  // barra horizontal, barra vertical, cruz
 
 // Dibuja una figura de la clase pedida en una imagen de un solo canal,
 // en una posición aleatoria y sobre un fondo con ruido. La posición cambia
@@ -39,11 +39,11 @@ void draw_shape(float* img, size_t label) {
         if (y < kImageSize && x < kImageSize) img[y * kImageSize + x] = 1.0f;
     };
 
-    if (label == 0) {              // barra horizontal
+    if (label == 0) {  // barra horizontal
         for (size_t k = 0; k < len; ++k) set(r, c + k);
-    } else if (label == 1) {       // barra vertical
+    } else if (label == 1) {  // barra vertical
         for (size_t k = 0; k < len; ++k) set(r + k, c);
-    } else {                       // cruz
+    } else {  // cruz
         for (size_t k = 0; k < len; ++k) set(r + 1, c + k);
         for (size_t k = 0; k < len; ++k) set(r + k, c + 1);
     }
@@ -79,9 +79,8 @@ void print_image(const Tensor& X, size_t index, size_t label) {
 }
 
 // Entrena por mini-lotes y devuelve la exactitud sobre el conjunto de prueba
-float train(const std::string& title, nn::Sequential& model, optim::Optimizer& opt,
-            const Tensor& X, const std::vector<size_t>& y,
-            const Tensor& X_test, const std::vector<size_t>& y_test,
+float train(const std::string& title, nn::Sequential& model, optim::Optimizer& opt, const Tensor& X,
+            const std::vector<size_t>& y, const Tensor& X_test, const std::vector<size_t>& y_test,
             int epochs, size_t batch_size) {
     std::cout << "--- " << title << " ---\n";
 
@@ -115,9 +114,8 @@ float train(const std::string& title, nn::Sequential& model, optim::Optimizer& o
         engine::autograd::NoGradGuard no_grad;
         const float train_acc = nn::accuracy(model(X), y);
         const float test_acc = nn::accuracy(model(X_test), y_test);
-        std::cout << "  Epoch " << std::setw(2) << epoch
-                  << " | Loss = " << std::fixed << std::setprecision(4)
-                  << (epoch_loss / static_cast<float>(batches))
+        std::cout << "  Epoch " << std::setw(2) << epoch << " | Loss = " << std::fixed
+                  << std::setprecision(4) << (epoch_loss / static_cast<float>(batches))
                   << " | Entrenamiento = " << std::setprecision(2) << (train_acc * 100.0f) << "%"
                   << " | Prueba = " << (test_acc * 100.0f) << "%\n";
     }
@@ -139,10 +137,7 @@ int main() {
     // 1. im2col: la convolución como producto matricial
     // ---------------------------------------------------------
     std::cout << "--- 1. Transformacion im2col ---\n";
-    Tensor small({1, 1, 4, 4}, {1,  2,  3,  4,
-                                5,  6,  7,  8,
-                                9, 10, 11, 12,
-                               13, 14, 15, 16}, false);
+    Tensor small({1, 1, 4, 4}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, false);
 
     nn::Window2d w3(3, 3, 1, 0);
     Tensor cols = nn::im2col(small, w3);
@@ -162,8 +157,8 @@ int main() {
     std::cout << "--- 2. Conjunto de datos sintetico ---\n";
     Tensor X, X_test;
     std::vector<size_t> y, y_test;
-    make_dataset(120, X, y);        // 360 imágenes de entrenamiento
-    make_dataset(40, X_test, y_test); // 120 imágenes de prueba
+    make_dataset(120, X, y);           // 360 imágenes de entrenamiento
+    make_dataset(40, X_test, y_test);  // 120 imágenes de prueba
 
     std::cout << "Entrenamiento: " << X.shape_str() << "   Prueba: " << X_test.shape_str() << "\n";
     std::cout << "Tres clases dibujadas en posiciones aleatorias, con ruido de fondo:\n\n";
@@ -182,20 +177,15 @@ int main() {
         nn::make<nn::MaxPool2d>(2, 2),                          // -> (N,8,6,6)
         nn::make<nn::Conv2d>(8, 16, nn::Window2d(3, 3, 1, 1)),  // -> (N,16,6,6)
         nn::make<nn::ReLU>(),
-        nn::make<nn::MaxPool2d>(2, 2),                          // -> (N,16,3,3)
-        nn::make<nn::Flatten>(),                                // -> (N,144)
-        nn::make<nn::Linear>(144, kNumClasses)
-    };
+        nn::make<nn::MaxPool2d>(2, 2),  // -> (N,16,3,3)
+        nn::make<nn::Flatten>(),        // -> (N,144)
+        nn::make<nn::Linear>(144, kNumClasses)};
     std::cout << "CNN:\n";
     cnn.summary();
 
     engine::manual_seed(7);
-    nn::Sequential mlp{
-        nn::make<nn::Flatten>(),
-        nn::make<nn::Linear>(kImageSize * kImageSize, 12),
-        nn::make<nn::ReLU>(),
-        nn::make<nn::Linear>(12, kNumClasses)
-    };
+    nn::Sequential mlp{nn::make<nn::Flatten>(), nn::make<nn::Linear>(kImageSize * kImageSize, 12),
+                       nn::make<nn::ReLU>(), nn::make<nn::Linear>(12, kNumClasses)};
     std::cout << "\nMLP de referencia (parametros comparables):\n";
     mlp.summary();
     std::cout << "\n";
@@ -216,10 +206,10 @@ int main() {
     // ---------------------------------------------------------
     std::cout << "--- 5. Resumen ---\n";
     std::cout << std::fixed << std::setprecision(2);
-    std::cout << "  CNN (" << cnn.num_parameters() << " parametros) : "
-              << cnn_acc * 100.0f << "% sobre el conjunto de prueba\n";
-    std::cout << "  MLP (" << mlp.num_parameters() << " parametros) : "
-              << mlp_acc * 100.0f << "% sobre el conjunto de prueba\n\n";
+    std::cout << "  CNN (" << cnn.num_parameters() << " parametros) : " << cnn_acc * 100.0f
+              << "% sobre el conjunto de prueba\n";
+    std::cout << "  MLP (" << mlp.num_parameters() << " parametros) : " << mlp_acc * 100.0f
+              << "% sobre el conjunto de prueba\n\n";
 
     std::cout << "¡Fase 4 (Redes Convolucionales) completada exitosamente!\n";
     return 0;

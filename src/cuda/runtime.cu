@@ -24,8 +24,7 @@ namespace {
 //
 void check(cudaError_t status, const char* what) {
     if (status != cudaSuccess) {
-        throw std::runtime_error(std::string("CUDA: ") + what + ": " +
-                                 cudaGetErrorString(status));
+        throw std::runtime_error(std::string("CUDA: ") + what + ": " + cudaGetErrorString(status));
     }
 }
 
@@ -45,13 +44,20 @@ size_t env_size(const char* name, size_t fallback) {
 // kernel is doing well or badly.
 int cores_per_sm(int major, int minor) {
     switch (major) {
-        case 3: return 192;                          // Kepler
-        case 5: return 128;                          // Maxwell
-        case 6: return (minor == 0) ? 64 : 128;      // Pascal
-        case 7: return 64;                           // Volta y Turing
-        case 8: return (minor == 0) ? 64 : 128;      // Ampere: GA100 vs el resto
-        case 9: return 128;                          // Hopper
-        default: return 128;                         // lo más probable de aquí en adelante
+        case 3:
+            return 192;  // Kepler
+        case 5:
+            return 128;  // Maxwell
+        case 6:
+            return (minor == 0) ? 64 : 128;  // Pascal
+        case 7:
+            return 64;  // Volta y Turing
+        case 8:
+            return (minor == 0) ? 64 : 128;  // Ampere: GA100 vs el resto
+        case 9:
+            return 128;  // Hopper
+        default:
+            return 128;  // lo más probable de aquí en adelante
     }
 }
 
@@ -84,8 +90,8 @@ struct Context {
         // The clocks are queried by attribute rather than from a cudaDeviceProp field:
         // CUDA 13 removed props.clockRate and props.memoryClockRate, and
         // cudaDeviceGetAttribute is the route that works the same on 11, 12 and 13.
-        int clock_khz = 0;          // frecuencia de núcleo, en kHz
-        int memory_clock_khz = 0;   // frecuencia de memoria, en kHz
+        int clock_khz = 0;         // frecuencia de núcleo, en kHz
+        int memory_clock_khz = 0;  // frecuencia de memoria, en kHz
         cudaDeviceGetAttribute(&clock_khz, cudaDevAttrClockRate, 0);
         cudaDeviceGetAttribute(&memory_clock_khz, cudaDevAttrMemoryClockRate, 0);
 
@@ -133,9 +139,11 @@ double seconds_since(const std::chrono::steady_clock::time_point& start) {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 }
 
-} // namespace
+}  // namespace
 
-bool available() { return context().usable; }
+bool available() {
+    return context().usable;
+}
 
 bool enabled() {
     const Context& ctx = context();
@@ -147,7 +155,9 @@ void set_enabled(bool on) {
     ctx.on = on && ctx.usable;
 }
 
-DeviceInfo device_info() { return context().info; }
+DeviceInfo device_info() {
+    return context().info;
+}
 
 void synchronize() {
     if (!context().usable) return;
@@ -156,7 +166,9 @@ void synchronize() {
 
 // A compile-time constant: it is the only one of the three that really says
 // which toolkit produced this binary.
-int compiled_version() { return CUDART_VERSION; }
+int compiled_version() {
+    return CUDART_VERSION;
+}
 
 int runtime_version() {
     int version = 0;
@@ -168,23 +180,43 @@ int driver_version() {
     return (cudaDriverGetVersion(&version) == cudaSuccess) ? version : 0;
 }
 
-size_t kernels_launched() { return g_launched; }
-size_t kernels_failed() { return g_failed; }
-void reset_kernel_counters() { g_launched = 0; g_failed = 0; }
+size_t kernels_launched() {
+    return g_launched;
+}
+size_t kernels_failed() {
+    return g_failed;
+}
+void reset_kernel_counters() {
+    g_launched = 0;
+    g_failed = 0;
+}
 
-double peak_fp32_gflops() { return context().peak_gflops; }
-double peak_bandwidth_gbs() { return context().peak_bandwidth; }
+double peak_fp32_gflops() {
+    return context().peak_gflops;
+}
+double peak_bandwidth_gbs() {
+    return context().peak_bandwidth;
+}
 
-MatmulKernel matmul_kernel() { return g_matmul_kernel; }
-void set_matmul_kernel(MatmulKernel kernel) { g_matmul_kernel = kernel; }
+MatmulKernel matmul_kernel() {
+    return g_matmul_kernel;
+}
+void set_matmul_kernel(MatmulKernel kernel) {
+    g_matmul_kernel = kernel;
+}
 
 const char* matmul_kernel_name(MatmulKernel kernel) {
     switch (kernel) {
-        case MatmulKernel::Auto: return "auto";
-        case MatmulKernel::Naive: return "naive";
-        case MatmulKernel::Tiled: return "tiled";
-        case MatmulKernel::RegisterTiled: return "register";
-        case MatmulKernel::Vectorized: return "vectorized";
+        case MatmulKernel::Auto:
+            return "auto";
+        case MatmulKernel::Naive:
+            return "naive";
+        case MatmulKernel::Tiled:
+            return "tiled";
+        case MatmulKernel::RegisterTiled:
+            return "register";
+        case MatmulKernel::Vectorized:
+            return "vectorized";
     }
     return "desconocido";
 }
@@ -205,22 +237,34 @@ MatmulKernel resolve_matmul_kernel(size_t rows, size_t inner_dim, size_t cols) {
     return MatmulKernel::RegisterTiled;
 }
 
-size_t min_matmul_flops() { return g_min_matmul_flops; }
-size_t min_elementwise_elements() { return g_min_elements; }
+size_t min_matmul_flops() {
+    return g_min_matmul_flops;
+}
+size_t min_elementwise_elements() {
+    return g_min_elements;
+}
 
 void set_thresholds(size_t matmul_flops, size_t elementwise_elements) {
     g_min_matmul_flops = matmul_flops;
     g_min_elements = elementwise_elements;
 }
 
-TransferStats transfer_stats() { return g_stats; }
-void reset_transfer_stats() { g_stats = TransferStats{}; }
+TransferStats transfer_stats() {
+    return g_stats;
+}
+void reset_transfer_stats() {
+    g_stats = TransferStats{};
+}
 
 namespace detail {
 
 // Incremented by launched_ok(), in kernels.cu.
-void note_kernel_launched() { ++g_launched; }
-void note_kernel_failed() { ++g_failed; }
+void note_kernel_launched() {
+    ++g_launched;
+}
+void note_kernel_failed() {
+    ++g_failed;
+}
 
 // cudaMalloc and cudaFree synchronise the device and go down to the system,
 // which costs milliseconds on large buffers. Since every engine operation
@@ -256,8 +300,7 @@ void device_free(float* ptr) {
     // Storage's destructor calls in here, so it cannot throw: during process
     // shutdown the CUDA context may already have been destroyed, and that is not a
     // failure worth terminating the program over.
-    const cudaError_t status =
-        context().memory_pools ? cudaFreeAsync(ptr, 0) : cudaFree(ptr);
+    const cudaError_t status = context().memory_pools ? cudaFreeAsync(ptr, 0) : cudaFree(ptr);
 
     // Not throwing is not the same as not noticing. Without this, a double free or
     // a pointer that did not come from this allocator are completely invisible: the
@@ -280,8 +323,7 @@ void device_free(float* ptr) {
 void copy_to_device(float* dst, const float* src, size_t elements) {
     if (elements == 0) return;
     const auto start = std::chrono::steady_clock::now();
-    check(cudaMemcpy(dst, src, elements * sizeof(float), cudaMemcpyHostToDevice),
-          "cudaMemcpy H2D");
+    check(cudaMemcpy(dst, src, elements * sizeof(float), cudaMemcpyHostToDevice), "cudaMemcpy H2D");
     g_stats.to_device_seconds += seconds_since(start);
     g_stats.to_device_bytes += elements * sizeof(float);
     ++g_stats.to_device_count;
@@ -303,14 +345,13 @@ void copy_to_host(float* dst, const float* src, size_t elements) {
     // cudaMemcpy is synchronising, so this time includes waiting for kernels still
     // pending on the source buffer. That is exactly what should be measured: the
     // real cost of reading a result from the host.
-    check(cudaMemcpy(dst, src, elements * sizeof(float), cudaMemcpyDeviceToHost),
-          "cudaMemcpy D2H");
+    check(cudaMemcpy(dst, src, elements * sizeof(float), cudaMemcpyDeviceToHost), "cudaMemcpy D2H");
     g_stats.to_host_seconds += seconds_since(start);
     g_stats.to_host_bytes += elements * sizeof(float);
     ++g_stats.to_host_count;
 }
 
-} // namespace detail
+}  // namespace detail
 
-} // namespace cuda
-} // namespace engine
+}  // namespace cuda
+}  // namespace engine

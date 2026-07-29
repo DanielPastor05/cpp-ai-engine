@@ -46,6 +46,6 @@ struct TensorImpl {
     size_t get_flat_index(const std::vector<size_t>& indices) const;
 };
 
-} // namespace engine
+}  // namespace engine
 
-#endif // ENGINE_DETAIL_TENSOR_IMPL_HPP
+#endif  // ENGINE_DETAIL_TENSOR_IMPL_HPP

@@ -51,9 +51,9 @@ void synchronize();
 // runtime_version() is **no** use for this: cudaRuntimeGetVersion() follows the
 // driver, so it reports 13.2 on a machine with driver 13.2 even when the linked
 // runtime came from toolkit 13.3. Measured, not assumed.
-int compiled_version();   // CUDART_VERSION: the toolkit that compiled this
-int runtime_version();    // what the runtime reports at execution time
-int driver_version();     // the installed driver
+int compiled_version();  // CUDART_VERSION: the toolkit that compiled this
+int runtime_version();   // what the runtime reports at execution time
+int driver_version();    // the installed driver
 
 // ---------------------------------------------------------
 // Launch counters.
@@ -93,11 +93,11 @@ double peak_bandwidth_gbs();
 // a test.
 // ---------------------------------------------------------
 enum class MatmulKernel {
-    Auto,          // picks by shape and alignment
-    Naive,         // no shared memory; the honest lower bound
-    Tiled,         // 32x32 tiles in shared memory, one result per thread
-    RegisterTiled, // 8x8 results per thread, held in registers
-    Vectorized     // the same, with float4 loads
+    Auto,           // picks by shape and alignment
+    Naive,          // no shared memory; the honest lower bound
+    Tiled,          // 32x32 tiles in shared memory, one result per thread
+    RegisterTiled,  // 8x8 results per thread, held in registers
+    Vectorized      // the same, with float4 loads
 };
 
 MatmulKernel matmul_kernel();
@@ -159,9 +159,9 @@ void copy_to_host(float* dst, const float* src, size_t elements);
 // crosses it in there would stop the number meaning what it claims to.
 void copy_device_to_device(float* dst, const float* src, size_t elements);
 
-} // namespace detail
+}  // namespace detail
 
-} // namespace cuda
-} // namespace engine
+}  // namespace cuda
+}  // namespace engine
 
-#endif // ENGINE_CUDA_HPP
+#endif  // ENGINE_CUDA_HPP

@@ -75,8 +75,8 @@ private:
     size_t in_features_;
     size_t out_features_;
     bool use_bias_;
-    Tensor weight_; // (in_features, out_features)
-    Tensor bias_;   // (1, out_features)
+    Tensor weight_;  // (in_features, out_features)
+    Tensor bias_;    // (1, out_features)
 };
 
 // ---------------------------------------------------------
@@ -192,7 +192,7 @@ public:
 std::vector<size_t> argmax_rows(const Tensor& logits);
 float accuracy(const Tensor& logits, const std::vector<size_t>& targets);
 
-} // namespace nn
-} // namespace engine
+}  // namespace nn
+}  // namespace engine
 
-#endif // ENGINE_NN_HPP
+#endif  // ENGINE_NN_HPP

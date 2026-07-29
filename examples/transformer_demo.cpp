@@ -28,11 +28,11 @@ namespace optim = engine::optim;
 // secuencia está condenado al azar (1/6). La única información está en el
 // orden, y hay que relacionar dos posiciones para extraerla.
 // ---------------------------------------------------------
-constexpr size_t kNumValues = 6;              // valores 0..5
-constexpr size_t kMarker = kNumValues;        // id 6
-constexpr size_t kCls = kNumValues + 1;       // id 7
-constexpr size_t kVocab = kNumValues + 2;     // 8 tokens
-constexpr size_t kSeqLen = kNumValues + 2;    // [CLS] + 6 valores + MARCA
+constexpr size_t kNumValues = 6;            // valores 0..5
+constexpr size_t kMarker = kNumValues;      // id 6
+constexpr size_t kCls = kNumValues + 1;     // id 7
+constexpr size_t kVocab = kNumValues + 2;   // 8 tokens
+constexpr size_t kSeqLen = kNumValues + 2;  // [CLS] + 6 valores + MARCA
 
 void make_dataset(size_t num_samples, Tensor& ids, std::vector<size_t>& labels,
                   std::vector<size_t>* marker_positions = nullptr) {
@@ -60,7 +60,7 @@ void make_dataset(size_t num_samples, Tensor& ids, std::vector<size_t>& labels,
         }
 
         labels[n] = values[m];
-        if (marker_positions) (*marker_positions)[n] = m + 1; // posicion de la MARCA
+        if (marker_positions) (*marker_positions)[n] = m + 1;  // posicion de la MARCA
     }
 }
 
@@ -111,10 +111,8 @@ struct TransformerClassifier {
     std::vector<Tensor> parameters() {
         std::vector<Tensor> params;
         for (nn::Module* m : {static_cast<nn::Module*>(&embedding),
-                              static_cast<nn::Module*>(&block1),
-                              static_cast<nn::Module*>(&block2),
-                              static_cast<nn::Module*>(&norm),
-                              static_cast<nn::Module*>(&head)}) {
+                              static_cast<nn::Module*>(&block1), static_cast<nn::Module*>(&block2),
+                              static_cast<nn::Module*>(&norm), static_cast<nn::Module*>(&head)}) {
             std::vector<Tensor> sub = m->parameters();
             params.insert(params.end(), sub.begin(), sub.end());
         }
@@ -136,7 +134,7 @@ struct MeanPoolClassifier {
     nn::Embedding embedding;
     nn::Linear hidden;
     nn::Linear head;
-    Tensor averager; // (S, 1) con 1/S en cada posición
+    Tensor averager;  // (S, 1) con 1/S en cada posición
 
     MeanPoolClassifier(size_t d_model, size_t hidden_size)
         : embedding(kVocab, d_model),
@@ -146,7 +144,7 @@ struct MeanPoolClassifier {
 
     Tensor forward(const Tensor& ids) {
         const size_t batch = ids.shape()[0];
-        Tensor h = embedding(ids);                       // (B, S, D)
+        Tensor h = embedding(ids);  // (B, S, D)
         const size_t d_model = h.shape()[2];
 
         // Promedio sobre la secuencia como producto matricial: (B, D, S) x (S, 1)
@@ -157,8 +155,7 @@ struct MeanPoolClassifier {
     std::vector<Tensor> parameters() {
         std::vector<Tensor> params;
         for (nn::Module* m : {static_cast<nn::Module*>(&embedding),
-                              static_cast<nn::Module*>(&hidden),
-                              static_cast<nn::Module*>(&head)}) {
+                              static_cast<nn::Module*>(&hidden), static_cast<nn::Module*>(&head)}) {
             std::vector<Tensor> sub = m->parameters();
             params.insert(params.end(), sub.begin(), sub.end());
         }
@@ -173,9 +170,8 @@ struct MeanPoolClassifier {
 };
 
 template <typename Model>
-float train(const std::string& title, Model& model, optim::Optimizer& opt,
-            const Tensor& X, const std::vector<size_t>& y,
-            const Tensor& X_test, const std::vector<size_t>& y_test,
+float train(const std::string& title, Model& model, optim::Optimizer& opt, const Tensor& X,
+            const std::vector<size_t>& y, const Tensor& X_test, const std::vector<size_t>& y_test,
             int epochs, size_t batch_size) {
     std::cout << "--- " << title << " ---\n";
 
@@ -208,13 +204,12 @@ float train(const std::string& title, Model& model, optim::Optimizer& opt,
 
         if (epoch == 1 || epoch % 10 == 0) {
             engine::autograd::NoGradGuard no_grad;
-            std::cout << "  Epoch " << std::setw(2) << epoch
-                      << " | Loss = " << std::fixed << std::setprecision(4)
-                      << (epoch_loss / static_cast<float>(batches))
+            std::cout << "  Epoch " << std::setw(2) << epoch << " | Loss = " << std::fixed
+                      << std::setprecision(4) << (epoch_loss / static_cast<float>(batches))
                       << " | Entrenamiento = " << std::setprecision(2)
                       << (nn::accuracy(model.forward(X), y) * 100.0f) << "%"
-                      << " | Prueba = "
-                      << (nn::accuracy(model.forward(X_test), y_test) * 100.0f) << "%\n";
+                      << " | Prueba = " << (nn::accuracy(model.forward(X_test), y_test) * 100.0f)
+                      << "%\n";
         }
     }
 
@@ -237,15 +232,9 @@ int main() {
     std::cout << "--- 1. Scaled Dot-Product Attention ---\n";
     // Tres claves ortogonales y tres consultas, cada una alineada con una de
     // ellas. La atención debe recuperar casi exactamente el valor asociado.
-    Tensor Q({3, 3}, {8.0f, 0.0f, 0.0f,
-                      0.0f, 8.0f, 0.0f,
-                      0.0f, 0.0f, 8.0f}, false);
-    Tensor K({3, 3}, {1.0f, 0.0f, 0.0f,
-                      0.0f, 1.0f, 0.0f,
-                      0.0f, 0.0f, 1.0f}, false);
-    Tensor V({3, 2}, {10.0f, 100.0f,
-                      20.0f, 200.0f,
-                      30.0f, 300.0f}, false);
+    Tensor Q({3, 3}, {8.0f, 0.0f, 0.0f, 0.0f, 8.0f, 0.0f, 0.0f, 0.0f, 8.0f}, false);
+    Tensor K({3, 3}, {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f}, false);
+    Tensor V({3, 2}, {10.0f, 100.0f, 20.0f, 200.0f, 30.0f, 300.0f}, false);
 
     Tensor weights;
     Tensor attended = nn::scaled_dot_product_attention(Q, K, V, nullptr, &weights);
@@ -283,14 +272,18 @@ int main() {
     make_dataset(400, X_test, y_test);
 
     std::cout << "Vocabulario: valores 0-5, MARCA=" << kMarker << ", [CLS]=" << kCls << "\n";
-    std::cout << "Entrenamiento: " << X.shape_str() << "   Prueba: " << X_test.shape_str() << "\n\n";
+    std::cout << "Entrenamiento: " << X.shape_str() << "   Prueba: " << X_test.shape_str()
+              << "\n\n";
     for (size_t n = 0; n < 3; ++n) {
         std::cout << "  Secuencia " << n << ": [";
         for (size_t s = 0; s < kSeqLen; ++s) {
             const size_t tok = static_cast<size_t>(X.data()[n * kSeqLen + s]);
-            if (tok == kCls) std::cout << "CLS";
-            else if (tok == kMarker) std::cout << "MARCA";
-            else std::cout << tok;
+            if (tok == kCls)
+                std::cout << "CLS";
+            else if (tok == kMarker)
+                std::cout << "MARCA";
+            else
+                std::cout << tok;
             if (s + 1 < kSeqLen) std::cout << " ";
         }
         std::cout << "]  -> etiqueta " << y[n] << " (posicion " << markers[n] + 1 << ")\n";
@@ -304,15 +297,15 @@ int main() {
     TransformerClassifier transformer(32, 4, 64);
     std::cout << "Transformer: " << transformer.num_parameters() << " parametros\n";
     optim::Adam t_opt(transformer.parameters(), 0.003f);
-    const float t_acc = train("Transformer (2 bloques, 4 cabezas)", transformer, t_opt,
-                              X, y, X_test, y_test, 60, 32);
+    const float t_acc = train("Transformer (2 bloques, 4 cabezas)", transformer, t_opt, X, y,
+                              X_test, y_test, 60, 32);
 
     engine::manual_seed(2024);
     MeanPoolClassifier baseline(32, 64);
     std::cout << "Referencia sin atencion: " << baseline.num_parameters() << " parametros\n";
     optim::Adam b_opt(baseline.parameters(), 0.003f);
-    const float b_acc = train("Referencia: promedio de embeddings", baseline, b_opt,
-                              X, y, X_test, y_test, 60, 32);
+    const float b_acc =
+        train("Referencia: promedio de embeddings", baseline, b_opt, X, y, X_test, y_test, 60, 32);
 
     // ---------------------------------------------------------
     // 6. ¿Dónde mira el modelo?
@@ -324,8 +317,8 @@ int main() {
         transformer.forward(one);
         const Tensor& attn = transformer.block2.attention().last_attention();
 
-        std::cout << "Secuencia 0, marca en la posicion " << markers[0]
-                  << ", respuesta en la " << markers[0] + 1 << ".\n";
+        std::cout << "Secuencia 0, marca en la posicion " << markers[0] << ", respuesta en la "
+                  << markers[0] + 1 << ".\n";
         std::cout << "Atencion del [CLS] en el segundo bloque, sobre cada posicion:\n";
 
         const size_t heads = attn.shape()[1];
@@ -349,8 +342,8 @@ int main() {
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "  Transformer                : " << t_acc * 100.0f << "% sobre prueba\n";
     std::cout << "  Promedio de embeddings     : " << b_acc * 100.0f << "% sobre prueba\n";
-    std::cout << "  Azar (1 de " << kNumValues << " valores)        : "
-              << 100.0f / static_cast<float>(kNumValues) << "%\n\n";
+    std::cout << "  Azar (1 de " << kNumValues
+              << " valores)        : " << 100.0f / static_cast<float>(kNumValues) << "%\n\n";
     std::cout << "Todas las secuencias contienen exactamente los mismos tokens, asi que\n"
               << "promediarlos no deja ninguna informacion: la referencia se queda en el\n"
               << "azar por construccion. La atencion, en cambio, relaciona la posicion de\n"

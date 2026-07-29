@@ -67,8 +67,8 @@ void check_matches(const Tensor& actual, const Tensor& expected, const std::stri
                   << std::setprecision(2) << max_diff << std::defaultfloat << ")\n";
     } else {
         ++g_failures;
-        std::cout << "  [FAIL] " << what << " (desviacion maxima " << max_diff
-                  << " > " << tolerance << ")\n";
+        std::cout << "  [FAIL] " << what << " (desviacion maxima " << max_diff << " > " << tolerance
+                  << ")\n";
     }
 }
 
@@ -135,8 +135,10 @@ void test_activation_cases() {
     nn::GELU gelu;
 
     const std::pair<std::string, nn::Module*> cases[] = {
-        {"act_relu", &relu}, {"act_sigmoid", &sigmoid},
-        {"act_tanh", &tanh_layer}, {"act_gelu", &gelu},
+        {"act_relu", &relu},
+        {"act_sigmoid", &sigmoid},
+        {"act_tanh", &tanh_layer},
+        {"act_gelu", &gelu},
     };
 
     for (const auto& entry : cases) {
@@ -156,7 +158,9 @@ void test_reduction_cases() {
 
     Fixture f = load("reductions");
     const std::tuple<std::string, size_t, const char*> cases[] = {
-        {"sum0", 0, "sum"}, {"sum1", 1, "sum"}, {"mean1", 1, "mean"},
+        {"sum0", 0, "sum"},
+        {"sum1", 1, "sum"},
+        {"mean1", 1, "mean"},
     };
 
     for (const auto& entry : cases) {
@@ -210,7 +214,7 @@ void test_conv_cases() {
     section("PyTorch: convolucion y submuestreo");
 
     const std::tuple<std::string, size_t, size_t, size_t, size_t> cases[] = {
-        {"conv2d_pad1", 3, 4, 1, 1},     // in, out, stride, padding
+        {"conv2d_pad1", 3, 4, 1, 1},  // in, out, stride, padding
         {"conv2d_stride2", 1, 2, 2, 0},
     };
 
@@ -348,10 +352,10 @@ void test_transformer_block_case() {
     // parameters() recorre norm1, norm2, la atencion (query, key, value,
     // salida) y las dos capas densas, en ese orden.
     std::vector<Tensor> params = block.parameters();
-    const char* names[] = {"norm1.gamma", "norm1.beta", "norm2.gamma", "norm2.beta",
-                           "query.weight", "query.bias", "key.weight", "key.bias",
-                           "value.weight", "value.bias", "out.weight", "out.bias",
-                           "ff1.weight", "ff1.bias", "ff2.weight", "ff2.bias"};
+    const char* names[] = {"norm1.gamma",  "norm1.beta", "norm2.gamma", "norm2.beta",
+                           "query.weight", "query.bias", "key.weight",  "key.bias",
+                           "value.weight", "value.bias", "out.weight",  "out.bias",
+                           "ff1.weight",   "ff1.bias",   "ff2.weight",  "ff2.bias"};
     check(params.size() == 16, "el bloque expone los 16 parametros esperados");
 
     for (size_t i = 0; i < params.size(); ++i) {
@@ -412,7 +416,7 @@ void test_optimizer_trajectories() {
     }
 }
 
-} // namespace
+}  // namespace
 
 void run_reference_tests() {
     test_matmul_cases();

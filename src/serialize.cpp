@@ -61,7 +61,7 @@ void check_unique_names(const std::vector<std::pair<std::string, Tensor>>& param
     }
 }
 
-} // namespace
+}  // namespace
 
 // ---------------------------------------------------------
 // Guardar
@@ -171,9 +171,10 @@ std::vector<std::pair<std::string, StoredTensor>> read_file(const std::string& p
     return stored;
 }
 
-} // namespace
+}  // namespace
 
-std::vector<std::pair<std::string, std::vector<size_t>>> inspect_parameters(const std::string& path) {
+std::vector<std::pair<std::string, std::vector<size_t>>> inspect_parameters(
+    const std::string& path) {
     std::vector<std::pair<std::string, std::vector<size_t>>> summary;
     for (auto& entry : read_file(path)) {
         summary.emplace_back(entry.first, entry.second.shape);
@@ -184,14 +185,13 @@ std::vector<std::pair<std::string, std::vector<size_t>>> inspect_parameters(cons
 std::vector<std::pair<std::string, Tensor>> load_tensors(const std::string& path) {
     std::vector<std::pair<std::string, Tensor>> tensors;
     for (auto& entry : read_file(path)) {
-        tensors.emplace_back(entry.first,
-                             Tensor(entry.second.shape, entry.second.data, false));
+        tensors.emplace_back(entry.first, Tensor(entry.second.shape, entry.second.data, false));
     }
     return tensors;
 }
 
-size_t load_parameters(std::vector<std::pair<std::string, Tensor>>& params,
-                       const std::string& path, bool strict) {
+size_t load_parameters(std::vector<std::pair<std::string, Tensor>>& params, const std::string& path,
+                       bool strict) {
     check_unique_names(params);
     std::vector<std::pair<std::string, StoredTensor>> stored = read_file(path);
 
@@ -199,13 +199,13 @@ size_t load_parameters(std::vector<std::pair<std::string, Tensor>>& params,
     std::set<std::string> used;
 
     for (auto& entry : params) {
-        auto it = std::find_if(stored.begin(), stored.end(),
-                               [&](const std::pair<std::string, StoredTensor>& s) {
-                                   return s.first == entry.first;
-                               });
+        auto it = std::find_if(
+            stored.begin(), stored.end(),
+            [&](const std::pair<std::string, StoredTensor>& s) { return s.first == entry.first; });
         if (it == stored.end()) {
             if (strict) {
-                throw std::runtime_error("El fichero no contiene el parámetro '" + entry.first + "'.");
+                throw std::runtime_error("El fichero no contiene el parámetro '" + entry.first +
+                                         "'.");
             }
             continue;
         }
@@ -214,8 +214,8 @@ size_t load_parameters(std::vector<std::pair<std::string, Tensor>>& params,
         // the same name would give a silently broken model.
         if (it->second.shape != entry.second.shape()) {
             throw std::runtime_error("El parámetro '" + entry.first + "' tiene forma " +
-                                     entry.second.shape_str() + " en el modelo, y otra distinta en '" +
-                                     path + "'.");
+                                     entry.second.shape_str() +
+                                     " en el modelo, y otra distinta en '" + path + "'.");
         }
 
         entry.second.data() = it->second.data;
@@ -239,4 +239,4 @@ size_t load_parameters(nn::Module& model, const std::string& path, bool strict) 
     return load_parameters(params, path, strict);
 }
 
-} // namespace engine
+}  // namespace engine

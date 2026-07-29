@@ -33,10 +33,14 @@ size_t output_size(size_t in_size, size_t kernel, size_t stride, size_t padding)
     return (padded - kernel) / stride + 1;
 }
 
-} // namespace
+}  // namespace
 
-size_t Window2d::out_h(size_t in_h) const { return output_size(in_h, kernel_h, stride, padding); }
-size_t Window2d::out_w(size_t in_w) const { return output_size(in_w, kernel_w, stride, padding); }
+size_t Window2d::out_h(size_t in_h) const {
+    return output_size(in_h, kernel_h, stride, padding);
+}
+size_t Window2d::out_w(size_t in_w) const {
+    return output_size(in_w, kernel_w, stride, padding);
+}
 
 void Window2d::validate(size_t in_h, size_t in_w) const {
     if (kernel_h == 0 || kernel_w == 0) {
@@ -86,34 +90,34 @@ Tensor im2col(const Tensor& input, const Window2d& window) {
     // A single iteration writes each output row, so splitting by rows creates no
     // race.
     parallel::parallel_for(N * oH * oW, kConvRowsPerThread, [&](size_t from, size_t to) {
-    for (size_t row = from; row < to; ++row) {
-        {
+        for (size_t row = from; row < to; ++row) {
             {
-                const size_t n = row / (oH * oW);
-                const size_t oh = (row % (oH * oW)) / oW;
-                const size_t ow = row % oW;
-                for (size_t c = 0; c < C; ++c) {
-                    for (size_t i = 0; i < kH; ++i) {
-                        // Coordinate in the unpadded image; it may fall outside
-                        const long long h = static_cast<long long>(oh * window.stride + i) -
-                                            static_cast<long long>(window.padding);
-                        if (h < 0 || static_cast<size_t>(h) >= H) continue;
-
-                        for (size_t j = 0; j < kW; ++j) {
-                            const long long w = static_cast<long long>(ow * window.stride + j) -
+                {
+                    const size_t n = row / (oH * oW);
+                    const size_t oh = (row % (oH * oW)) / oW;
+                    const size_t ow = row % oW;
+                    for (size_t c = 0; c < C; ++c) {
+                        for (size_t i = 0; i < kH; ++i) {
+                            // Coordinate in the unpadded image; it may fall outside
+                            const long long h = static_cast<long long>(oh * window.stride + i) -
                                                 static_cast<long long>(window.padding);
-                            if (w < 0 || static_cast<size_t>(w) >= W) continue;
+                            if (h < 0 || static_cast<size_t>(h) >= H) continue;
 
-                            const size_t k = (c * kH + i) * kW + j;
-                            dst[row * K + k] =
-                                src[((n * C + c) * H + static_cast<size_t>(h)) * W +
-                                    static_cast<size_t>(w)];
+                            for (size_t j = 0; j < kW; ++j) {
+                                const long long w = static_cast<long long>(ow * window.stride + j) -
+                                                    static_cast<long long>(window.padding);
+                                if (w < 0 || static_cast<size_t>(w) >= W) continue;
+
+                                const size_t k = (c * kH + i) * kW + j;
+                                dst[row * K + k] =
+                                    src[((n * C + c) * H + static_cast<size_t>(h)) * W +
+                                        static_cast<size_t>(w)];
+                            }
                         }
                     }
                 }
             }
         }
-    }
     });
     return cols;
 }
@@ -136,7 +140,8 @@ Tensor col2im(const Tensor& cols, const std::vector<size_t>& input_shape, const 
 
     if (cols.ndim() != 2 || cols.shape()[0] != N * oH * oW || cols.shape()[1] != K) {
         throw std::invalid_argument("col2im esperaba columnas (" + std::to_string(N * oH * oW) +
-                                    ", " + std::to_string(K) + ") y recibió " + cols.shape_str() + ".");
+                                    ", " + std::to_string(K) + ") y recibió " + cols.shape_str() +
+                                    ".");
     }
 
     Tensor out(input_shape, 0.0f, false);
@@ -153,33 +158,33 @@ Tensor col2im(const Tensor& cols, const std::vector<size_t>& input_shape, const 
     // into the same pixel. The split is by batch image, which are disjoint regions
     // of the output.
     parallel::parallel_for(N, 1, [&](size_t n_from, size_t n_to) {
-    for (size_t n = n_from; n < n_to; ++n) {
-        for (size_t oh = 0; oh < oH; ++oh) {
-            for (size_t ow = 0; ow < oW; ++ow) {
-                const size_t row = (n * oH + oh) * oW + ow;
-                for (size_t c = 0; c < C; ++c) {
-                    for (size_t i = 0; i < kH; ++i) {
-                        const long long h = static_cast<long long>(oh * window.stride + i) -
-                                            static_cast<long long>(window.padding);
-                        if (h < 0 || static_cast<size_t>(h) >= H) continue;
-
-                        for (size_t j = 0; j < kW; ++j) {
-                            const long long w = static_cast<long long>(ow * window.stride + j) -
+        for (size_t n = n_from; n < n_to; ++n) {
+            for (size_t oh = 0; oh < oH; ++oh) {
+                for (size_t ow = 0; ow < oW; ++ow) {
+                    const size_t row = (n * oH + oh) * oW + ow;
+                    for (size_t c = 0; c < C; ++c) {
+                        for (size_t i = 0; i < kH; ++i) {
+                            const long long h = static_cast<long long>(oh * window.stride + i) -
                                                 static_cast<long long>(window.padding);
-                            if (w < 0 || static_cast<size_t>(w) >= W) continue;
+                            if (h < 0 || static_cast<size_t>(h) >= H) continue;
 
-                            const size_t k = (c * kH + i) * kW + j;
-                            // Add, do not assign: with stride < kernel the
-                            // windows overlap and several rows contribute
-                            // to the same pixel.
-                            dst[((n * C + c) * H + static_cast<size_t>(h)) * W +
-                                static_cast<size_t>(w)] += src[row * K + k];
+                            for (size_t j = 0; j < kW; ++j) {
+                                const long long w = static_cast<long long>(ow * window.stride + j) -
+                                                    static_cast<long long>(window.padding);
+                                if (w < 0 || static_cast<size_t>(w) >= W) continue;
+
+                                const size_t k = (c * kH + i) * kW + j;
+                                // Add, do not assign: with stride < kernel the
+                                // windows overlap and several rows contribute
+                                // to the same pixel.
+                                dst[((n * C + c) * H + static_cast<size_t>(h)) * W +
+                                    static_cast<size_t>(w)] += src[row * K + k];
+                            }
                         }
                     }
                 }
             }
         }
-    }
     });
     return out;
 }
@@ -204,7 +209,7 @@ Tensor im2col_node(const Tensor& input, const Window2d& window) {
     if (!autograd::grad_enabled() || !input.requires_grad()) return cols;
 
     cols.set_requires_grad(true);
-    cols.get_impl()->parents = { input.get_impl() };
+    cols.get_impl()->parents = {input.get_impl()};
 
     Tensor input_copy = input;
     const std::vector<size_t> in_shape = input.shape();
@@ -216,7 +221,7 @@ Tensor im2col_node(const Tensor& input, const Window2d& window) {
     return cols;
 }
 
-} // namespace
+}  // namespace
 
 Conv2d::Conv2d(size_t in_channels, size_t out_channels, const Window2d& window, bool use_bias)
     : in_channels_(in_channels), out_channels_(out_channels), window_(window), use_bias_(use_bias) {
@@ -235,8 +240,8 @@ Conv2d::Conv2d(size_t in_channels, size_t out_channels, const Window2d& window, 
     const float limit = std::sqrt(6.0f / (fan_in + fan_out));
 
     autograd::NoGradGuard no_grad;
-    weight_ = Tensor::rand({out_channels, in_channels, window_.kernel_h, window_.kernel_w},
-                           -limit, limit, true);
+    weight_ = Tensor::rand({out_channels, in_channels, window_.kernel_h, window_.kernel_w}, -limit,
+                           limit, true);
     bias_ = Tensor({out_channels}, 0.0f, use_bias);
 }
 
@@ -277,7 +282,7 @@ Tensor Conv2d::forward(const Tensor& input) {
     // forward and the backward. It is unavoidable when composing rather than fusing
     // by hand, and it is what every framework does when it composes; in exchange the
     // whole hand-written backward disappears and the layer reaches the GPU.
-    Tensor cols = im2col_node(input, window_);   // (N*oH*oW, K)
+    Tensor cols = im2col_node(input, window_);  // (N*oH*oW, K)
 
     // weight_ already stores outC contiguous rows of K values, so viewing it as
     // (outC, K) reinterprets rather than reorders it; the transpose is what leaves
@@ -293,20 +298,19 @@ Tensor Conv2d::forward(const Tensor& input) {
     // worse here. It writes with a stride and reads contiguously, and at this size
     // memory access rules, not the per-element index arithmetic permute does.
     return out.reshape({N, spatial, out_channels_})
-              .permute({0, 2, 1})
-              .reshape({N, out_channels_, oH, oW});
+        .permute({0, 2, 1})
+        .reshape({N, out_channels_, oH, oW});
 }
 
 std::vector<Tensor> Conv2d::parameters() {
-    if (use_bias_) return { weight_, bias_ };
-    return { weight_ };
+    if (use_bias_) return {weight_, bias_};
+    return {weight_};
 }
 
 std::string Conv2d::name() const {
     return "Conv2d(" + std::to_string(in_channels_) + " -> " + std::to_string(out_channels_) +
            ", k=" + std::to_string(window_.kernel_h) + "x" + std::to_string(window_.kernel_w) +
-           ", s=" + std::to_string(window_.stride) +
-           ", p=" + std::to_string(window_.padding) + ")";
+           ", s=" + std::to_string(window_.stride) + ", p=" + std::to_string(window_.padding) + ")";
 }
 
 // ---------------------------------------------------------
@@ -317,14 +321,13 @@ MaxPool2d::MaxPool2d(const Window2d& window) : window_(window) {
     // With padding >= kernel there would be windows entirely inside the padded
     // region, with no real value to maximise: the output would be -infinity.
     if (window_.padding >= window_.kernel_h || window_.padding >= window_.kernel_w) {
-        throw std::invalid_argument(
-            "MaxPool2d requiere un relleno menor que el kernel; con " +
-            std::to_string(window_.padding) + " habría ventanas sin ningún valor real.");
+        throw std::invalid_argument("MaxPool2d requiere un relleno menor que el kernel; con " +
+                                    std::to_string(window_.padding) +
+                                    " habría ventanas sin ningún valor real.");
     }
 }
 
-MaxPool2d::MaxPool2d(size_t kernel, size_t stride)
-    : window_(kernel, kernel, stride, 0) {}
+MaxPool2d::MaxPool2d(size_t kernel, size_t stride) : window_(kernel, kernel, stride, 0) {}
 
 Tensor MaxPool2d::forward(const Tensor& input) {
     if (input.ndim() != 4) {
@@ -350,8 +353,8 @@ Tensor MaxPool2d::forward(const Tensor& input) {
     // up again.
     Tensor argmax(out.shape(), 0.0f, false);
 
-    const cuda::ops::WindowShape shape{N, C, H, W, window_.kernel_h, window_.kernel_w,
-                                       window_.stride, window_.padding, oH, oW};
+    const cuda::ops::WindowShape shape{
+        N, C, H, W, window_.kernel_h, window_.kernel_w, window_.stride, window_.padding, oH, oW};
 
     if (!cuda::ops::maxpool(input.get_impl()->storage, out.get_impl()->storage,
                             argmax.get_impl()->storage, shape)) {
@@ -385,8 +388,9 @@ Tensor MaxPool2d::forward(const Tensor& input) {
                             if (h < 0 || static_cast<size_t>(h) >= H) continue;
 
                             for (size_t j = 0; j < window_.kernel_w; ++j) {
-                                const long long w = static_cast<long long>(ow * window_.stride + j) -
-                                                    static_cast<long long>(window_.padding);
+                                const long long w =
+                                    static_cast<long long>(ow * window_.stride + j) -
+                                    static_cast<long long>(window_.padding);
                                 if (w < 0 || static_cast<size_t>(w) >= W) continue;
 
                                 const size_t idx = ((n * C + c) * H + static_cast<size_t>(h)) * W +
@@ -411,27 +415,25 @@ Tensor MaxPool2d::forward(const Tensor& input) {
     if (!autograd::grad_enabled() || !input.requires_grad()) return out;
 
     out.set_requires_grad(true);
-    out.get_impl()->parents = { input.get_impl() };
+    out.get_impl()->parents = {input.get_impl()};
     Tensor input_copy = input;
 
-    out.get_impl()->backward_fn =
-        [input_copy, argmax, shape](const Tensor& grad_out) mutable {
-            // Only the maximum influenced the output, so only it receives gradient.
-            Tensor dX(input_copy.shape(), 0.0f, false);
-            if (!cuda::ops::maxpool_backward(argmax.get_impl()->storage,
-                                             grad_out.get_impl()->storage,
-                                             dX.get_impl()->storage, shape)) {
-                const float* ENGINE_RESTRICT a = argmax.data().data();
-                const float* ENGINE_RESTRICT g = grad_out.data().data();
-                float* ENGINE_RESTRICT d = dX.data().data();
-                // The += is necessary: with a stride smaller than the kernel, two
-                // overlapping windows may have chosen the same pixel.
-                for (size_t i = 0; i < argmax.size(); ++i) {
-                    d[static_cast<size_t>(a[i])] += g[i];
-                }
+    out.get_impl()->backward_fn = [input_copy, argmax, shape](const Tensor& grad_out) mutable {
+        // Only the maximum influenced the output, so only it receives gradient.
+        Tensor dX(input_copy.shape(), 0.0f, false);
+        if (!cuda::ops::maxpool_backward(argmax.get_impl()->storage, grad_out.get_impl()->storage,
+                                         dX.get_impl()->storage, shape)) {
+            const float* ENGINE_RESTRICT a = argmax.data().data();
+            const float* ENGINE_RESTRICT g = grad_out.data().data();
+            float* ENGINE_RESTRICT d = dX.data().data();
+            // The += is necessary: with a stride smaller than the kernel, two
+            // overlapping windows may have chosen the same pixel.
+            for (size_t i = 0; i < argmax.size(); ++i) {
+                d[static_cast<size_t>(a[i])] += g[i];
             }
-            input_copy.add_grad(dX);
-        };
+        }
+        input_copy.add_grad(dX);
+    };
 
     return out;
 }
@@ -458,5 +460,5 @@ Tensor Flatten::forward(const Tensor& input) {
     return input.reshape({N, input.size() / N});
 }
 
-} // namespace nn
-} // namespace engine
+}  // namespace nn
+}  // namespace engine

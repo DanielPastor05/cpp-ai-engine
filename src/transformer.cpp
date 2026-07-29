@@ -88,64 +88,66 @@ Tensor LayerNorm::forward(const Tensor& input) {
     if (!req_g) return out;
 
     out.set_requires_grad(true);
-    out.get_impl()->parents = { input.get_impl(), gamma_.get_impl(), beta_.get_impl() };
+    out.get_impl()->parents = {input.get_impl(), gamma_.get_impl(), beta_.get_impl()};
 
     Tensor input_copy = input;
     Tensor gamma_copy = gamma_;
     Tensor beta_copy = beta_;
 
-    out.get_impl()->backward_fn =
-        [input_copy, gamma_copy, beta_copy, xhat, inv_std, rows, D, inv_d](const Tensor& grad_out) mutable {
-            const std::vector<float>& dy = grad_out.data();
-            const std::vector<float>& h = xhat.data();
-            const std::vector<float>& g = gamma_copy.data();
+    out.get_impl()->backward_fn = [input_copy, gamma_copy, beta_copy, xhat, inv_std, rows, D,
+                                   inv_d](const Tensor& grad_out) mutable {
+        const std::vector<float>& dy = grad_out.data();
+        const std::vector<float>& h = xhat.data();
+        const std::vector<float>& g = gamma_copy.data();
 
-            Tensor dgamma(gamma_copy.shape(), 0.0f, false);
-            Tensor dbeta(beta_copy.shape(), 0.0f, false);
-            Tensor dX(input_copy.shape(), 0.0f, false);
+        Tensor dgamma(gamma_copy.shape(), 0.0f, false);
+        Tensor dbeta(beta_copy.shape(), 0.0f, false);
+        Tensor dX(input_copy.shape(), 0.0f, false);
 
-            // This loop stays serial deliberately, unlike the forward's. dX is
-            // independent per row, but dgamma and dbeta accumulate **across** rows:
-            // splitting it would need a per-thread partial and a fixed-order combine so
-            // as not to lose the bit-for-bit identity the tests check, and separating it
-            // into two passes would cost rereading dy and xhat in full. Neither has been
-            // measured, so neither is chosen blind.
-            //
-            // ponytail: serial reduction; per-thread partials if the profile flags it.
-            for (size_t i = 0; i < rows; ++i) {
-                // The mean and variance depend on the whole vector, so each
-                // component's derivative drags two correction terms along:
-                // dx = (dxhat - media(dxhat) - xhat * media(dxhat * xhat)) / std
-                float sum_dxhat = 0.0f;
-                float sum_dxhat_h = 0.0f;
-                for (size_t j = 0; j < D; ++j) {
-                    const float dxhat = dy[i * D + j] * g[j];
-                    sum_dxhat += dxhat;
-                    sum_dxhat_h += dxhat * h[i * D + j];
-                }
-
-                for (size_t j = 0; j < D; ++j) {
-                    const size_t k = i * D + j;
-                    const float dxhat = dy[k] * g[j];
-                    dX.data()[k] = inv_std[i] *
-                                   (dxhat - inv_d * sum_dxhat - h[k] * inv_d * sum_dxhat_h);
-                    dgamma.data()[j] += dy[k] * h[k];
-                    dbeta.data()[j] += dy[k];
-                }
+        // This loop stays serial deliberately, unlike the forward's. dX is
+        // independent per row, but dgamma and dbeta accumulate **across** rows:
+        // splitting it would need a per-thread partial and a fixed-order combine so
+        // as not to lose the bit-for-bit identity the tests check, and separating it
+        // into two passes would cost rereading dy and xhat in full. Neither has been
+        // measured, so neither is chosen blind.
+        //
+        // ponytail: serial reduction; per-thread partials if the profile flags it.
+        for (size_t i = 0; i < rows; ++i) {
+            // The mean and variance depend on the whole vector, so each
+            // component's derivative drags two correction terms along:
+            // dx = (dxhat - media(dxhat) - xhat * media(dxhat * xhat)) / std
+            float sum_dxhat = 0.0f;
+            float sum_dxhat_h = 0.0f;
+            for (size_t j = 0; j < D; ++j) {
+                const float dxhat = dy[i * D + j] * g[j];
+                sum_dxhat += dxhat;
+                sum_dxhat_h += dxhat * h[i * D + j];
             }
 
-            if (input_copy.requires_grad()) input_copy.add_grad(dX);
-            if (gamma_copy.requires_grad()) gamma_copy.add_grad(dgamma);
-            if (beta_copy.requires_grad()) beta_copy.add_grad(dbeta);
-        };
+            for (size_t j = 0; j < D; ++j) {
+                const size_t k = i * D + j;
+                const float dxhat = dy[k] * g[j];
+                dX.data()[k] =
+                    inv_std[i] * (dxhat - inv_d * sum_dxhat - h[k] * inv_d * sum_dxhat_h);
+                dgamma.data()[j] += dy[k] * h[k];
+                dbeta.data()[j] += dy[k];
+            }
+        }
+
+        if (input_copy.requires_grad()) input_copy.add_grad(dX);
+        if (gamma_copy.requires_grad()) gamma_copy.add_grad(dgamma);
+        if (beta_copy.requires_grad()) beta_copy.add_grad(dbeta);
+    };
 
     return out;
 }
 
-std::vector<Tensor> LayerNorm::parameters() { return { gamma_, beta_ }; }
+std::vector<Tensor> LayerNorm::parameters() {
+    return {gamma_, beta_};
+}
 
 std::vector<std::pair<std::string, Tensor>> LayerNorm::named_parameters(const std::string& prefix) {
-    return { {prefix + "layernorm.gamma", gamma_}, {prefix + "layernorm.beta", beta_} };
+    return {{prefix + "layernorm.gamma", gamma_}, {prefix + "layernorm.beta", beta_}};
 }
 
 std::string LayerNorm::name() const {
@@ -190,10 +192,12 @@ Tensor Embedding::forward(const Tensor& ids) {
     return weight_.select_rows(indices).reshape({batch, seq, dim_});
 }
 
-std::vector<Tensor> Embedding::parameters() { return { weight_ }; }
+std::vector<Tensor> Embedding::parameters() {
+    return {weight_};
+}
 
 std::vector<std::pair<std::string, Tensor>> Embedding::named_parameters(const std::string& prefix) {
-    return { {prefix + "embedding.weight", weight_} };
+    return {{prefix + "embedding.weight", weight_}};
 }
 
 std::string Embedding::name() const {
@@ -233,9 +237,8 @@ Tensor causal_mask(size_t seq_len, float masked_value) {
     return mask;
 }
 
-Tensor scaled_dot_product_attention(const Tensor& query, const Tensor& key,
-                                    const Tensor& value, const Tensor* mask,
-                                    Tensor* attention_weights) {
+Tensor scaled_dot_product_attention(const Tensor& query, const Tensor& key, const Tensor& value,
+                                    const Tensor* mask, Tensor* attention_weights) {
     if (query.ndim() < 2 || key.ndim() < 2 || value.ndim() < 2) {
         throw std::invalid_argument("La atencion necesita al menos 2 dimensiones (seq, d_k).");
     }
@@ -251,7 +254,7 @@ Tensor scaled_dot_product_attention(const Tensor& query, const Tensor& key,
     Tensor scores = query.matmul(key.transpose()) * scale;
 
     if (mask != nullptr) {
-        scores = scores + *mask; // máscara aditiva, difundida sobre lote y cabezas
+        scores = scores + *mask;  // máscara aditiva, difundida sobre lote y cabezas
     }
 
     Tensor weights = scores.softmax();
@@ -266,10 +269,13 @@ Tensor scaled_dot_product_attention(const Tensor& query, const Tensor& key,
 // ---------------------------------------------------------
 
 MultiHeadAttention::MultiHeadAttention(size_t d_model, size_t num_heads)
-    : d_model_(d_model), num_heads_(num_heads),
+    : d_model_(d_model),
+      num_heads_(num_heads),
       head_dim_(num_heads == 0 ? 0 : d_model / num_heads),
-      w_query_(d_model, d_model), w_key_(d_model, d_model),
-      w_value_(d_model, d_model), w_out_(d_model, d_model) {
+      w_query_(d_model, d_model),
+      w_key_(d_model, d_model),
+      w_value_(d_model, d_model),
+      w_out_(d_model, d_model) {
     if (num_heads == 0) {
         throw std::invalid_argument("MultiHeadAttention requiere al menos una cabeza.");
     }
@@ -287,8 +293,8 @@ Tensor MultiHeadAttention::forward(const Tensor& input) {
 Tensor MultiHeadAttention::forward(const Tensor& input, const Tensor* mask) {
     if (input.ndim() != 3 || input.shape()[2] != d_model_) {
         throw std::invalid_argument("MultiHeadAttention espera (batch, seq, " +
-                                    std::to_string(d_model_) + "), recibió " +
-                                    input.shape_str() + ".");
+                                    std::to_string(d_model_) + "), recibió " + input.shape_str() +
+                                    ".");
     }
     const size_t batch = input.shape()[0];
     const size_t seq = input.shape()[1];
@@ -304,8 +310,8 @@ Tensor MultiHeadAttention::forward(const Tensor& input, const Tensor* mask) {
     Tensor k = split_heads(w_key_(input));
     Tensor v = split_heads(w_value_(input));
 
-    Tensor attended = scaled_dot_product_attention(
-        q, k, v, mask, keep_attention_ ? &last_attention_ : nullptr);
+    Tensor attended =
+        scaled_dot_product_attention(q, k, v, mask, keep_attention_ ? &last_attention_ : nullptr);
 
     // Undo the split into heads: (B, H, S, hd) -> (B, S, d_model)
     Tensor merged = attended.permute({0, 2, 1, 3}).reshape({batch, seq, d_model_});
@@ -336,8 +342,8 @@ std::vector<std::pair<std::string, Tensor>> MultiHeadAttention::named_parameters
 
 std::string MultiHeadAttention::name() const {
     return "MultiHeadAttention(d_model=" + std::to_string(d_model_) +
-           ", heads=" + std::to_string(num_heads_) +
-           ", head_dim=" + std::to_string(head_dim_) + ")";
+           ", heads=" + std::to_string(num_heads_) + ", head_dim=" + std::to_string(head_dim_) +
+           ")";
 }
 
 // ---------------------------------------------------------
@@ -345,10 +351,13 @@ std::string MultiHeadAttention::name() const {
 // ---------------------------------------------------------
 
 TransformerBlock::TransformerBlock(size_t d_model, size_t num_heads, size_t ff_hidden)
-    : d_model_(d_model), ff_hidden_(ff_hidden),
-      norm1_(d_model), norm2_(d_model),
+    : d_model_(d_model),
+      ff_hidden_(ff_hidden),
+      norm1_(d_model),
+      norm2_(d_model),
       attention_(d_model, num_heads),
-      ff1_(d_model, ff_hidden), ff2_(ff_hidden, d_model) {
+      ff1_(d_model, ff_hidden),
+      ff2_(ff_hidden, d_model) {
     if (ff_hidden == 0) {
         throw std::invalid_argument("TransformerBlock requiere una capa oculta positiva.");
     }
@@ -380,10 +389,8 @@ std::vector<std::pair<std::string, Tensor>> TransformerBlock::named_parameters(
     const std::string& prefix) {
     std::vector<std::pair<std::string, Tensor>> named;
     const std::pair<const char*, Module*> parts[] = {
-        {"norm1.", static_cast<Module*>(&norm1_)},
-        {"norm2.", static_cast<Module*>(&norm2_)},
-        {"", static_cast<Module*>(&attention_)},
-        {"ff1.", static_cast<Module*>(&ff1_)},
+        {"norm1.", static_cast<Module*>(&norm1_)}, {"norm2.", static_cast<Module*>(&norm2_)},
+        {"", static_cast<Module*>(&attention_)},   {"ff1.", static_cast<Module*>(&ff1_)},
         {"ff2.", static_cast<Module*>(&ff2_)},
     };
     for (const auto& part : parts) {
@@ -408,5 +415,5 @@ std::string TransformerBlock::name() const {
            ", ff=" + std::to_string(ff_hidden_) + ")";
 }
 
-} // namespace nn
-} // namespace engine
+}  // namespace nn
+}  // namespace engine

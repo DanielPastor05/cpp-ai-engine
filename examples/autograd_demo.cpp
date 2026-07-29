@@ -35,12 +35,9 @@ int main() {
     // 2. Autograd en Multiplicación Matricial (MatMul)
     // ---------------------------------------------------------
     std::cout << "--- 2. Autograd con Matrices (MatMul) ---\n";
-    Tensor A({2, 3}, {1.0f, 2.0f, 3.0f,
-                      4.0f, 5.0f, 6.0f}, true);
+    Tensor A({2, 3}, {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f}, true);
 
-    Tensor B({3, 2}, {0.5f, 1.0f,
-                      1.5f, 2.0f,
-                      2.5f, 3.0f}, true);
+    Tensor B({3, 2}, {0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f}, true);
 
     Tensor C = A.matmul(B);
     Tensor Loss = C.sum();
@@ -62,12 +59,12 @@ int main() {
 
     // Parámetros a optimizar. W es (1, 1) para poder usarse en matmul y bias es
     // un vector fila (1, 1) que se difunde sobre las 4 filas del lote.
-    Tensor W({1, 1}, std::vector<float>{0.0f}, true);    // Inicializar peso en 0
-    Tensor bias({1, 1}, std::vector<float>{0.0f}, true); // Inicializar sesgo en 0
+    Tensor W({1, 1}, std::vector<float>{0.0f}, true);     // Inicializar peso en 0
+    Tensor bias({1, 1}, std::vector<float>{0.0f}, true);  // Inicializar sesgo en 0
 
     // Datos de entrenamiento (x e y)
     Tensor x({4, 1}, {1.0f, 2.0f, 3.0f, 4.0f}, false);
-    Tensor y_target({4, 1}, {3.5f, 6.0f, 8.5f, 11.0f}, false); // 2.5 * x + 1.0
+    Tensor y_target({4, 1}, {3.5f, 6.0f, 8.5f, 11.0f}, false);  // 2.5 * x + 1.0
 
     float learning_rate = 0.05f;
 
@@ -93,10 +90,9 @@ int main() {
         bias.data()[0] -= learning_rate * bias.grad().data()[0];
 
         if (epoch % 20 == 0 || epoch == 1) {
-            std::cout << "Epoch " << std::setw(3) << epoch 
-                      << " | Loss = " << std::fixed << std::setprecision(6) << loss.data()[0]
-                      << " | W = " << std::setprecision(4) << W.data()[0] 
-                      << " | b = " << bias.data()[0] << "\n";
+            std::cout << "Epoch " << std::setw(3) << epoch << " | Loss = " << std::fixed
+                      << std::setprecision(6) << loss.data()[0] << " | W = " << std::setprecision(4)
+                      << W.data()[0] << " | b = " << bias.data()[0] << "\n";
         }
     }
 

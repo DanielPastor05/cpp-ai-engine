@@ -35,7 +35,7 @@ private:
 // root_tensor.
 void backward(Tensor& root_tensor);
 
-} // namespace autograd
-} // namespace engine
+}  // namespace autograd
+}  // namespace engine
 
-#endif // ENGINE_AUTOGRAD_HPP
+#endif  // ENGINE_AUTOGRAD_HPP

@@ -47,12 +47,13 @@ size_t load_parameters(nn::Module& model, const std::string& path, bool strict =
 // composition of your own rather than a single Module.
 void save_parameters(const std::vector<std::pair<std::string, Tensor>>& params,
                      const std::string& path);
-size_t load_parameters(std::vector<std::pair<std::string, Tensor>>& params,
-                       const std::string& path, bool strict = true);
+size_t load_parameters(std::vector<std::pair<std::string, Tensor>>& params, const std::string& path,
+                       bool strict = true);
 
 // The names and shapes stored in a file, without touching any model.
 // Useful for inspecting a checkpoint before loading it.
-std::vector<std::pair<std::string, std::vector<size_t>>> inspect_parameters(const std::string& path);
+std::vector<std::pair<std::string, std::vector<size_t>>> inspect_parameters(
+    const std::string& path);
 
 // Reads every tensor into freshly created Tensors, with no need for an existing
 // model carrying the right shapes. This is what makes it possible to load
@@ -60,6 +61,6 @@ std::vector<std::pair<std::string, std::vector<size_t>>> inspect_parameters(cons
 // in advance.
 std::vector<std::pair<std::string, Tensor>> load_tensors(const std::string& path);
 
-} // namespace engine
+}  // namespace engine
 
-#endif // ENGINE_SERIALIZE_HPP
+#endif  // ENGINE_SERIALIZE_HPP

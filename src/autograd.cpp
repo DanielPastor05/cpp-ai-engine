@@ -46,7 +46,7 @@ std::vector<std::shared_ptr<TensorImpl>> topological_sort(const std::shared_ptr<
     return topo_order;
 }
 
-} // namespace
+}  // namespace
 
 bool grad_enabled() {
     return g_grad_enabled;
@@ -75,7 +75,8 @@ void backward(Tensor& root_tensor) {
     if (!root_impl->grad) {
         if (root_impl->storage.size() != 1) {
             throw std::runtime_error(
-                "backward() implícito solo esta permitido sobre un escalar; el tensor raíz tiene forma " +
+                "backward() implícito solo esta permitido sobre un escalar; el tensor raíz tiene "
+                "forma " +
                 root_tensor.shape_str() + ". Usa backward(grad_output).");
         }
         root_impl->grad = std::make_shared<TensorImpl>(root_impl->shape, 1.0f, false);
@@ -117,5 +118,5 @@ void backward(Tensor& root_tensor) {
     }
 }
 
-} // namespace autograd
-} // namespace engine
+}  // namespace autograd
+}  // namespace engine

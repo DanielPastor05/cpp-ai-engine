@@ -96,6 +96,6 @@ private:
     mutable std::vector<float> host_;
 };
 
-} // namespace engine
+}  // namespace engine
 
-#endif // ENGINE_DETAIL_STORAGE_HPP
+#endif  // ENGINE_DETAIL_STORAGE_HPP

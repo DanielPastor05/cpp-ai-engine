@@ -14,6 +14,6 @@ namespace engine {
 
 std::mt19937& global_rng();
 
-} // namespace engine
+}  // namespace engine
 
-#endif // ENGINE_RANDOM_HPP
+#endif  // ENGINE_RANDOM_HPP
