@@ -49,6 +49,25 @@ bool relu_backward(const Storage& x, const Storage& grad_out, Storage& out);
 // compilador. De ahí que tenga kernel propio en lugar de reutilizar binary().
 bool accumulate_grad(Storage& grad, const Storage& g, bool initialize);
 
+// out = x * mul + add, en una sola pasada. Las dos operaciones con escalar del
+// motor caen aquí: `t * k` es (k, 0) y `t + k` es (1, k). No parece gran cosa,
+// pero sin kernel el escalado de la atención —un `* 1/sqrt(d_k)` entre dos
+// matmul— bajaba a host el tensor entero y lo volvía a subir.
+bool scalar(const Storage& x, Storage& out, float mul, float add);
+
+// Reordenación de ejes: out[plano] = x[sum_d coord_d * src_strides[d]], donde
+// las coordenadas se sacan de out_shape. Cubre permute() y transpose(), que es
+// el caso particular de intercambiar los dos últimos ejes.
+//
+// Los dos vectores describen la salida sobre la memoria de la entrada, igual
+// que en el camino de CPU: quien llama ya los tiene calculados.
+bool permute(const Storage& x, Storage& out,
+             const size_t* out_shape, const size_t* src_strides, size_t ndim);
+
+// Suma sobre un eje, viendo el tensor como (outer, axis_len, inner). Es la
+// misma descomposición que usa AxisView en src/tensor.cpp.
+bool sum_axis(const Storage& x, Storage& out, size_t outer, size_t axis_len, size_t inner);
+
 // Softmax sobre el último eje: `rows` filas de `cols` valores contiguos.
 bool softmax(const Storage& x, Storage& out, size_t rows, size_t cols);
 // y es la salida guardada del forward, no la entrada.

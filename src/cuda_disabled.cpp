@@ -75,6 +75,9 @@ void copy_to_device(float*, const float*, size_t) {
 void copy_to_host(float*, const float*, size_t) {
     throw std::logic_error("El motor se compilo sin CUDA: no hay memoria de dispositivo.");
 }
+void copy_device_to_device(float*, const float*, size_t) {
+    throw std::logic_error("El motor se compilo sin CUDA: no hay memoria de dispositivo.");
+}
 
 } // namespace detail
 
@@ -84,6 +87,9 @@ bool binary(Binary, const Storage&, const Storage&, Storage&, size_t, size_t) { 
 bool matmul(const Storage&, const Storage&, Storage&, size_t, size_t, size_t, size_t, bool, bool) {
     return false;
 }
+bool scalar(const Storage&, Storage&, float, float) { return false; }
+bool permute(const Storage&, Storage&, const size_t*, const size_t*, size_t) { return false; }
+bool sum_axis(const Storage&, Storage&, size_t, size_t, size_t) { return false; }
 bool relu(const Storage&, Storage&) { return false; }
 bool relu_backward(const Storage&, const Storage&, Storage&) { return false; }
 bool accumulate_grad(Storage&, const Storage&, bool) { return false; }

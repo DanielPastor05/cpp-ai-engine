@@ -79,6 +79,25 @@ std::vector<float>& Storage::host_mut() {
     return host_;
 }
 
+Storage Storage::clone() const {
+#ifdef ENGINE_CUDA
+    // Solo cuando el dispositivo es el unico que tiene el dato bueno. Si host
+    // tambien vale, copiarlo es gratis y ademas no reserva memoria de GPU.
+    if (device_valid_ && !host_valid_ && device_ != nullptr) {
+        Storage copy;
+        // El vector se dimensiona pero no se rellena: size() sale de el, y su
+        // contenido esta marcado obsoleto hasta que alguien pida el lado host.
+        copy.host_.resize(host_.size());
+        copy.ensure_device_buffer();
+        cuda::detail::copy_device_to_device(copy.device_, device_, host_.size());
+        copy.host_valid_ = false;
+        copy.device_valid_ = true;
+        return copy;
+    }
+#endif
+    return Storage(host_);
+}
+
 void Storage::assign(size_t count, float value) {
 #ifdef ENGINE_CUDA
     if (count != host_.size()) release_device();

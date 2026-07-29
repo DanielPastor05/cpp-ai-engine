@@ -19,6 +19,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
 
 namespace engine {
@@ -52,6 +53,30 @@ constexpr size_t kMaxGridYZ = 65535;
 
 constexpr size_t kMaxInt = static_cast<size_t>(std::numeric_limits<int>::max());
 
+// Ejes que admite el kernel de permutacion. Cuatro son los que usa el motor
+// —(B, H, S, d) en la atencion, (N, C, H, W) en la convolucion—; ocho da margen
+// sin que el plan deje de caber holgado en el espacio de argumentos del kernel.
+constexpr int kMaxPermuteDims = 8;
+
+// cudaGetLastError() solo ve fallos **de lanzamiento**. Si el fallo ocurre
+// dentro del cuerpo del kernel —un acceso fuera de rango, por ejemplo— el error
+// se queda pegado al contexto y aflora en la siguiente copia, que suele estar
+// tres operaciones mas alla y no tiene ninguna culpa.
+//
+// Sincronizar aqui lo ataja en el lanzamiento culpable, pero es una barrera por
+// kernel y el motor lanza cientos por paso: seria pagar en produccion por un
+// diagnostico que solo interesa mientras se persigue un fallo. De ahi la
+// variable de entorno, apagada por defecto.
+//
+//   ENGINE_CUDA_SYNC=1 .\build-cuda\Release\test_engine.exe
+bool sync_after_launch() {
+    static const bool on = [] {
+        const char* raw = std::getenv("ENGINE_CUDA_SYNC");
+        return raw != nullptr && raw[0] != '\0' && raw[0] != '0';
+    }();
+    return on;
+}
+
 // Un kernel que falla al lanzarse no aborta el programa: se informa y se
 // devuelve false, de modo que el resultado lo calcula la CPU. Un motor que se
 // cae porque la GPU está ocupada es peor que uno que va más lento.
@@ -60,7 +85,11 @@ constexpr size_t kMaxInt = static_cast<size_t>(std::numeric_limits<int>::max());
 // igual: quien pidió la salida con device_write() tiene que revertir, y quien
 // la pidió con device_mut() no debe hacerlo. Ver accumulate_grad().
 bool launch_ok(const char* what) {
-    const cudaError_t status = cudaGetLastError();
+    cudaError_t status = cudaGetLastError();
+    // Con ENGINE_CUDA_SYNC el error de ejecucion del kernel se recoge aqui, en
+    // el lanzamiento que lo provoco, en lugar de en la siguiente copia. El
+    // camino de recuperacion es el mismo: se informa y se calcula en CPU.
+    if (status == cudaSuccess && sync_after_launch()) status = cudaDeviceSynchronize();
     if (status == cudaSuccess) {
         detail::note_kernel_launched();
         return true;
@@ -186,6 +215,74 @@ __global__ void grad_accumulate(const float* __restrict__ g, float* __restrict__
     const long long stride = (long long)blockDim.x * gridDim.x;
     for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
         out[i] = initialize ? g[i] : out[i] + g[i];
+    }
+}
+
+// out = x * mul + add. Una sola forma para las dos operaciones con escalar:
+// multiplicar es add = 0 y sumar es mul = 1. Con esos valores el producto o la
+// suma sobran, y da igual: el kernel esta limitado por la memoria, no por las
+// dos operaciones de coma flotante que hace por elemento.
+__global__ void scalar_affine(const float* __restrict__ x, float* __restrict__ out,
+                              float mul, float add, long long n) {
+    const long long stride = (long long)blockDim.x * gridDim.x;
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
+        out[i] = x[i] * mul + add;
+    }
+}
+
+// ---------------------------------------------------------
+// Reordenacion de ejes
+// ---------------------------------------------------------
+//
+// Un plano de la salida se traduce a coordenadas y de ahi a un desplazamiento
+// sobre la entrada, exactamente igual que en el camino de CPU. La escritura es
+// contigua y la lectura salta: es la orientacion correcta de las dos, porque
+// una escritura dispersa serializa el ancho de banda mucho peor que una lectura
+// dispersa, que al menos se solapa con el resto del warp.
+//
+// El plan viaja por valor. Los argumentos de un kernel van a memoria constante,
+// asi que las ocho parejas se leen de ahi y no hacen falta ni reserva ni copia
+// aparte para pasarlos.
+//
+// ponytail: division entera por elemento y por eje; si el perfil la senala, se
+// sustituye por el truco de multiplicar por el reciproco magico.
+struct PermutePlan {
+    int shape[kMaxPermuteDims];
+    long long stride[kMaxPermuteDims];
+};
+
+__global__ void permute_gather(const float* __restrict__ x, float* __restrict__ out,
+                               PermutePlan plan, int nd, long long n) {
+    const long long grid_stride = (long long)blockDim.x * gridDim.x;
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += grid_stride) {
+        long long rem = i;
+        long long src = 0;
+        // De atras hacia delante: el ultimo eje es el que varia mas rapido.
+        for (int d = nd - 1; d >= 0; --d) {
+            const long long extent = plan.shape[d];
+            src += (rem % extent) * plan.stride[d];
+            rem /= extent;
+        }
+        out[i] = x[src];
+    }
+}
+
+// Suma sobre un eje visto como (outer, axis_len, inner): un hilo por elemento
+// de la salida, que recorre el eje.
+//
+// El orden de acumulacion es el mismo que en CPU —el eje de menor a mayor— y
+// tampoco hay ninguna multiplicacion que el compilador pueda fundir en un FMA,
+// asi que este kernel si coincide bit a bit con el camino de CPU.
+__global__ void sum_over_axis(const float* __restrict__ x, float* __restrict__ out,
+                              long long axis_len, long long inner, long long n) {
+    const long long stride = (long long)blockDim.x * gridDim.x;
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
+        const long long o = i / inner;
+        const long long j = i % inner;
+        const float* base = x + o * axis_len * inner + j;
+        float acc = 0.0f;
+        for (long long a = 0; a < axis_len; ++a) acc += base[a * inner];
+        out[i] = acc;
     }
 }
 
@@ -646,6 +743,49 @@ bool matmul(const Storage& a, const Storage& b, Storage& out,
     matmul_tiled<<<grid, block>>>(a.device(), b.device(), out.device_write(),
                                   M, K, N, a_stride, b_stride);
     return launched_ok("matmul_tiled", out);
+}
+
+bool scalar(const Storage& x, Storage& out, float mul, float add) {
+    if (!elementwise_worth_it(x.size())) return false;
+    if (out.size() != x.size()) return false;
+    const long long n = (long long)x.size();
+    scalar_affine<<<grid_for(n), kBlock>>>(x.device(), out.device_write(), mul, add, n);
+    return launched_ok("scalar_affine", out);
+}
+
+bool permute(const Storage& x, Storage& out,
+             const size_t* out_shape, const size_t* src_strides, size_t ndim) {
+    if (!elementwise_worth_it(x.size())) return false;
+    if (ndim == 0 || ndim > (size_t)kMaxPermuteDims) return false;
+    if (out.size() != x.size()) return false;
+
+    PermutePlan plan{};
+    size_t total = 1;
+    for (size_t d = 0; d < ndim; ++d) {
+        if (out_shape[d] == 0 || out_shape[d] > kMaxInt) return false;
+        plan.shape[d] = (int)out_shape[d];
+        plan.stride[d] = (long long)src_strides[d];
+        total *= out_shape[d];
+    }
+    // La forma de salida tiene que cubrir la entrada entera: si no cuadra, el
+    // kernel leeria fuera del bufer en lugar de dar un resultado equivocado.
+    if (total != x.size()) return false;
+
+    const long long n = (long long)x.size();
+    permute_gather<<<grid_for(n), kBlock>>>(x.device(), out.device_write(), plan, (int)ndim, n);
+    return launched_ok("permute_gather", out);
+}
+
+bool sum_axis(const Storage& x, Storage& out, size_t outer, size_t axis_len, size_t inner) {
+    if (!elementwise_worth_it(x.size())) return false;
+    if (outer == 0 || axis_len == 0 || inner == 0) return false;
+    if (outer * axis_len * inner != x.size()) return false;
+    if (out.size() != outer * inner) return false;
+
+    const long long n = (long long)(outer * inner);
+    sum_over_axis<<<grid_for(n), kBlock>>>(x.device(), out.device_write(),
+                                           (long long)axis_len, (long long)inner, n);
+    return launched_ok("sum_over_axis", out);
 }
 
 bool relu(const Storage& x, Storage& out) {

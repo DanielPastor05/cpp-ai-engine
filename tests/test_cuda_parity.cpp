@@ -274,6 +274,48 @@ void run_cuda_parity_tests() {
         compare("softmax sobre (3,4,7,19)", [&] { return A4.softmax(); });
     }
 
+    // --- escalares, reordenacion de ejes y reducciones ---
+    //
+    // Las tres rompian la cadena de residencia. Entre dos matmul que si tienen
+    // kernel, un `* escala` o un permute sin el suyo bajaba el tensor entero a
+    // host y obligaba a resubirlo en la operacion siguiente: es exactamente lo
+    // que hace la atencion, dos veces por proyeccion.
+    {
+        Tensor A = Tensor::randn({64, 40});
+        compare("producto por escalar", [&] { return A * 2.5f; });
+        compare("suma de escalar", [&] { return A + 1.5f; });
+        compare("division por escalar", [&] { return A / 4.0f; });
+
+        compare("transpose (64,40)", [&] { return A.transpose(); });
+
+        // Por lotes transpone cada matriz del lote, que es lo que se le hace a
+        // key antes del producto de la atencion.
+        Tensor B4 = Tensor::randn({3, 5, 7, 11});
+        compare("transpose por lotes (3,5,7,11)", [&] { return B4.transpose(); });
+
+        // La permutacion de la atencion: (B, S, H, d) -> (B, H, S, d).
+        compare("permute (0,2,1,3) sobre (3,5,7,11)",
+                [&] { return B4.permute({0, 2, 1, 3}); });
+        // Y una que lleva el primer eje al final, para que ningun stride se
+        // quede en su sitio: un kernel que confundiera el orden de los ejes
+        // seguiria acertando en la permutacion de la atencion, que deja dos.
+        compare("permute (3,1,2,0) sobre (3,5,7,11)",
+                [&] { return B4.permute({3, 1, 2, 0}); });
+        // Ida y vuelta. El segundo permute lee lo que el primero dejo en el
+        // dispositivo, asi que ademas comprueba el encadenado.
+        compare("permute y su inversa sobre (3,5,7,11)",
+                [&] { return B4.permute({0, 2, 1, 3}).permute({0, 2, 1, 3}); });
+
+        Tensor R = Tensor::randn({6, 9, 16});
+        compare("sum sobre el eje 0 de (6,9,16)", [&] { return R.sum(0); });
+        compare("sum sobre el eje 1 de (6,9,16)", [&] { return R.sum(1); });
+        // El ultimo eje deja inner == 1: el hilo recorre valores contiguos en
+        // vez de saltar, que es el caso de acceso opuesto al de los otros dos.
+        compare("sum sobre el eje 2 de (6,9,16)", [&] { return R.sum(2); });
+        compare("sum con keepdim sobre el eje 1", [&] { return R.sum(1, true); });
+        compare("mean sobre el eje 1 de (6,9,16)", [&] { return R.mean(1); });
+    }
+
     // --- gradientes ---
     {
         Tensor X = Tensor::randn({40, 24}, 0.0f, 1.0f, true);
@@ -366,6 +408,37 @@ void run_cuda_parity_tests() {
         const cuda::TransferStats chained = cuda::transfer_stats();
         testing::check(chained.to_device_count == 0,
                        "una segunda operacion no resube operandos ya residentes");
+    }
+
+    // --- reshape se queda en el dispositivo ---
+    //
+    // reshape copia el bufer entero por definicion —no es una vista—, pero
+    // copiarlo **a traves de host** costaba una bajada y una subida por llamada.
+    // La atencion hace dos por proyeccion, y la entrada de esas dos viene de un
+    // matmul, o sea que estaba residente. Ahora la copia no sale de la tarjeta.
+    {
+        cuda::set_enabled(true);
+        Tensor A = Tensor::randn({64, 64});
+        Tensor B = Tensor::randn({64, 64});
+        A.data();
+        B.data();
+
+        cuda::reset_transfer_stats();
+        Tensor flat = A.matmul(B).reshape({16, 256});
+        const cuda::TransferStats after = cuda::transfer_stats();
+        testing::check(after.to_host_count == 0,
+                       "reshape de un tensor residente no lo baja a host");
+        testing::check(flat.get_impl()->storage.resident_on_device(),
+                       "y el resultado del reshape sigue en el dispositivo");
+
+        // Los valores tienen que ser los mismos, claro: una copia D2D mal hecha
+        // daria un tensor residente y lleno de basura, que es peor que no
+        // acelerar nada.
+        const std::vector<float> reshaped = flat.data();
+        const std::vector<float> original = A.matmul(B).data();
+        bool same = reshaped.size() == original.size();
+        for (size_t i = 0; same && i < reshaped.size(); ++i) same = (reshaped[i] == original[i]);
+        testing::check(same, "y los valores sobreviven a la copia entre buferes del dispositivo");
     }
 
     // --- residencia del backward ---

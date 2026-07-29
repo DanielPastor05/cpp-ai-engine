@@ -154,6 +154,10 @@ float* device_alloc(size_t elements);
 void device_free(float* ptr);
 void copy_to_device(float* dst, const float* src, size_t elements);
 void copy_to_host(float* dst, const float* src, size_t elements);
+// Duplica un búfer sin salir del dispositivo. No entra en TransferStats a
+// propósito: esas cifras miden el PCIe, y meter aquí una copia que no lo cruza
+// haría que el número dejara de significar lo que dice medir.
+void copy_device_to_device(float* dst, const float* src, size_t elements);
 
 } // namespace detail
 

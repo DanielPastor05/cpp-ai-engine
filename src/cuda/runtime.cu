@@ -287,6 +287,16 @@ void copy_to_device(float* dst, const float* src, size_t elements) {
     ++g_stats.to_device_count;
 }
 
+// Sin contabilizar: no cruza el PCIe. Va a la velocidad de la memoria de la
+// tarjeta —cientos de GB/s frente a los ~12 de un PCIe 3.0 x16—, que es
+// justamente el motivo de que exista: reshape copia el bufer entero por
+// definicion, y hacerlo aqui evita bajarlo y volverlo a subir.
+void copy_device_to_device(float* dst, const float* src, size_t elements) {
+    if (elements == 0) return;
+    check(cudaMemcpy(dst, src, elements * sizeof(float), cudaMemcpyDeviceToDevice),
+          "cudaMemcpy D2D");
+}
+
 void copy_to_host(float* dst, const float* src, size_t elements) {
     if (elements == 0) return;
     const auto start = std::chrono::steady_clock::now();

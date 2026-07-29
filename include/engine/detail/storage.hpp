@@ -53,6 +53,16 @@ public:
 
     void assign(size_t count, float value);
 
+    // Copia con los mismos valores, pero **conservando el lado en el que
+    // viven**: si el dato solo esta en el dispositivo, se duplica alli con un
+    // memcpy interno en vez de bajarlo y volverlo a subir.
+    //
+    // El constructor de copia no puede hacer esto: se usa al copiar tensores
+    // sueltos, y reservar memoria de GPU en cada copia es justo lo que no
+    // conviene en un bucle de entrenamiento. Aqui el caso es el contrario —
+    // reshape ya va a tener las dos copias vivas— y ahorra la ida y vuelta.
+    Storage clone() const;
+
     // ---- lado dispositivo ----
 #ifdef ENGINE_CUDA
     // Sube si hace falta y devuelve el puntero de dispositivo (sólo lectura).

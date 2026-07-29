@@ -258,9 +258,16 @@ ctest --test-dir build-cuda --output-on-failure   # adds the CPU/GPU parity case
 ./build-cuda/bench                                # CPU vs GPU, transfers apart
 ```
 
-`matmul`, the element-wise operators, ReLU and softmax dispatch to hand-written
-kernels. Everything else stays on the CPU, and [docs/CUDA.md](docs/CUDA.md) says
-which and why.
+`matmul`, the element-wise operators, the scalar ones, `transpose` / `permute`,
+per-axis sums, ReLU and softmax dispatch to hand-written kernels. Everything else
+stays on the CPU, and [docs/CUDA.md](docs/CUDA.md) says which and why.
+
+**The kernel list is a residency decision, not a checklist.** An operation
+without one downloads its input and forces the next one to upload it again, so
+the cheap ops in the middle of a chain cost more than the expensive ones at the
+end: a `* 1/sqrt(d_k)` between two `matmul`s was a full round trip over PCIe. A
+full `TransformerBlock` step went from 29 downloads / 39 uploads to 14 / 6 once
+the scaling, the axis reordering and `reshape` stopped going through host.
 
 **The `matmul` ships as four kernels**, from a naive one to a register-tiled one,
 all of them live and individually selectable. That is not indecision — the
@@ -294,9 +301,11 @@ bit, because the device compiler fuses multiply and add into one FMA that rounds
 once where the CPU rounds twice. Demanding bit-identical results between CPU and
 GPU would be demanding that the GPU compute *worse*.
 
-Two knobs, no recompilation: `ENGINE_CUDA=0` turns the backend off on the same
-binary, and `ENGINE_CUDA_MIN_FLOPS` / `ENGINE_CUDA_MIN_ELEMENTS` move the
-thresholds that decide when a kernel is worth launching at all.
+Three knobs, no recompilation: `ENGINE_CUDA=0` turns the backend off on the same
+binary, `ENGINE_CUDA_MIN_FLOPS` / `ENGINE_CUDA_MIN_ELEMENTS` move the thresholds
+that decide when a kernel is worth launching at all, and `ENGINE_CUDA_SYNC=1`
+synchronizes after every launch so a fault *inside* a kernel is reported against
+the kernel that caused it instead of surfacing at the next `cudaMemcpy`.
 
 ---
 

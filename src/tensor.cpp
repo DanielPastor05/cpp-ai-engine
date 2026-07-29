@@ -104,8 +104,13 @@ BroadcastPlan plan_broadcast(const std::vector<size_t>& base, const std::vector<
 // las derivadas, donde tener ambas formas iguales simplifica las fórmulas.
 Tensor expand_operand(const Tensor& other, const std::vector<size_t>& base_shape,
                       size_t total, size_t inner) {
+    // Los accesores se izan fuera del bucle: data() no es un puntero, es la
+    // puerta al lado host, y llamarla por elemento comprueba la validez del
+    // espejo del dispositivo una vez por valor copiado.
     Tensor full(base_shape, 0.0f, false);
-    for (size_t i = 0; i < total; ++i) full.data()[i] = other.data()[i % inner];
+    const float* ENGINE_RESTRICT src = other.data().data();
+    float* ENGINE_RESTRICT dst = full.data().data();
+    for (size_t i = 0; i < total; ++i) dst[i] = src[i % inner];
     return full;
 }
 
@@ -117,12 +122,30 @@ Tensor fold_leading(const Tensor& full, const std::vector<size_t>& target) {
     const size_t repeat = full.size() / inner;
 
     Tensor folded(target, 0.0f, false);
+    const float* ENGINE_RESTRICT src = full.data().data();
+    float* ENGINE_RESTRICT dst = folded.data().data();
     for (size_t r = 0; r < repeat; ++r) {
         for (size_t j = 0; j < inner; ++j) {
-            folded.data()[j] += full.data()[r * inner + j];
+            dst[j] += src[r * inner + j];
         }
     }
     return folded;
+}
+
+// Un tensor nuevo con los mismos valores, otra forma y sin historial.
+//
+// La diferencia con Tensor(shape, data(), ...) es que ese data() **es una
+// bajada a host**: el búfer se copia igual, pero pasando por el PCIe dos veces
+// si el tensor vivía en la GPU. clone() copia conservando el lado en el que
+// está. Lo usan reshape() y detach(), que son justo las dos que se aplican a
+// salidas recién calculadas por un kernel.
+Tensor clone_with_shape(const Storage& src, const std::vector<size_t>& shape, bool req_grad) {
+    auto impl = std::make_shared<TensorImpl>();
+    impl->storage = src.clone();
+    impl->shape = shape;
+    impl->compute_strides();
+    impl->requires_grad = req_grad;
+    return Tensor::from_impl(impl);
 }
 
 // Ofrece la operación al backend CUDA. Devuelve true si la GPU se hizo cargo;
@@ -376,7 +399,10 @@ std::string Tensor::shape_str() const {
 }
 
 Tensor Tensor::detach() const {
-    return Tensor(shape(), data(), false);
+    // Aquí es donde se guarda la salida que el paso hacia atrás va a necesitar
+    // —el jacobiano del softmax depende de ella—, así que pasaba una vez por
+    // host por cada softmax del modelo aunque el tensor fuera a quedarse arriba.
+    return clone_with_shape(impl_->storage, shape(), false);
 }
 
 // ---------------------------------------------------------
@@ -623,7 +649,9 @@ Tensor Tensor::operator/(const Tensor& other) const {
 Tensor Tensor::operator+(float scalar) const {
     bool req_g = track(requires_grad());
     Tensor res(shape(), 0.0f, req_g);
-    {
+    // out = x * 1 + k. Los accesores se quedan dentro del else: llamarlos fuera
+    // bajaria el tensor a host justo en el camino que no lo necesita.
+    if (!cuda::ops::scalar(impl_->storage, res.impl_->storage, 1.0f, scalar)) {
         const size_t n = size();
         const float* ENGINE_RESTRICT lhs = data().data();
         float* ENGINE_RESTRICT out = res.data().data();
@@ -648,7 +676,9 @@ Tensor Tensor::operator-(float scalar) const {
 Tensor Tensor::operator*(float scalar) const {
     bool req_g = track(requires_grad());
     Tensor res(shape(), 0.0f, req_g);
-    {
+    // out = x * k + 0. Es el escalado de la atencion, entre dos matmul que sí
+    // tienen kernel: sin este, la cadena bajaba a host justo en medio.
+    if (!cuda::ops::scalar(impl_->storage, res.impl_->storage, scalar, 0.0f)) {
         const size_t n = size();
         const float* ENGINE_RESTRICT lhs = data().data();
         float* ENGINE_RESTRICT out = res.data().data();
@@ -691,12 +721,23 @@ Tensor Tensor::transpose() const {
     bool req_g = track(requires_grad());
     Tensor res(out_shape, 0.0f, req_g);
 
-    for (size_t b = 0; b < batch; ++b) {
-        const float* src = data().data() + b * rows * cols;
-        float* dst = res.data().data() + b * rows * cols;
-        for (size_t i = 0; i < rows; ++i) {
-            for (size_t j = 0; j < cols; ++j) {
-                dst[j * rows + i] = src[i * cols + j];
+    // Transponer es permutar intercambiando los dos ultimos ejes, asi que
+    // comparte kernel con permute(): los strides de la entrada leidos en el
+    // orden de la salida son toda la diferencia entre las dos operaciones.
+    std::vector<size_t> src_strides = strides();
+    std::swap(src_strides[nd - 2], src_strides[nd - 1]);
+
+    if (!cuda::ops::permute(impl_->storage, res.impl_->storage,
+                            out_shape.data(), src_strides.data(), nd)) {
+        const float* ENGINE_RESTRICT src_base = data().data();
+        float* ENGINE_RESTRICT dst_base = res.data().data();
+        for (size_t b = 0; b < batch; ++b) {
+            const float* src = src_base + b * rows * cols;
+            float* dst = dst_base + b * rows * cols;
+            for (size_t i = 0; i < rows; ++i) {
+                for (size_t j = 0; j < cols; ++j) {
+                    dst[j * rows + i] = src[i * cols + j];
+                }
             }
         }
     }
@@ -738,15 +779,20 @@ Tensor Tensor::permute(const std::vector<size_t>& order) const {
     std::vector<size_t> src_strides(nd);
     for (size_t i = 0; i < nd; ++i) src_strides[i] = strides()[order[i]];
 
-    std::vector<size_t> idx(nd, 0);
-    for (size_t flat = 0; flat < size(); ++flat) {
-        size_t src = 0;
-        for (size_t i = 0; i < nd; ++i) src += idx[i] * src_strides[i];
-        res.data()[flat] = data()[src];
+    if (!cuda::ops::permute(impl_->storage, res.impl_->storage,
+                            out_shape.data(), src_strides.data(), nd)) {
+        const float* ENGINE_RESTRICT src_data = data().data();
+        float* ENGINE_RESTRICT dst_data = res.data().data();
+        std::vector<size_t> idx(nd, 0);
+        for (size_t flat = 0; flat < size(); ++flat) {
+            size_t src = 0;
+            for (size_t i = 0; i < nd; ++i) src += idx[i] * src_strides[i];
+            dst_data[flat] = src_data[src];
 
-        for (size_t i = nd; i-- > 0;) {
-            if (++idx[i] < out_shape[i]) break;
-            idx[i] = 0;
+            for (size_t i = nd; i-- > 0;) {
+                if (++idx[i] < out_shape[i]) break;
+                idx[i] = 0;
+            }
         }
     }
 
@@ -1014,7 +1060,17 @@ Tensor Tensor::reshape(const std::vector<size_t>& new_shape) const {
         throw std::invalid_argument("Total de elementos incompatibles para Reshape.");
     }
     bool req_g = track(requires_grad());
-    Tensor res(new_shape, data(), req_g);
+
+    // El tensor que se reinterpreta suele venir de un matmul y estar residente
+    // en la GPU —split_heads, en la atención, es exactamente eso—, así que
+    // construirlo desde data() costaba una bajada y la subida de la operación
+    // siguiente, dos veces por proyección.
+    //
+    // ponytail: sigue siendo una copia del búfer entero, no una vista. Quitarla
+    // del todo pide un Storage compartido con desplazamiento y forma propios, y
+    // eso toca el grafo de autograd; esto se lleva la parte cara sin ese cambio.
+    Tensor res = clone_with_shape(impl_->storage, new_shape, req_g);
+
     if (req_g) {
         res.impl_->parents = { impl_ };
         Tensor self_copy = *this;
@@ -1076,11 +1132,15 @@ Tensor Tensor::sum(size_t axis, bool keepdim) const {
     bool req_g = track(requires_grad());
     Tensor res(reduced_shape(shape(), axis, keepdim), 0.0f, req_g);
 
-    for (size_t o = 0; o < v.outer; ++o) {
-        for (size_t a = 0; a < v.axis_len; ++a) {
-            const float* src = data().data() + (o * v.axis_len + a) * v.inner;
-            float* dst = res.data().data() + o * v.inner;
-            for (size_t i = 0; i < v.inner; ++i) dst[i] += src[i];
+    if (!cuda::ops::sum_axis(impl_->storage, res.impl_->storage, v.outer, v.axis_len, v.inner)) {
+        const float* ENGINE_RESTRICT src_base = data().data();
+        float* ENGINE_RESTRICT dst_base = res.data().data();
+        for (size_t o = 0; o < v.outer; ++o) {
+            for (size_t a = 0; a < v.axis_len; ++a) {
+                const float* src = src_base + (o * v.axis_len + a) * v.inner;
+                float* dst = dst_base + o * v.inner;
+                for (size_t i = 0; i < v.inner; ++i) dst[i] += src[i];
+            }
         }
     }
 

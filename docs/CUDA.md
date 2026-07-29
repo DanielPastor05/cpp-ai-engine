@@ -105,6 +105,30 @@ bool launched_ok(const char* what, Storage& out) {
 }
 ```
 
+### El fallo que esa comprobación no ve
+
+`cudaGetLastError()` informa de errores **de lanzamiento**: una malla inválida,
+un binario sin código para la tarjeta, memoria compartida de más. Un fallo
+*dentro* del cuerpo del kernel —un acceso fuera de rango— no aparece ahí. El
+lanzamiento es asíncrono: para cuando el error existe, la llamada ya volvió con
+`cudaSuccess`. El error se queda pegado al contexto y aflora en la siguiente
+operación sincronizante, que suele ser un `cudaMemcpy` tres operaciones más
+allá y no tiene ninguna culpa. El síntoma es un mensaje que señala al sitio
+equivocado.
+
+Cogerlo en el lanzamiento culpable exige sincronizar justo después, y eso es una
+barrera por kernel cuando el motor lanza cientos por paso: sería pagar en
+producción por un diagnóstico que sólo interesa mientras se persigue un fallo.
+Por eso va detrás de una variable de entorno, apagada por defecto:
+
+```bash
+ENGINE_CUDA_SYNC=1 ./build-cuda/test_engine
+```
+
+Con ella, `launch_ok()` llama a `cudaDeviceSynchronize()` antes de mirar el
+estado, y el error sale con el nombre del kernel que lo provocó. El camino de
+recuperación es el mismo de siempre: se informa una vez y se calcula en CPU.
+
 ---
 
 ## El producto de matrices, con teselas en memoria compartida
@@ -298,11 +322,16 @@ recompilar nada.
   GPU y las convoluciones no, y el ejemplo lo dice al arrancar en lugar de dejar
   que el lector lo suponga. Reescribirlo como `im2col` + `Tensor::matmul` es la
   continuación natural, y está sin hacer, no pasada por alto.
-- **Los tensores guardados para el paso hacia atrás bajan a host.** El jacobiano
-  del softmax depende de su salida, así que el forward hace `res.detach()`, y
-  `detach()` pide el lado host: una bajada por cada softmax aunque el resultado
-  fuera a quedarse arriba. La solución es una copia que se quede en el
-  dispositivo; la contabilidad de transferencias la delata en cuanto se mira.
+- **`LayerNorm`.** Es la que queda, y la que rompe la cadena dos veces por
+  bloque. El forward tendría kernel sin dificultad; el que manda es el backward,
+  porque `dgamma` y `dbeta` acumulan **a través** de las filas y esa reducción
+  cruzada es un problema de diseño propio —el mismo que mantiene la versión de
+  CPU en serie—. Un forward acelerado con el backward en host resuelve la mitad,
+  así que se hace entera o no se hace.
+- **`Tensor::sum()` a un escalar.** El acumulador es `double` a propósito, y una
+  reducción en dos etapas sobre la GPU en `float` perdería justo lo que ese
+  cambio arregló. Hacerla bien pide acumular en `double` también en el
+  dispositivo, que no es difícil pero tampoco es gratis.
 - **Fusión de kernels.** Cada operación es un kernel y un viaje a memoria
   global. Un `LayerNorm` fusionado o un `attention` fusionado ahorrarían la
   mayor parte de ese tráfico. Es la siguiente optimización de verdad.
