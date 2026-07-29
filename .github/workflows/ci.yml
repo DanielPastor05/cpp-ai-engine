@@ -235,8 +235,12 @@ jobs:
       # turns a pile of previously benign gcov mismatches into hard errors and
       # its flags moved. gcovr is a Python tool that reads the same .gcda files
       # and behaves the same across versions.
+      # In a venv, and invoked by absolute path. Ubuntu 24.04 refuses a plain
+      # `pip install` under PEP 668, and anything installed with --user or via
+      # pipx then depends on which directory happens to be on PATH inside a
+      # `run:` step. A venv removes both questions.
       - name: Install gcovr
-        run: pipx install gcovr
+        run: python3 -m venv .venv && .venv/bin/pip install --quiet gcovr
 
       - name: Build instrumented
         run: >
@@ -249,16 +253,17 @@ jobs:
 
       # Only the library counts. Measuring coverage of the tests themselves
       # would inflate the number while saying nothing about the engine.
+      #
+      # Kept to the flags that have not moved between gcovr versions. The first
+      # attempt at this job used lcov and died on lcov 2.x; the second used
+      # gcovr with a fuller set of options and died too. Reporting a number is
+      # not worth a job that breaks every time a tool ships a major version.
       - name: Summarise
         run: >
-          gcovr --root . --filter 'src/' --filter 'include/engine/'
-          --exclude-unreachable-branches
-          --print-summary --xml-pretty --output coverage.xml
-          --html-details coverage.html
+          .venv/bin/gcovr --root . --filter src/ --filter include/engine/
+          --print-summary --xml coverage.xml
 
       - uses: actions/upload-artifact@v4
         with:
           name: coverage
-          path: |
-            coverage.xml
-            coverage*.html
+          path: coverage.xml
