@@ -9,55 +9,55 @@
 namespace engine {
 
 // ---------------------------------------------------------
-// Persistencia de pesos
+// Weight persistence
 //
-// Formato binario propio, deliberadamente simple y autodescriptivo:
+// A binary format of its own, deliberately simple and self-describing:
 //
-//   "CPPAIENG"        8 bytes de firma
-//   version           uint32
-//   n_tensores        uint32
-//   por cada tensor:
-//     longitud_nombre uint32
-//     nombre          bytes
-//     ndim            uint32
-//     dimensiones     uint64 x ndim
-//     datos           float32 x producto(dimensiones)
+//   "CPPAIENG"      8 signature bytes
+//   version         uint32
+//   n_tensors       uint32
+//   per tensor:
+//     name_length   uint32
+//     name          bytes
+//     ndim          uint32
+//     dimensions    uint64 x ndim
+//     data          float32 x product(dimensions)
 //
-// Los tensores se casan por nombre, no por posición, de modo que añadir una
-// capa nueva al final de un modelo no invalida un fichero anterior. Las formas
-// se comprueban al cargar: un fichero de un modelo distinto se rechaza en vez
-// de leerse mal.
+// Tensors are matched by name rather than by position, so adding a new layer at
+// the end of a model does not invalidate an earlier file. Shapes are checked on
+// load: a file from a different model is rejected instead of being misread.
 //
-// Los ficheros son little-endian; se rechaza cargarlos en una máquina
-// big-endian en lugar de devolver números sin sentido.
+// Files are little-endian; loading them on a big-endian machine is refused
+// rather than returning nonsense.
 // ---------------------------------------------------------
 
 constexpr uint32_t kSerializationVersion = 1;
 
-// Guarda los parámetros del modelo. Lanza excepción si el fichero no se puede
-// escribir o si dos parámetros comparten nombre.
+// Saves the model's parameters. Throws if the file cannot be written or if two
+// parameters share a name.
 void save_parameters(nn::Module& model, const std::string& path);
 
-// Carga los parámetros en el modelo. Por defecto exige que el fichero y el
-// modelo tengan exactamente los mismos nombres; con strict=false se permite
-// que el fichero traiga parámetros que el modelo no tiene, y viceversa,
-// devolviendo cuántos se cargaron de verdad.
+// Loads the parameters into the model. By default it requires the file and the
+// model to carry exactly the same names; with strict=false the file may bring
+// parameters the model does not have, and vice versa, returning how many were
+// actually loaded.
 size_t load_parameters(nn::Module& model, const std::string& path, bool strict = true);
 
-// Sobrecargas para una lista de parámetros con nombre, útiles cuando el modelo
-// es una composición propia y no un único Module.
+// Overloads taking a list of named parameters, useful when the model is a
+// composition of your own rather than a single Module.
 void save_parameters(const std::vector<std::pair<std::string, Tensor>>& params,
                      const std::string& path);
 size_t load_parameters(std::vector<std::pair<std::string, Tensor>>& params,
                        const std::string& path, bool strict = true);
 
-// Nombres y formas guardados en un fichero, sin tocar ningún modelo.
-// Útil para inspeccionar un checkpoint antes de cargarlo.
+// The names and shapes stored in a file, without touching any model.
+// Useful for inspecting a checkpoint before loading it.
 std::vector<std::pair<std::string, std::vector<size_t>>> inspect_parameters(const std::string& path);
 
-// Lee todos los tensores creando Tensor nuevos, sin necesitar un modelo previo
-// con las formas correctas. Es lo que permite cargar ficheros de referencia
-// generados fuera del motor, donde las formas no se conocen de antemano.
+// Reads every tensor into freshly created Tensors, with no need for an existing
+// model carrying the right shapes. This is what makes it possible to load
+// reference files generated outside the engine, where the shapes are not known
+// in advance.
 std::vector<std::pair<std::string, Tensor>> load_tensors(const std::string& path);
 
 } // namespace engine

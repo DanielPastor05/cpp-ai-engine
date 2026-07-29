@@ -6,24 +6,23 @@
 
 namespace engine {
 
-// El búfer de un tensor, y de qué lado vive.
+// A tensor's buffer, and which side of the bus it lives on.
 //
-// Sin CUDA esto es exactamente un std::vector<float>: los miembros del
-// dispositivo ni siquiera se declaran, así que la compilación de CPU no paga
-// nada por existir el backend.
+// Without CUDA this is exactly a std::vector<float>: the device members are not
+// even declared, so a CPU build pays nothing for the backend existing at all.
 //
-// Con CUDA mantiene además un espejo en el dispositivo y dos banderas de
-// validez. Nadie copia nada hasta que alguien pide el lado que está obsoleto,
-// de modo que una cadena de operaciones en GPU se queda en la GPU y sólo baja
-// a host cuando el programa lee los valores.
+// With CUDA it also keeps a device mirror and two validity flags. Nothing is
+// copied until somebody asks for the side that has gone stale, so a chain of
+// GPU operations stays on the GPU and only comes back down when the program
+// reads the values.
 //
-// Ésta es la separación que la Fase 6 necesitaba **antes** del primer kernel.
-// TensorImpl guardaba un std::vector<float>, que es host y punto; sin sacar el
-// búfer a un tipo propio, cada operación habría acabado con ramas
-// host/dispositivo repartidas por todo src/tensor.cpp y cada kernel habría
-// pagado una ida y vuelta por PCIe.
+// This is the separation Phase 6 needed **before** its first kernel. TensorImpl
+// used to hold a std::vector<float>, which is host and nothing else; without
+// lifting the buffer into a type of its own, every operation would have ended
+// up with host/device branches spread through src/tensor.cpp and every kernel
+// would have paid a round trip over PCIe.
 //
-// Invariante: al menos una de las dos copias es válida en todo momento.
+// Invariant: at least one of the two copies is valid at all times.
 class Storage {
 public:
     Storage() = default;
@@ -39,10 +38,9 @@ public:
     size_t size() const { return host_.size(); }
     bool empty() const { return host_.empty(); }
 
-    // ---- lado host ----
-    // La versión mutable marca el espejo del dispositivo como obsoleto: si el
-    // programa escribe en el búfer de host, lo que hubiera en la GPU deja de
-    // valer.
+    // ---- host side ----
+    // The mutable version marks the device mirror stale: if the program writes
+    // to the host buffer, whatever is on the GPU stops being valid.
     const std::vector<float>& host() const;
     std::vector<float>& host_mut();
 
@@ -53,35 +51,34 @@ public:
 
     void assign(size_t count, float value);
 
-    // Copia con los mismos valores, pero **conservando el lado en el que
-    // viven**: si el dato solo esta en el dispositivo, se duplica alli con un
-    // memcpy interno en vez de bajarlo y volverlo a subir.
+    // A copy with the same values that **keeps whichever side they live on**:
+    // if the data is only on the device, it is duplicated there with an
+    // internal memcpy instead of being pulled down and pushed back up.
     //
-    // El constructor de copia no puede hacer esto: se usa al copiar tensores
-    // sueltos, y reservar memoria de GPU en cada copia es justo lo que no
-    // conviene en un bucle de entrenamiento. Aqui el caso es el contrario —
-    // reshape ya va a tener las dos copias vivas— y ahorra la ida y vuelta.
+    // The copy constructor cannot do this: it runs when tensors are copied
+    // around, and allocating GPU memory on every tensor copy is the last thing
+    // a training loop needs. Here the situation is the opposite — reshape is
+    // going to have both copies live anyway — and it saves the round trip.
     Storage clone() const;
 
-    // ---- lado dispositivo ----
+    // ---- device side ----
 #ifdef ENGINE_CUDA
-    // Sube si hace falta y devuelve el puntero de dispositivo (sólo lectura).
+    // Uploads if needed and returns the device pointer (read only).
     const float* device() const;
-    // Igual, pero además marca el host como obsoleto: el kernel va a escribir.
+    // The same, but also marks the host stale: the kernel is going to write.
     float* device_mut();
-    // Reserva sin subir nada. Para la salida de un kernel, que se escribe
-    // entera: subir su contenido previo sería tráfico por PCIe tirado.
+    // Allocates without uploading. For a kernel's output, which is written in
+    // full: uploading its previous contents would be PCIe traffic thrown away.
     float* device_write();
 
-    // Deshace un device_write() cuyo kernel no llegó a lanzarse. Sin esto, el
-    // camino de recuperación bajaría a host el búfer de dispositivo sin
-    // inicializar y se cargaría el resultado que la CPU está a punto de
-    // calcular —de forma especialmente traicionera en matmul, que acumula
-    // sobre una salida que da por puesta a cero—.
+    // Undoes a device_write() whose kernel never launched. Without this, the
+    // recovery path would pull an uninitialised device buffer down to host and
+    // destroy the result the CPU is about to compute — especially treacherous
+    // in matmul, which accumulates into an output it assumes is zeroed.
     void revert_device_write();
 
-    // True si la copia válida más reciente está en el dispositivo. Lo usan el
-    // banco de pruebas y las decisiones de despacho, no la corrección.
+    // True if the most recent valid copy is on the device. Used by the test
+    // suite and by dispatch decisions, never by correctness.
     bool resident_on_device() const { return device_valid_; }
 #endif
 

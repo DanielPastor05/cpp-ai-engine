@@ -15,14 +15,14 @@ namespace nn {
 
 namespace {
 
-// Constantes de la aproximación de GELU. Van en ámbito de fichero y no dentro
-// de la función: MSVC exige capturarlas explícitamente si son locales y se usan
-// desde una lambda sin captura por defecto, aunque sean expresiones constantes.
+// Constants of the GELU approximation. They live at file scope rather than
+// inside the function: MSVC requires them captured explicitly if they are local
+// and used from a lambda with no default capture, even as constant expressions.
 constexpr float kGeluAlpha = 0.7978845608f; // sqrt(2/pi)
 constexpr float kGeluBeta = 0.044715f;
 
-// Registra una activación elemento a elemento cuya derivada se puede escribir
-// en función de la entrada y de la salida: d/dx = f(x, y).
+// Registers an element-wise activation whose derivative can be written as a
+// function of the input and the output: d/dx = f(x, y).
 template <typename Derivative>
 Tensor unary_with_grad(const Tensor& input, Tensor out, Derivative derivative) {
     if (!autograd::grad_enabled() || !input.requires_grad()) return out;
@@ -61,7 +61,7 @@ void Module::zero_grad() {
 }
 
 std::vector<std::pair<std::string, Tensor>> Module::named_parameters(const std::string& prefix) {
-    // Por defecto se numeran en el orden en que los declara la capa
+    // By default they are numbered in the order the layer declares them
     std::vector<std::pair<std::string, Tensor>> named;
     std::vector<Tensor> params = parameters();
     for (size_t i = 0; i < params.size(); ++i) {
@@ -88,8 +88,8 @@ Linear::Linear(size_t in_features, size_t out_features, bool use_bias)
         throw std::invalid_argument("Linear requiere in_features y out_features mayores que cero.");
     }
 
-    // Inicialización Xavier/Glorot uniforme: mantiene la varianza de las
-    // activaciones estable a lo largo de la profundidad de la red.
+    // Uniform Xavier/Glorot initialisation: it keeps the variance of the
+    // activations stable through the depth of the network.
     const float limit = std::sqrt(6.0f / static_cast<float>(in_features + out_features));
 
     autograd::NoGradGuard no_grad;
@@ -107,9 +107,9 @@ Tensor Linear::forward(const Tensor& input) {
                                     " recibió una entrada " + input.shape_str() + ".");
     }
 
-    // La capa actúa sobre el último eje. Con entradas de más de 2 ejes —como
-    // (batch, secuencia, d_model) en un Transformer— se aplanan los ejes
-    // iniciales, se proyecta y se restaura la forma.
+    // The layer acts on the last axis. With inputs of more than 2 axes -- like
+    // (batch, sequence, d_model) in a Transformer -- the leading axes are
+    // flattened, the projection is applied, and the shape is restored.
     const bool needs_reshape = input.ndim() > 2;
     Tensor flat = needs_reshape
                       ? input.reshape({input.size() / in_features_, in_features_})
@@ -139,7 +139,7 @@ std::string Linear::name() const {
 }
 
 // ---------------------------------------------------------
-// Activaciones
+// Activations
 // ---------------------------------------------------------
 
 Tensor ReLU::forward(const Tensor& input) {
@@ -151,7 +151,7 @@ Tensor Softmax::forward(const Tensor& input) {
 }
 
 Tensor Sigmoid::forward(const Tensor& input) {
-    // sigma(x) = 1 / (1 + e^-x), calculado de forma estable en ambos extremos
+    // sigma(x) = 1 / (1 + e^-x), computed stably at both extremes
     Tensor out(input.shape(), 0.0f, false);
     const size_t n = input.size();
     const float* ENGINE_RESTRICT x = input.data().data();
@@ -203,24 +203,24 @@ Dropout::Dropout(float p) : p_(p) {
 }
 
 Tensor Dropout::forward(const Tensor& input) {
-    // En inferencia es la identidad: la red debe ser determinista al evaluar
+    // At inference it is the identity: the network must be deterministic when evaluating
     if (!is_training() || p_ == 0.0f) return input;
 
     const float keep = 1.0f - p_;
     const float scale = 1.0f / keep;
     std::bernoulli_distribution alive(keep);
 
-    // La máscara se genera aquí y se reutiliza en la derivada: el gradiente
-    // tiene que anular exactamente las mismas posiciones.
+    // The mask is generated here and reused in the derivative: the gradient
+    // has to zero exactly the same positions.
     auto mask = std::make_shared<std::vector<float>>(input.size(), 0.0f);
     Tensor out(input.shape(), 0.0f, false);
-    // Este bucle NO se reparte, aunque sea el mismo elemento a elemento que las
-    // activaciones de arriba. global_rng() es un mt19937 compartido y sin
-    // sincronizar: pasarlo por parallel_for mete una carrera silenciosa, y
-    // encima el resultado dejaría de ser reproducible, porque cada hilo
-    // consumiría números en un orden que depende de cómo caiga el reparto.
-    // Para paralelizarlo haría falta un generador por hilo sembrado de forma
-    // determinista, no un parallel_for alrededor.
+    // This loop is NOT split, even though it is the same element-wise shape as the
+    // activations above. global_rng() is a shared, unsynchronised mt19937: putting
+    // it through parallel_for introduces a silent race, and on top of that the
+    // result would stop being reproducible, because each thread would consume
+    // numbers in an order that depends on how the split falls. Parallelising it
+    // would need one generator per thread, seeded deterministically, not a
+    // parallel_for wrapped around it.
     const size_t n = input.size();
     const float* ENGINE_RESTRICT x = input.data().data();
     float* ENGINE_RESTRICT y = out.data().data();
@@ -286,7 +286,7 @@ void Sequential::train(bool mode) {
 std::vector<std::pair<std::string, Tensor>> Sequential::named_parameters(const std::string& prefix) {
     std::vector<std::pair<std::string, Tensor>> named;
     for (size_t i = 0; i < layers_.size(); ++i) {
-        // El índice va en el nombre para que dos capas iguales no colisionen
+        // The index goes in the name so that two identical layers do not collide
         std::vector<std::pair<std::string, Tensor>> sub =
             layers_[i]->named_parameters(prefix + std::to_string(i) + ".");
         named.insert(named.end(), sub.begin(), sub.end());
@@ -316,7 +316,7 @@ void Sequential::summary() const {
 }
 
 // ---------------------------------------------------------
-// Funciones de pérdida
+// Loss functions
 // ---------------------------------------------------------
 
 Tensor mse_loss(const Tensor& prediction, const Tensor& target) {
@@ -340,16 +340,16 @@ Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targe
         throw std::invalid_argument("cross_entropy_loss recibió un lote vacío.");
     }
 
-    // Softmax estable por filas y pérdida media del lote en una sola pasada.
+    // Row-stable softmax and the batch's mean loss in a single pass.
     Tensor probs(logits.shape(), 0.0f, false);
     float total_loss = 0.0f;
 
-    // En serie por dos motivos, y basta cualquiera de los dos: total_loss es una
-    // reducción sobre las filas, y el bucle lanza una excepción cuando una
-    // etiqueta se sale de rango —cruzar una excepción desde dentro de una región
-    // paralela es otro problema entero—. El backward, que no tiene ni lo uno ni
-    // lo otro, sí se reparte.
-    // ponytail: en serie; separar validación y reducción si el perfil lo pide.
+    // Serial for two reasons, either of which would be enough: total_loss is a
+    // reduction over the rows, and the loop throws when a label falls out of range
+    // -- crossing an exception out of a parallel region is a whole other problem.
+    // The backward, which has neither, is split.
+    //
+    // ponytail: serial; separate validation from reduction if the profile asks.
     for (size_t i = 0; i < N; ++i) {
         if (targets[i] >= C) {
             throw std::out_of_range("Etiqueta " + std::to_string(targets[i]) +
@@ -368,7 +368,7 @@ Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targe
             probs.data()[i * C + j] /= sum_exp;
         }
 
-        // log-sum-exp desplazado: log p_y = (x_y - max) - log(sum exp(x - max))
+        // shifted log-sum-exp: log p_y = (x_y - max) - log(sum exp(x - max))
         const float log_prob = (row[targets[i]] - max_v) - std::log(sum_exp);
         total_loss += -log_prob;
     }
@@ -385,8 +385,8 @@ Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targe
                 // dL/dlogits = (softmax(logits) - one_hot(y)) / N
                 const float scale = grad_out.data()[0] / static_cast<float>(N);
                 Tensor dX(logits_copy.shape(), 0.0f, false);
-                // Aquí sí se reparte, al revés que el forward: esto es una
-                // escritura por elemento y no acumula nada.
+                // This one is split, unlike the forward: it is a per-element
+                // write and accumulates nothing.
                 const float* ENGINE_RESTRICT pr = probs.data().data();
                 float* ENGINE_RESTRICT dx = dX.data().data();
                 const size_t rows_per_thread =
@@ -407,7 +407,7 @@ Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targe
 }
 
 // ---------------------------------------------------------
-// Métricas
+// Metrics
 // ---------------------------------------------------------
 
 std::vector<size_t> argmax_rows(const Tensor& logits) {

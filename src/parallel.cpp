@@ -15,9 +15,9 @@ namespace parallel {
 
 namespace {
 
-// El hilo llamante participa en el trabajo, así que con N hilos se lanzan N-1
-// trabajadores. Esta marca evita que una región paralela anidada vuelva a
-// repartir: multiplicar hilos dentro de un hilo solo añade contención.
+// The calling thread joins in the work, so N threads means N-1 workers are
+// spawned. This flag stops a nested parallel region from splitting again:
+// multiplying threads inside a thread only adds contention.
 thread_local bool g_inside_region = false;
 
 size_t threads_from_environment() {
@@ -31,14 +31,14 @@ size_t threads_from_environment() {
         const int parsed = std::stoi(value);
         return parsed > 0 ? static_cast<size_t>(parsed) : fallback;
     } catch (const std::exception&) {
-        // Un valor ilegible no es motivo para abortar: se usa el número de
-        // núcleos, igual que si la variable no estuviera puesta.
+        // An unreadable value is no reason to abort: the core count is used, exactly
+        // as if the variable were not set.
         return fallback;
     }
 }
 
-// Pool sencillo de tareas indexadas. No es un pool general: solo sabe ejecutar
-// «este cuerpo, para estos trozos», que es todo lo que el motor necesita.
+// A simple pool of indexed tasks. Not a general pool: all it knows how to run
+// is "this body, for these chunks", which is all the engine needs.
 class Pool {
 public:
     static Pool& instance() {
@@ -58,7 +58,7 @@ public:
         }
     }
 
-    // Reparte [0, count) en `chunks` trozos contiguos y espera a que terminen.
+    // Splits [0, count) into `chunks` contiguous pieces and waits for them.
     void run(size_t count, size_t chunks,
              const std::function<void(size_t, size_t)>& body) {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -74,7 +74,7 @@ public:
         work_ready_.notify_all();
         lock.unlock();
 
-        // El hilo llamante toma trozos como cualquier otro, en vez de esperar
+        // The calling thread takes chunks like any other, instead of waiting
         run_chunks();
 
         lock.lock();
@@ -83,7 +83,7 @@ public:
         body_ = nullptr;
         lock.unlock();
 
-        // Una excepción en un trabajador se relanza en el hilo que repartió
+        // An exception in a worker is rethrown on the thread that split the work
         if (error) std::rethrow_exception(error);
     }
 
@@ -122,9 +122,9 @@ private:
         }
     }
 
-    // Reparto dinámico: cada hilo coge el siguiente trozo libre. Con trozos
-    // de coste desigual —filas con más ceros en matmul, por ejemplo— reparte
-    // mejor que asignar trozos fijos por hilo.
+    // Dynamic scheduling: each thread grabs the next free chunk. With chunks of
+    // uneven cost -- rows with more zeros in matmul, for instance -- it balances
+    // better than assigning fixed chunks per thread.
     void run_chunks() {
         const bool was_inside = g_inside_region;
         g_inside_region = true;
@@ -187,16 +187,16 @@ void parallel_for(size_t count, size_t min_per_thread,
 
     const size_t threads = Pool::instance().size();
 
-    // Se ejecuta en línea cuando repartir no compensa: un solo hilo, dentro de
-    // otra región paralela, o menos trabajo del mínimo por hilo.
+    // Runs inline when splitting does not pay: a single thread, inside another
+    // parallel region, or less work than the per-thread minimum.
     if (threads == 1 || g_inside_region || min_per_thread == 0 ||
         count < min_per_thread * 2) {
         body(0, count);
         return;
     }
 
-    // Más trozos que hilos para que el reparto dinámico pueda equilibrar,
-    // pero nunca tantos que cada uno baje del mínimo rentable.
+    // More chunks than threads so the dynamic scheduling can balance, but never
+    // so many that each drops below the profitable minimum.
     const size_t by_size = count / min_per_thread;
     const size_t chunks = std::max<size_t>(2, std::min(threads * 4, by_size));
 

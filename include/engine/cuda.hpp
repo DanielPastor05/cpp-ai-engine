@@ -8,27 +8,26 @@ namespace engine {
 namespace cuda {
 
 // ---------------------------------------------------------
-// Backend CUDA.
+// The CUDA backend.
 //
-// Esta cabecera existe siempre. Si el motor se compiló sin CUDA, available()
-// devuelve false, todo se ejecuta en CPU y el programa que la incluye compila
-// igual: no hay que envolver nada en #ifdef para usar la librería.
+// This header always exists. If the engine was built without CUDA, available()
+// returns false, everything runs on the CPU, and a program including it still
+// compiles: nothing has to be wrapped in an #ifdef to use the library.
 // ---------------------------------------------------------
 
-// True si el motor se compiló con -DENGINE_CUDA y hay un dispositivo
-// utilizable. La primera llamada interroga al runtime; las siguientes
-// devuelven el valor memorizado.
+// True if the engine was built with -DENGINE_CUDA and there is a usable device.
+// The first call interrogates the runtime; later ones return the memoised
+// answer.
 bool available();
 
-// Interruptor en tiempo de ejecución. Arranca siguiendo a available(), y se
-// puede apagar con ENGINE_CUDA=0 en el entorno o con set_enabled(false). Las
-// pruebas de paridad lo usan para calcular la misma expresión de las dos
-// formas y compararlas.
+// Runtime switch. It starts out following available(), and can be turned off
+// with ENGINE_CUDA=0 in the environment or with set_enabled(false). The parity
+// tests use it to compute the same expression both ways and compare.
 bool enabled();
 void set_enabled(bool on);
 
 struct DeviceInfo {
-    std::string name = "sin dispositivo";
+    std::string name = "no device";
     int compute_major = 0;
     int compute_minor = 0;
     int multiprocessors = 0;
@@ -36,99 +35,100 @@ struct DeviceInfo {
 };
 DeviceInfo device_info();
 
-// Espera a que terminen los kernels lanzados. Sólo hace falta para medir: la
-// corrección la garantizan las copias, que son sincronizantes.
+// Waits for launched kernels to finish. Only needed for measurement: the copies
+// are synchronising, so correctness never depends on this.
 void synchronize();
 
-// Versiones de CUDA en juego, en el formato del toolkit (12040 = 12.4).
+// The CUDA versions in play, in the toolkit's own format (12040 = 12.4).
 //
-// Son tres y no dos, y la distinción importa: si el toolkit con el que se
-// compiló va por delante del driver instalado, el binario no lleva código
-// nativo utilizable para la tarjeta, el driver cae a compilar el PTX en tiempo
-// de ejecución y ahí falla con «unsupported toolchain». Es la causa más común
-// de que un backend recién compilado no arranque.
+// There are three of them, and the distinction matters: if the toolkit that
+// compiled the binary is ahead of the installed driver, the binary carries no
+// usable native code for the card, the driver falls back to compiling the PTX
+// at run time, and that is where it fails with "unsupported toolchain". It is
+// the most common reason a freshly built backend does not start.
 //
-// Para detectarlo hay que comparar compiled_version() con driver_version().
-// runtime_version() **no** vale para eso: cudaRuntimeGetVersion() sigue al
-// driver, así que devuelve 13.2 en una máquina con driver 13.2 aunque el
-// runtime enlazado venga del toolkit 13.3. Medido, no supuesto.
-int compiled_version();   // CUDART_VERSION: el toolkit que compiló esto
-int runtime_version();    // lo que informa el runtime en ejecución
-int driver_version();     // el driver instalado
+// Detecting it means comparing compiled_version() against driver_version().
+// runtime_version() is **no** use for this: cudaRuntimeGetVersion() follows the
+// driver, so it reports 13.2 on a machine with driver 13.2 even when the linked
+// runtime came from toolkit 13.3. Measured, not assumed.
+int compiled_version();   // CUDART_VERSION: the toolkit that compiled this
+int runtime_version();    // what the runtime reports at execution time
+int driver_version();     // the installed driver
 
 // ---------------------------------------------------------
-// Contadores de lanzamiento.
+// Launch counters.
 //
-// El motor cae al camino de CPU cuando un kernel no se puede lanzar, que es lo
-// correcto en producción y una trampa en las pruebas: la paridad compararía
-// CPU contra CPU y pasaría con error cero sin haber tocado el dispositivo.
-// Una prueba en verde que no ejercitó nada es peor que una en rojo.
+// The engine falls back to the CPU path when a kernel cannot be launched, which
+// is correct in production and a trap in the tests: parity would compare CPU
+// against CPU and pass with exactly zero error without ever touching the
+// device. A green test that exercised nothing is worse than a red one.
 // ---------------------------------------------------------
 size_t kernels_launched();
 size_t kernels_failed();
 void reset_kernel_counters();
 
 // ---------------------------------------------------------
-// Techo teórico del dispositivo.
+// The device's theoretical ceiling.
 //
-// Sin esto, decir «el kernel hace 4 TFLOP/s» no significa nada: la cifra que
-// importa es qué fracción del pico alcanza, porque es la que dice si queda
-// trabajo por hacer. Se deduce de cudaDeviceProp, así que no hay que buscar
-// las especificaciones de cada tarjeta a mano.
+// Without this, saying "the kernel does 4 TFLOP/s" means nothing: the figure
+// that matters is what fraction of peak it reaches, because that is the one
+// that says whether there is work left to do. It is derived from
+// cudaDeviceProp, so nobody has to look up each card's specifications by hand.
 // ---------------------------------------------------------
 
-// SMs x núcleos por SM x 2 (una FMA cuentan como dos operaciones) x reloj.
+// SMs x cores per SM x 2 (an FMA counts as two operations) x clock.
 double peak_fp32_gflops();
-// Reloj de memoria x 2 (doble tasa) x anchura del bus.
+// Memory clock x 2 (double data rate) x bus width.
 double peak_bandwidth_gbs();
 
 // ---------------------------------------------------------
-// Variantes del producto de matrices.
+// Matrix product variants.
 //
-// El motor lleva cuatro kernels para la misma operación, del más ingenuo al
-// más afinado. No es indecisión: la progresión **es** el resultado. Tenerlas
-// todas vivas permite medirlas una contra otra en la misma máquina y, sobre
-// todo, comprobar la paridad de cada una por separado — un kernel con teselas
-// de 128x128 falla justo en las formas con resto, y sin poder seleccionarlo
-// no habría manera de dejarlo escrito en una prueba.
+// The engine carries four kernels for the same operation, from the most naive
+// to the most tuned. This is not indecision: **the progression is the result**.
+// Keeping them all alive makes it possible to measure them against each other
+// on the same machine and, above all, to parity-check each one separately — a
+// kernel built on 128x128 tiles fails precisely on the shapes with remainders,
+// and without being able to select it there would be no way to pin that down in
+// a test.
 // ---------------------------------------------------------
 enum class MatmulKernel {
-    Auto,          // elige según la forma y la alineación
-    Naive,         // sin memoria compartida; referencia inferior
-    Tiled,         // teselas 32x32 en compartida, un resultado por hilo
-    RegisterTiled, // 8x8 resultados por hilo en registros
-    Vectorized     // igual, con cargas float4
+    Auto,          // picks by shape and alignment
+    Naive,         // no shared memory; the honest lower bound
+    Tiled,         // 32x32 tiles in shared memory, one result per thread
+    RegisterTiled, // 8x8 results per thread, held in registers
+    Vectorized     // the same, with float4 loads
 };
 
 MatmulKernel matmul_kernel();
 void set_matmul_kernel(MatmulKernel kernel);
 const char* matmul_kernel_name(MatmulKernel kernel);
 
-// Qué variante resolvería `Auto` para una forma concreta. La usan el banco de
-// pruebas y la documentación; no hace falta para calcular.
+// Which variant `Auto` would resolve to for a given shape. Used by the
+// benchmark and the documentation; not needed to compute anything.
 MatmulKernel resolve_matmul_kernel(size_t rows, size_t inner_dim, size_t cols);
 
 // ---------------------------------------------------------
-// Umbrales de despacho.
+// Dispatch thresholds.
 //
-// Lanzar un kernel cuesta unos microsegundos, así que por debajo de cierto
-// tamaño la GPU pierde contra un solo núcleo de CPU. Estos dos números
-// deciden cuándo merece la pena; se pueden fijar con ENGINE_CUDA_MIN_FLOPS y
-// ENGINE_CUDA_MIN_ELEMENTS para barrerlos sin recompilar.
+// Launching a kernel costs a few microseconds, so below a certain size the GPU
+// loses to a single CPU core. These two numbers decide when it is worth it;
+// they can be set with ENGINE_CUDA_MIN_FLOPS and ENGINE_CUDA_MIN_ELEMENTS to
+// sweep them without recompiling.
 // ---------------------------------------------------------
 
-// Mínimo de operaciones (2*M*K*N) para mandar un producto de matrices a la GPU.
+// Minimum operation count (2*M*K*N) to send a matrix product to the GPU.
 size_t min_matmul_flops();
-// Mínimo de elementos para mandar una operación elemento a elemento.
+// Minimum element count to send an element-wise operation.
 size_t min_elementwise_elements();
 void set_thresholds(size_t matmul_flops, size_t elementwise_elements);
 
 // ---------------------------------------------------------
-// Contabilidad de transferencias host <-> dispositivo.
+// Host <-> device transfer accounting.
 //
-// Se mide aparte del tiempo de kernel a propósito. En un motor real el enlace
-// PCIe es el cuello de botella mucho antes que el cálculo, y una tabla CPU/GPU
-// que esconda ese coste dentro del total no dice nada útil.
+// Measured separately from kernel time, deliberately. In a real engine the PCIe
+// link is the bottleneck long before the arithmetic is, and a CPU/GPU table
+// that hides that cost inside the total says nothing useful.
 // ---------------------------------------------------------
 struct TransferStats {
     size_t to_device_bytes = 0;
@@ -143,10 +143,10 @@ void reset_transfer_stats();
 
 namespace detail {
 
-// Primitivas de memoria que usa Storage. No forman parte de la API pública:
-// se declaran aquí para que engine/detail/storage.hpp no tenga que incluir las
-// cabeceras de CUDA, que arrastrarían nvcc a todas las unidades de traducción.
-// Contabilidad de lanzamientos, que lleva el despachador de kernels.
+// The memory primitives Storage uses. They are not part of the public API: they
+// are declared here so that engine/detail/storage.hpp does not have to include
+// the CUDA headers, which would drag nvcc into every translation unit.
+// Launch accounting, kept by the kernel dispatcher.
 void note_kernel_launched();
 void note_kernel_failed();
 
@@ -154,9 +154,9 @@ float* device_alloc(size_t elements);
 void device_free(float* ptr);
 void copy_to_device(float* dst, const float* src, size_t elements);
 void copy_to_host(float* dst, const float* src, size_t elements);
-// Duplica un búfer sin salir del dispositivo. No entra en TransferStats a
-// propósito: esas cifras miden el PCIe, y meter aquí una copia que no lo cruza
-// haría que el número dejara de significar lo que dice medir.
+// Duplicates a buffer without leaving the device. Deliberately not counted in
+// TransferStats: those figures measure PCIe, and putting a copy that never
+// crosses it in there would stop the number meaning what it claims to.
 void copy_device_to_device(float* dst, const float* src, size_t elements);
 
 } // namespace detail

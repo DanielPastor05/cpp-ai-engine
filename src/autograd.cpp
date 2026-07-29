@@ -10,18 +10,18 @@ namespace autograd {
 
 namespace {
 
-// Estado por hilo: cada hilo construye (o no) su propio grafo.
+// Per-thread state: each thread builds (or does not build) its own graph.
 thread_local bool g_grad_enabled = true;
 
-// Ordenamiento topológico por DFS post-orden.
+// Topological ordering by post-order DFS.
 //
-// Se implementa de forma iterativa a propósito: una versión recursiva agota la
-// pila del proceso en grafos profundos (redes con muchas capas o bucles de
-// entrenamiento largos desenrollados).
+// Implemented iteratively on purpose: a recursive version exhausts the process
+// stack on deep graphs (networks with many layers, or long training loops
+// unrolled).
 std::vector<std::shared_ptr<TensorImpl>> topological_sort(const std::shared_ptr<TensorImpl>& root) {
     std::vector<std::shared_ptr<TensorImpl>> topo_order;
     std::unordered_set<TensorImpl*> visited;
-    // (nodo, índice del siguiente padre por visitar)
+    // (node, index of the next parent to visit)
     std::vector<std::pair<std::shared_ptr<TensorImpl>, size_t>> stack;
 
     if (!root) return topo_order;
@@ -64,14 +64,14 @@ NoGradGuard::~NoGradGuard() {
     g_grad_enabled = previous_;
 }
 
-// Retropropagación de gradientes (Backpropagation)
+// Gradient backpropagation
 void backward(Tensor& root_tensor) {
     auto root_impl = root_tensor.get_impl();
     if (!root_impl) return;
 
-    // Si la raíz no tiene gradiente asignado aún, asignamos 1.0f (dLoss/dLoss = 1).
-    // Solo tiene sentido para un escalar; para cualquier otra forma hay que
-    // indicar explícitamente el gradiente inicial con backward(grad_output).
+    // If the root has no gradient assigned yet, assign 1.0f (dLoss/dLoss = 1).
+    // That only makes sense for a scalar; for any other shape the initial gradient
+    // has to be given explicitly with backward(grad_output).
     if (!root_impl->grad) {
         if (root_impl->storage.size() != 1) {
             throw std::runtime_error(
@@ -81,35 +81,35 @@ void backward(Tensor& root_tensor) {
         root_impl->grad = std::make_shared<TensorImpl>(root_impl->shape, 1.0f, false);
     }
 
-    // El cálculo de los gradientes no debe, a su vez, construir grafo:
-    // sin esto cada backward dejaría atrás un grafo de segundo orden inútil.
+    // Computing the gradients must not itself build a graph: without this every
+    // backward would leave a useless second-order graph behind.
     NoGradGuard no_grad;
 
-    // 1. Obtener el ordenamiento topológico del grafo
+    // 1. Obtain the graph's topological ordering
     std::vector<std::shared_ptr<TensorImpl>> topo_order = topological_sort(root_impl);
 
-    // 2. Descartar el gradiente de los nodos intermedios de una llamada previa.
-    //    Un nodo con backward_fn es el resultado de una operación, no una hoja:
-    //    su gradiente es un valor temporal de este recorrido. Si se conservase
-    //    entre llamadas, un segundo backward sobre el mismo grafo propagaría la
-    //    suma de ambos recorridos y multiplicaría los gradientes de las hojas.
-    //    Solo las hojas (sin backward_fn) acumulan, igual que en PyTorch.
+    // 2. Discard intermediate nodes' gradients from a previous call.
+    //    A node with a backward_fn is the result of an operation, not a leaf: its
+    //    gradient is a temporary of this traversal. Kept between calls, a second
+    //    backward over the same graph would propagate the sum of both traversals
+    //    and multiply the leaves' gradients.
+    //    Only leaves (no backward_fn) accumulate, exactly as in PyTorch.
     for (const auto& node : topo_order) {
         if (node != root_impl && node->backward_fn) {
             node->grad = nullptr;
         }
     }
 
-    // 3. Ejecutar las funciones de gradiente en orden topológico inverso.
+    // 3. Run the gradient functions in reverse topological order.
     //
-    //    El gradiente de un nodo intermedio se libera en cuanto se ha
-    //    consumido. En orden inverso, al llegar a un nodo ya han pasado todos
-    //    sus hijos, así que su gradiente está completo y, una vez propagado a
-    //    los padres, nadie más lo necesita. Conservarlo hasta que muera el
-    //    grafo multiplicaba por más de veinte la memoria de un backward.
+    //    An intermediate node's gradient is freed as soon as it has been consumed.
+    //    In reverse order, by the time a node is reached all its children have
+    //    passed, so its gradient is complete and, once propagated to the parents,
+    //    nobody else needs it. Keeping it until the graph died multiplied a
+    //    backward's memory by more than twenty.
     for (auto it = topo_order.rbegin(); it != topo_order.rend(); ++it) {
         const auto& node = *it;
-        // Un nodo sin gradiente acumulado no propaga nada (rama muerta del grafo).
+        // A node with no accumulated gradient propagates nothing (dead branch).
         if (node->backward_fn && node->grad) {
             node->backward_fn(Tensor::from_impl(node->grad));
             if (node != root_impl) node->grad = nullptr;

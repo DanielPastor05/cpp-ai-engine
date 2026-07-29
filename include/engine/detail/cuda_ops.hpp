@@ -10,28 +10,28 @@ namespace cuda {
 namespace ops {
 
 // ---------------------------------------------------------
-// Puntos de entrada a los kernels.
+// Kernel entry points.
 //
-// Todas devuelven **true si el trabajo se hizo en el dispositivo**. Devolver
-// false significa «aquí no compensa» o «este binario no lleva CUDA», y el
-// llamante sigue por el camino de CPU sin enterarse de nada más. Ese contrato
-// es lo que mantiene src/tensor.cpp legible: una condición por operación, no
-// dos implementaciones enredadas.
+// Every one of them returns **true if the work was done on the device**.
+// Returning false means "not worth it here" or "this binary has no CUDA", and
+// the caller carries on down the CPU path without needing to know anything
+// else. That contract is what keeps src/tensor.cpp readable: one condition per
+// operation, not two implementations tangled together.
 //
-// Sin ENGINE_CUDA existen igualmente, implementadas en src/cuda_disabled.cpp
-// devolviendo false, así que el despacho no necesita #ifdef.
+// Without ENGINE_CUDA they still exist, implemented in src/cuda_disabled.cpp
+// returning false, so dispatch needs no #ifdef.
 // ---------------------------------------------------------
 
 enum class Binary { Add, Sub, Mul, Div };
 
-// out = a `op` b, con difusión por sufijo: b tiene `inner` elementos que se
-// repiten `repeat` veces para cubrir a. Sin difusión, inner == a.size() y
+// out = a `op` b, broadcasting by suffix: b has `inner` elements repeated
+// `repeat` times to cover a. Without broadcasting, inner == a.size() and
 // repeat == 1.
 bool binary(Binary op, const Storage& a, const Storage& b, Storage& out,
             size_t inner, size_t repeat);
 
-// out = a x b por lotes. Un operando no lotificado (a_batched/b_batched a
-// false) se reutiliza para todas las matrices del lote, igual que en CPU.
+// out = a x b, batched. An unbatched operand (a_batched/b_batched false) is
+// reused for every matrix in the batch, exactly as on the CPU path.
 bool matmul(const Storage& a, const Storage& b, Storage& out,
             size_t batch, size_t rows, size_t inner_dim, size_t cols,
             bool a_batched, bool b_batched);
@@ -39,77 +39,77 @@ bool matmul(const Storage& a, const Storage& b, Storage& out,
 bool relu(const Storage& x, Storage& out);
 bool relu_backward(const Storage& x, const Storage& grad_out, Storage& out);
 
-// El acumulador del backward: grad = g la primera vez, grad += g después.
+// The backward accumulator: grad = g the first time, grad += g afterwards.
 //
-// No puede ser binary(Add, grad, g, grad, ...) con la salida aliaseada a la
-// entrada: esa ruta pide la salida con device_write(), que da el búfer por
-// válido **sin subirlo**, y entonces el device() de la entrada ve que ya vale y
-// tampoco sube. El acumulado se perdería. Encima el orden de evaluación de los
-// argumentos del lanzamiento no está definido, así que dependería del
-// compilador. De ahí que tenga kernel propio en lugar de reutilizar binary().
+// It cannot be binary(Add, grad, g, grad, ...) with the output aliased onto the
+// input: that path asks for the output with device_write(), which marks the
+// buffer valid **without uploading it**, so the input's device() then sees it
+// is already valid and does not upload either. The accumulated value would be
+// lost. On top of that the evaluation order of the launch arguments is
+// unspecified, so it would depend on the compiler. Hence a kernel of its own
+// rather than reusing binary().
 bool accumulate_grad(Storage& grad, const Storage& g, bool initialize);
 
-// out = x * mul + add, en una sola pasada. Las dos operaciones con escalar del
-// motor caen aquí: `t * k` es (k, 0) y `t + k` es (1, k). No parece gran cosa,
-// pero sin kernel el escalado de la atención —un `* 1/sqrt(d_k)` entre dos
-// matmul— bajaba a host el tensor entero y lo volvía a subir.
+// out = x * mul + add, in a single pass. Both of the engine's scalar operations
+// land here: `t * k` is (k, 0) and `t + k` is (1, k). It does not look like
+// much, but without a kernel the attention scaling — a `* 1/sqrt(d_k)` between
+// two matmuls — pulled the whole tensor down to host and pushed it back up.
 bool scalar(const Storage& x, Storage& out, float mul, float add);
 
-// Reordenación de ejes: out[plano] = x[sum_d coord_d * src_strides[d]], donde
-// las coordenadas se sacan de out_shape. Cubre permute() y transpose(), que es
-// el caso particular de intercambiar los dos últimos ejes.
+// Axis reordering: out[flat] = x[sum_d coord_d * src_strides[d]], where the
+// coordinates come from out_shape. Covers permute() and transpose(), the latter
+// being the special case of swapping the last two axes.
 //
-// Los dos vectores describen la salida sobre la memoria de la entrada, igual
-// que en el camino de CPU: quien llama ya los tiene calculados.
+// Both vectors describe the output over the input's memory, exactly as on the
+// CPU path: the caller has already computed them.
 bool permute(const Storage& x, Storage& out,
              const size_t* out_shape, const size_t* src_strides, size_t ndim);
 
-// Suma sobre un eje, viendo el tensor como (outer, axis_len, inner). Es la
-// misma descomposición que usa AxisView en src/tensor.cpp.
+// Sum over one axis, viewing the tensor as (outer, axis_len, inner). It is the
+// same decomposition AxisView uses in src/tensor.cpp.
 bool sum_axis(const Storage& x, Storage& out, size_t outer, size_t axis_len, size_t inner);
 
-// Geometría de una ventana deslizante sobre un lote de volúmenes. Repite lo que
-// ya dice nn::Window2d más las dimensiones del tensor, a propósito: así esta
-// cabecera no depende de engine/conv.hpp y el backend sigue sin saber nada de
-// las capas.
+// The geometry of a sliding window over a batch of volumes. It repeats what
+// nn::Window2d already says plus the tensor dimensions, deliberately: this way
+// the header does not depend on engine/conv.hpp and the backend still knows
+// nothing about layers.
 struct WindowShape {
     size_t batch, channels, height, width;
     size_t kernel_h, kernel_w, stride, padding;
     size_t out_h, out_w;
 };
 
-// im2col aplana cada ventana en una fila: (N,C,H,W) -> (N*oH*oW, C*kH*kW).
-// col2im es su adjunto y suma donde las ventanas se solapan.
+// im2col flattens each window into a row: (N,C,H,W) -> (N*oH*oW, C*kH*kW).
+// col2im is its adjoint and sums where windows overlap.
 //
-// Sin estos dos, dar kernel al producto de la convolución no sirve de nada: las
-// columnas ocupan kH*kW veces la entrada, así que subirlas cuesta más que el
-// propio producto. Medido en MNIST: 24,6 s con el producto en la GPU y las
-// columnas construidas en host, contra 19,0 s haciéndolo todo en CPU.
+// Without these two, giving the convolution's matrix product a kernel buys
+// nothing: the columns are kH*kW times the input, so uploading them costs more
+// than multiplying them. Measured on MNIST: 24.6 s with the product on the GPU
+// and the columns built on the host, against 19.0 s doing it all on the CPU.
 bool im2col(const Storage& input, Storage& cols, const WindowShape& s);
 bool col2im(const Storage& cols, Storage& input, const WindowShape& s);
 
-// Submuestreo por máximo. `argmax` guarda el índice plano del píxel ganador de
-// cada ventana, que es lo único que el paso hacia atrás necesita.
+// Max pooling. `argmax` holds the flat index of each window's winning pixel,
+// which is all the backward pass needs.
 //
-// Sin estos dos la cadena se corta justo **entre las dos convoluciones**: la
-// salida de la primera baja a host para agruparse y vuelve a subir para la
-// segunda. Con lotes de evaluación grandes son decenas de MB por pasada.
+// Without these two the chain breaks **between the two convolutions**: the
+// first one's output goes down to host to be pooled and comes back up for the
+// second. With large evaluation batches that is tens of MB per pass.
 //
-// El paso hacia atrás recorre la entrada, no la salida, igual que col2im: así
-// cada píxel suma las ventanas que lo eligieron sin operaciones atómicas y con
-// un orden de acumulación fijo, que es lo que mantiene el resultado
-// reproducible.
+// The backward pass walks the input rather than the output, just like col2im:
+// that way each pixel sums the windows that chose it with no atomics and a
+// fixed accumulation order, which is what keeps the result reproducible.
 //
-// ponytail: el índice viaja en float, exacto hasta 2^24; por encima de eso el
-// despacho se rechaza y lo hace la CPU. Un Storage de enteros sería lo suyo si
-// algún día hace falta pasar de ahí.
+// ponytail: the index travels as a float, exact up to 2^24; above that the
+// dispatch is refused and the CPU takes it. A Storage of integers would be the
+// right answer if that ceiling ever matters.
 bool maxpool(const Storage& input, Storage& out, Storage& argmax, const WindowShape& s);
 bool maxpool_backward(const Storage& argmax, const Storage& grad_out, Storage& dx,
                       const WindowShape& s);
 
-// Softmax sobre el último eje: `rows` filas de `cols` valores contiguos.
+// Softmax over the last axis: `rows` rows of `cols` contiguous values.
 bool softmax(const Storage& x, Storage& out, size_t rows, size_t cols);
-// y es la salida guardada del forward, no la entrada.
+// y is the saved forward output, not the input.
 bool softmax_backward(const Storage& y, const Storage& grad_out, Storage& out,
                       size_t rows, size_t cols);
 

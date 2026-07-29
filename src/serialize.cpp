@@ -20,8 +20,8 @@ bool is_little_endian() {
 }
 
 void require_little_endian() {
-    // El formato fija little-endian. En vez de leer números al revés en
-    // silencio, se rechaza explícitamente.
+    // The format fixes little-endian. Rather than silently reading numbers
+    // backwards, it is rejected explicitly.
     if (!is_little_endian()) {
         throw std::runtime_error("El formato de pesos es little-endian y esta máquina no lo es.");
     }
@@ -210,8 +210,8 @@ size_t load_parameters(std::vector<std::pair<std::string, Tensor>>& params,
             continue;
         }
 
-        // La forma se comprueba siempre: cargar pesos de otro modelo con el
-        // mismo nombre daría un modelo silenciosamente roto.
+        // The shape is always checked: loading weights from another model under
+        // the same name would give a silently broken model.
         if (it->second.shape != entry.second.shape()) {
             throw std::runtime_error("El parámetro '" + entry.first + "' tiene forma " +
                                      entry.second.shape_str() + " en el modelo, y otra distinta en '" +

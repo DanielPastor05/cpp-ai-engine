@@ -8,46 +8,47 @@ namespace engine {
 namespace parallel {
 
 // ---------------------------------------------------------
-// Paralelismo de datos sobre los bucles calientes.
+// Data parallelism over the hot loops.
 //
-// Los hilos se crean una sola vez y se reutilizan: crear uno cuesta unas
-// decenas de microsegundos, más que muchas de las operaciones del motor, así
-// que hacerlo por operación sería una regresión y no una mejora.
+// Threads are created once and reused: creating one costs tens of
+// microseconds, more than many of the engine's operations, so doing it per
+// operation would be a regression rather than an improvement.
 //
-// El reparto es **determinista por construcción**: cada trozo del rango lo
-// calcula siempre un único hilo, y ninguna reducción cruza la frontera entre
-// trozos. El resultado es idéntico bit a bit con uno o con ocho hilos, cosa
-// que las pruebas comprueban.
+// The split is **deterministic by construction**: each chunk of the range is
+// always computed by a single thread, and no reduction ever crosses a chunk
+// boundary. The result is identical bit for bit with one thread or with eight,
+// which the tests check.
 // ---------------------------------------------------------
 
-// Umbral de reparto para un bucle elemento a elemento.
+// Split threshold for an element-wise loop.
 //
-// Una operación así está limitada por el ancho de banda de memoria y no por el
-// cálculo, así que escala peor y necesita más trabajo para merecer la pena:
-// medido, 1,77x con cuatro hilos frente a 3,08x del producto de matrices.
+// Such a loop is bound by memory bandwidth rather than arithmetic, so it scales
+// worse and needs more work before it pays: measured, 1.77x on four threads
+// against 3.08x for the matrix product.
 //
-// Vive aquí y no en cada .cpp porque lo usan tensor.cpp, nn.cpp y
-// transformer.cpp: repetido, se ajustaría en un sitio y no en los otros dos.
+// It lives here rather than in each .cpp because tensor.cpp, nn.cpp and
+// transformer.cpp all use it: duplicated, it would get tuned in one place and
+// not in the other two.
 constexpr size_t kElementsPerThread = 1u << 17;
 
-// Número de hilos en uso. Por defecto, los núcleos de la máquina; se puede
-// fijar con la variable de entorno ENGINE_NUM_THREADS.
+// Number of threads in use. Defaults to the machine's cores; can be set with
+// the ENGINE_NUM_THREADS environment variable.
 size_t num_threads();
 
-// Cambia el tamaño del pool. Con 1 todo se ejecuta en el hilo llamante y no
-// se crea ninguno, que es lo que conviene para medir o depurar.
+// Resizes the pool. With 1, everything runs on the calling thread and none is
+// created, which is what you want for measuring or debugging.
 void set_num_threads(size_t threads);
 
-// Ejecuta body sobre [0, count) repartido en trozos contiguos.
+// Runs body over [0, count) split into contiguous chunks.
 //
-// min_per_thread evita repartir trabajo que no compensa: por debajo de ese
-// tamaño, la sincronización cuesta más que el cálculo y se ejecuta en línea.
-// Las llamadas anidadas también se ejecutan en línea, para no multiplicar
-// hilos cuando una operación paralela invoca a otra.
+// min_per_thread avoids splitting work that does not pay for it: below that
+// size, synchronisation costs more than the computation and it runs inline.
+// Nested calls also run inline, so that one parallel operation invoking another
+// does not multiply threads.
 void parallel_for(size_t count, size_t min_per_thread,
                   const std::function<void(size_t begin, size_t end)>& body);
 
-// True si el hilo actual ya está dentro de una región paralela.
+// True if the current thread is already inside a parallel region.
 bool inside_parallel_region();
 
 } // namespace parallel

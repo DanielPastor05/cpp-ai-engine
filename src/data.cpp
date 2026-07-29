@@ -9,8 +9,8 @@ namespace data {
 
 namespace {
 
-// IDX guarda los enteros en big-endian, así que hay que reordenarlos a mano:
-// leerlos tal cual daría números absurdos en cualquier máquina x86 o ARM.
+// IDX stores its integers big-endian, so they have to be reordered by hand:
+// reading them as-is would give nonsense on any x86 or ARM machine.
 uint32_t read_be_uint32(std::istream& in, const std::string& path) {
     unsigned char bytes[4];
     in.read(reinterpret_cast<char*>(bytes), 4);
@@ -35,7 +35,7 @@ std::ifstream open_idx(const std::string& path, uint32_t expected_magic,
                                  std::to_string(magic) + ").");
     }
 
-    // El último byte del magic indica cuántos ejes hay
+    // The magic number's last byte says how many axes there are
     const uint32_t ndim = magic & 0xFF;
     count = read_be_uint32(in, path);
     dims.clear();
@@ -76,8 +76,8 @@ Tensor load_idx_images(const std::string& path, size_t max_samples) {
             throw std::runtime_error("Fichero de imágenes truncado en la muestra " +
                                      std::to_string(i) + ": " + path);
         }
-        // Normalizado a [0, 1]: con valores 0-255 los gradientes de la primera
-        // capa serían dos órdenes de magnitud mayores de lo razonable.
+        // Normalised to [0, 1]: with values 0-255 the first layer's gradients
+        // would be two orders of magnitude larger than is reasonable.
         float* dst = images.data().data() + i * pixels;
         for (size_t p = 0; p < pixels; ++p) {
             dst[p] = static_cast<float>(buffer[p]) / 255.0f;
@@ -111,7 +111,7 @@ std::vector<size_t> load_idx_labels(const std::string& path, size_t max_samples)
 MnistPaths find_mnist(const std::string& directory) {
     MnistPaths paths;
 
-    // El conjunto completo, si se ha descargado
+    // The full set, if it has been downloaded
     const std::string full_train_images = directory + "/train-images-idx3-ubyte";
     if (file_exists(full_train_images)) {
         paths.train_images = full_train_images;
@@ -122,7 +122,7 @@ MnistPaths find_mnist(const std::string& directory) {
         return paths;
     }
 
-    // Si no, el subconjunto que viene en el repositorio
+    // Otherwise, the subset shipped with the repository
     const std::string subset_train = directory + "/subset-train-images-idx3-ubyte";
     if (file_exists(subset_train)) {
         paths.train_images = subset_train;

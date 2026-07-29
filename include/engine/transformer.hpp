@@ -11,12 +11,12 @@ namespace engine {
 namespace nn {
 
 // ---------------------------------------------------------
-// Normalización por capa
+// Layer normalisation
 //
-// Normaliza cada vector del último eje a media 0 y varianza 1, y luego lo
-// reescala con dos parámetros aprendidos (gamma y beta). A diferencia de la
-// normalización por lotes, no mezcla información entre ejemplos, que es lo que
-// la hace apta para secuencias de longitud variable.
+// Normalises each vector along the last axis to mean 0 and variance 1, then
+// rescales it with two learned parameters (gamma and beta). Unlike batch
+// normalisation it mixes no information between examples, which is what makes
+// it suitable for variable-length sequences.
 // ---------------------------------------------------------
 class LayerNorm : public Module {
 public:
@@ -34,14 +34,14 @@ public:
 private:
     size_t normalized_size_;
     float eps_;
-    Tensor gamma_; // escala aprendida (normalized_size)
-    Tensor beta_;  // desplazamiento aprendido (normalized_size)
+    Tensor gamma_; // learned scale (normalized_size)
+    Tensor beta_;  // learned shift (normalized_size)
 };
 
 // ---------------------------------------------------------
-// Tabla de embeddings: convierte índices de token en vectores densos.
-// La entrada es un tensor (batch, secuencia) cuyos valores son índices; la
-// salida es (batch, secuencia, dim).
+// Embedding table: turns token indices into dense vectors.
+// The input is a (batch, sequence) tensor whose values are indices; the output
+// is (batch, sequence, dim).
 // ---------------------------------------------------------
 class Embedding : public Module {
 public:
@@ -63,41 +63,41 @@ private:
 };
 
 // ---------------------------------------------------------
-// Utilidades
+// Utilities
 // ---------------------------------------------------------
 
-// Codificación posicional sinusoidal (seq_len, d_model) del artículo original.
-// La atención por sí sola no distingue el orden de los tokens: sin esto, una
-// frase y su permutación producirían exactamente la misma salida.
+// Sinusoidal positional encoding (seq_len, d_model) from the original paper.
+// Attention on its own cannot tell token order apart: without this, a sentence
+// and a permutation of it would produce exactly the same output.
 Tensor positional_encoding(size_t seq_len, size_t d_model);
 
-// Máscara causal aditiva (seq_len, seq_len): 0 donde se puede atender y un
-// valor muy negativo donde no, de modo que el softmax lo lleve a cero. Impide
-// que una posición vea el futuro.
+// Additive causal mask (seq_len, seq_len): 0 where attending is allowed and a
+// very negative value where it is not, so that softmax drives it to zero. It
+// stops a position from seeing the future.
 Tensor causal_mask(size_t seq_len, float masked_value = -1e9f);
 
-// Atención por producto escalar escalado:
+// Scaled dot-product attention:
 //   softmax(Q x K^T / sqrt(d_k) + mask) x V
-// Q, K y V son (..., seq, d_k). El escalado por sqrt(d_k) evita que el
-// producto escalar crezca con la dimensión y sature el softmax.
-// Si se pasa attention_weights, allí se deja una copia desligada del grafo con
-// los pesos de atención (..., seq, seq).
+// Q, K and V are (..., seq, d_k). Scaling by sqrt(d_k) stops the dot product
+// from growing with the dimension and saturating the softmax.
+// If attention_weights is passed, a copy of the attention weights detached from
+// the graph (..., seq, seq) is left there.
 Tensor scaled_dot_product_attention(const Tensor& query, const Tensor& key,
                                     const Tensor& value, const Tensor* mask = nullptr,
                                     Tensor* attention_weights = nullptr);
 
 // ---------------------------------------------------------
-// Atención multi-cabeza
+// Multi-head attention
 //
-// Proyecta la entrada en num_heads subespacios independientes, aplica atención
-// en cada uno y concatena. Varias cabezas permiten atender a distintas
-// relaciones a la vez con el mismo coste que una sola cabeza ancha.
+// Projects the input into num_heads independent subspaces, applies attention
+// in each and concatenates. Several heads make it possible to attend to
+// different relationships at once, at the same cost as one wide head.
 // ---------------------------------------------------------
 class MultiHeadAttention : public Module {
 public:
     MultiHeadAttention(size_t d_model, size_t num_heads);
 
-    // Auto-atención: la entrada (batch, seq, d_model) hace de Q, K y V.
+    // Self-attention: the (batch, seq, d_model) input acts as Q, K and V.
     Tensor forward(const Tensor& input) override;
     Tensor forward(const Tensor& input, const Tensor* mask);
 
@@ -106,10 +106,10 @@ public:
         const std::string& prefix = "") override;
     std::string name() const override;
 
-    // Pesos de atención (batch, heads, seq, seq) del último forward, útiles
-    // para inspeccionar en qué se fija el modelo. Hay que activarlos con
-    // keep_attention(true): guardarlos cuesta una copia de (B, H, S, S) en
-    // cada paso, y durante el entrenamiento no se miran.
+    // The (batch, heads, seq, seq) attention weights from the last forward,
+    // useful for inspecting what the model looks at. They have to be switched
+    // on with keep_attention(true): saving them costs a (B, H, S, S) copy every
+    // step, and during training nobody reads them.
     const Tensor& last_attention() const { return last_attention_; }
     void keep_attention(bool keep) { keep_attention_ = keep; }
     bool keeps_attention() const { return keep_attention_; }
@@ -127,14 +127,14 @@ private:
 };
 
 // ---------------------------------------------------------
-// Bloque codificador Transformer (pre-norm)
+// Transformer encoder block (pre-norm)
 //
 //   x = x + Attention(LayerNorm(x))
 //   x = x + FeedForward(LayerNorm(x))
 //
-// Se normaliza antes de cada subcapa, no después como en el artículo original:
-// deja la conexión residual libre de normalizaciones y hace el entrenamiento
-// bastante más estable sin necesidad de calentamiento del learning rate.
+// Normalisation happens before each sub-layer rather than after it as in the
+// original paper: it leaves the residual connection free of normalisation and
+// makes training considerably more stable without a learning-rate warm-up.
 // ---------------------------------------------------------
 class TransformerBlock : public Module {
 public:

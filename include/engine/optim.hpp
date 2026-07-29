@@ -9,23 +9,23 @@ namespace engine {
 namespace optim {
 
 // ---------------------------------------------------------
-// Interfaz común de los optimizadores
+// The interface every optimiser shares
 // ---------------------------------------------------------
 class Optimizer {
 public:
-    // Los parámetros se capturan aquí y se guardan por valor. Como Tensor es
-    // un handle, escribir en ellos actualiza los pesos de la capa; pero si se
-    // *reasigna* un parámetro después (capa.weight() = otro_tensor), el
-    // optimizador seguirá apuntando al tensor viejo. Configura los pesos antes
-    // de construir el optimizador.
+    // Parameters are captured here and stored by value. Because Tensor is a
+    // handle, writing to them updates the layer's weights; but if a parameter
+    // is *reassigned* afterwards (layer.weight() = other_tensor), the optimiser
+    // will still point at the old tensor. Set the weights up before
+    // constructing the optimiser.
     explicit Optimizer(std::vector<Tensor> parameters);
     virtual ~Optimizer() = default;
 
-    // Aplica una actualización a todos los parámetros con gradiente acumulado
+    // Applies one update to every parameter that has an accumulated gradient
     virtual void step() = 0;
 
-    // Pone a cero los gradientes acumulados (deben limpiarse en cada iteración,
-    // porque add_grad acumula en lugar de sobrescribir)
+    // Zeroes the accumulated gradients (they must be cleared every iteration,
+    // because add_grad accumulates rather than overwrites)
     void zero_grad();
 
     float learning_rate() const { return lr_; }
@@ -39,9 +39,9 @@ protected:
 };
 
 // ---------------------------------------------------------
-// Descenso de gradiente estocástico, con momento opcional
+// Stochastic gradient descent, with optional momentum
 //
-//   v = momentum * v + g            (con weight_decay: g += wd * p)
+//   v = momentum * v + g            (with weight_decay: g += wd * p)
 //   p = p - lr * v
 // ---------------------------------------------------------
 class SGD : public Optimizer {
@@ -72,7 +72,7 @@ public:
 
     void step() override;
 
-    // Número de pasos aplicados (se usa en la corrección de sesgo)
+    // Number of steps applied (used by the bias correction)
     size_t steps() const { return t_; }
 
 private:
@@ -86,34 +86,34 @@ private:
 };
 
 // ---------------------------------------------------------
-// Recorte de gradiente por norma global
+// Gradient clipping by global norm
 //
-// Si la norma L2 de todos los gradientes juntos supera max_norm, se escalan
-// todos por el mismo factor. Es lo que evita que un lote atípico dé un paso
-// enorme y descarrile el entrenamiento; en Transformers es práctica estándar.
-// Devuelve la norma que había ANTES de recortar, para poder monitorizarla.
+// If the L2 norm of all gradients taken together exceeds max_norm, they are all
+// scaled by the same factor. It is what stops an outlier batch from taking a
+// huge step and derailing training; with Transformers it is standard practice.
+// Returns the norm as it was BEFORE clipping, so it can be monitored.
 // ---------------------------------------------------------
 float clip_grad_norm(const std::vector<Tensor>& parameters, float max_norm);
 
 // ---------------------------------------------------------
-// Planificadores de learning rate
+// Learning-rate schedulers
 //
-// Envuelven un optimizador y le ajustan el learning rate. La llamada a step()
-// del planificador se hace una vez por época, después de las de la optimización.
+// They wrap an optimiser and adjust its learning rate. The scheduler's step()
+// is called once per epoch, after the optimisation steps.
 // ---------------------------------------------------------
 class Scheduler {
 public:
     explicit Scheduler(Optimizer& optimizer);
     virtual ~Scheduler() = default;
 
-    // Avanza una época y aplica el nuevo learning rate
+    // Advances one epoch and applies the new learning rate
     void step();
 
     size_t epoch() const { return epoch_; }
     float base_learning_rate() const { return base_lr_; }
 
 protected:
-    // Learning rate que corresponde a la época dada (0 es la inicial)
+    // The learning rate for a given epoch (0 is the initial one)
     virtual float compute(size_t epoch) const = 0;
 
     Optimizer& optimizer_;
@@ -121,7 +121,7 @@ protected:
     size_t epoch_ = 0;
 };
 
-// Multiplica el learning rate por gamma cada step_size épocas.
+// Multiplies the learning rate by gamma every step_size epochs.
 class StepLR : public Scheduler {
 public:
     StepLR(Optimizer& optimizer, size_t step_size, float gamma = 0.1f);
@@ -134,9 +134,9 @@ private:
     float gamma_;
 };
 
-// Desciende siguiendo un coseno desde el learning rate inicial hasta min_lr a
-// lo largo de total_epochs. Baja despacio al principio y al final, que es lo
-// que suele funcionar mejor que un descenso lineal.
+// Decays along a cosine from the initial learning rate down to min_lr over
+// total_epochs. It descends slowly at the start and at the end, which usually
+// works better than a linear decay.
 class CosineAnnealingLR : public Scheduler {
 public:
     CosineAnnealingLR(Optimizer& optimizer, size_t total_epochs, float min_lr = 0.0f);
@@ -149,8 +149,8 @@ private:
     float min_lr_;
 };
 
-// Sube linealmente desde casi cero durante warmup_epochs y luego desciende en
-// coseno. Es la receta habitual para entrenar Transformers.
+// Ramps up linearly from near zero over warmup_epochs and then decays along a
+// cosine. It is the usual recipe for training Transformers.
 class WarmupCosineLR : public Scheduler {
 public:
     WarmupCosineLR(Optimizer& optimizer, size_t warmup_epochs, size_t total_epochs,

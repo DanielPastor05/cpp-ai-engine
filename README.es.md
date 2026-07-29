@@ -478,3 +478,36 @@ pérdida debe construirse **fuera** del closure. Si se genera dentro con
 `randn`, cada evaluación usa pesos distintos y la comprobación deja de comparar
 la misma función consigo misma —da errores enormes que parecen fallos del
 motor.
+
+---
+
+## 🤖 Cómo se construyó esto
+
+Este motor se escribió con ayuda intensiva de IA: la mayoría de los commits
+llevan un trailer `Co-Authored-By: Claude`, y el historial es corto y denso
+precisamente por eso. Esos trailers están puestos a propósito y nunca se
+borraron. Decirlo aquí, en vez de dejar que se deduzca del `git log`, parece la
+única opción honesta. Así que: esto es lo que fue mío y lo que no.
+
+**Mío.** La arquitectura y cada decisión que la condiciona: `Tensor` como asa
+sobre un `TensorImpl` compartido; sacar el búfer a un `Storage` con banderas de
+validez host/dispositivo **antes** de escribir el primer kernel, porque la
+alternativa eran ramas host/dispositivo repartidas por cada operación; el
+contrato de despacho que devuelve `bool` y mantiene `src/tensor.cpp` sin un solo
+`#ifdef`. La decisión de validar contra PyTorch en lugar de fiarme de la
+comprobación numérica de gradientes. Elegir qué medir, leer las medidas y las
+decisiones que salieron de ellas — incluido matar optimizaciones que resultaron
+más lentas, y las que quedan registradas como fracasos en
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md). Cuál de los cuatro kernels de
+`matmul` merecía la pena y por qué la progresión misma es el resultado.
+
+**No mío, o no solo mío.** La mayor parte del código tal y como está tecleado.
+El GEMM con teselado de registros se escribió contra un argumento de intensidad
+aritmética que yo planteé y luego verifiqué perfilando, pero no deduje a mano el
+álgebra de los índices de carga. Buena parte de la prosa de `docs/`.
+
+**Lo que sí reclamo.** Que puedo defender cualquier parte. Las notas de diseño
+de [docs/DESIGN.md](docs/DESIGN.md) enuncian cada decisión con la alternativa
+que descartó, y [docs/ENGINEERING.md](docs/ENGINEERING.md) registra los fallos
+que de verdad aparecieron, con el test de regresión que dejó cada uno. Esos dos
+documentos son la parte que más me gustaría que se leyera.

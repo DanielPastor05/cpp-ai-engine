@@ -24,7 +24,7 @@ LayerNorm::LayerNorm(size_t normalized_size, float eps)
     }
 
     autograd::NoGradGuard no_grad;
-    // Identidad al inicio: sin escalar ni desplazar, la capa solo normaliza.
+    // Identity at the start: with no scale or shift, the layer only normalises.
     gamma_ = Tensor({normalized_size}, 1.0f, true);
     beta_ = Tensor({normalized_size}, 0.0f, true);
 }
@@ -40,7 +40,7 @@ Tensor LayerNorm::forward(const Tensor& input) {
     const float inv_d = 1.0f / static_cast<float>(D);
 
     Tensor out(input.shape(), 0.0f, false);
-    // xhat y 1/desviacion se guardan porque la derivada los necesita
+    // xhat and 1/deviation are saved because the derivative needs them
     Tensor xhat(input.shape(), 0.0f, false);
     std::vector<float> inv_std(rows, 0.0f);
 
@@ -48,13 +48,13 @@ Tensor LayerNorm::forward(const Tensor& input) {
     const std::vector<float>& g = gamma_.data();
     const std::vector<float>& b = beta_.data();
 
-    // Cada fila se normaliza con su propia media y varianza, así que no hay
-    // ninguna reducción que cruce la frontera entre trozos: el reparto por filas
-    // da el mismo resultado bit a bit con uno o con ocho hilos.
+    // Each row is normalised with its own mean and variance, so no reduction
+    // crosses a chunk boundary: splitting by row gives the same result bit for bit
+    // with one thread or with eight.
     float* ENGINE_RESTRICT xhat_out = xhat.data().data();
     float* ENGINE_RESTRICT out_data = out.data().data();
-    // El umbral se cuenta en filas, pero el trabajo está en los elementos: una
-    // fila son D valores y tres pasadas sobre ellos.
+    // The threshold is counted in rows, but the work is in the elements: a row is D
+    // values and three passes over them.
     const size_t rows_per_thread =
         std::max<size_t>(1, parallel::kElementsPerThread / std::max<size_t>(1, D));
     parallel::parallel_for(rows, rows_per_thread, [&](size_t from, size_t to) {
@@ -104,17 +104,17 @@ Tensor LayerNorm::forward(const Tensor& input) {
             Tensor dbeta(beta_copy.shape(), 0.0f, false);
             Tensor dX(input_copy.shape(), 0.0f, false);
 
-            // Este bucle se queda en serie a propósito, al revés que el del
-            // forward. dX sí es independiente por filas, pero dgamma y dbeta
-            // acumulan **a través** de ellas: repartirlo pediría un parcial por
-            // hilo y una combinación en orden fijo para no perder la identidad
-            // bit a bit que comprueban las pruebas, y separarlo en dos pasadas
-            // costaría releer dy y xhat enteros. Ninguna de las dos se ha
-            // medido, así que no se elige a ciegas.
-            // ponytail: reducción en serie; parciales por hilo si el perfil la señala.
+            // This loop stays serial deliberately, unlike the forward's. dX is
+            // independent per row, but dgamma and dbeta accumulate **across** rows:
+            // splitting it would need a per-thread partial and a fixed-order combine so
+            // as not to lose the bit-for-bit identity the tests check, and separating it
+            // into two passes would cost rereading dy and xhat in full. Neither has been
+            // measured, so neither is chosen blind.
+            //
+            // ponytail: serial reduction; per-thread partials if the profile flags it.
             for (size_t i = 0; i < rows; ++i) {
-                // La media y la varianza dependen de todo el vector, así que la
-                // derivada de cada componente arrastra dos términos de correción:
+                // The mean and variance depend on the whole vector, so each
+                // component's derivative drags two correction terms along:
                 // dx = (dxhat - media(dxhat) - xhat * media(dxhat * xhat)) / std
                 float sum_dxhat = 0.0f;
                 float sum_dxhat_h = 0.0f;
@@ -185,8 +185,8 @@ Tensor Embedding::forward(const Tensor& ids) {
         indices.push_back(static_cast<size_t>(id));
     }
 
-    // select_rows ya acumula el gradiente cuando un token se repite, que es
-    // justo lo que necesita una tabla de embeddings.
+    // select_rows already accumulates the gradient when a token repeats, which is
+    // exactly what an embedding table needs.
     return weight_.select_rows(indices).reshape({batch, seq, dim_});
 }
 
@@ -212,8 +212,8 @@ Tensor positional_encoding(size_t seq_len, size_t d_model) {
     Tensor pe({seq_len, d_model}, 0.0f, false);
     for (size_t pos = 0; pos < seq_len; ++pos) {
         for (size_t i = 0; i < d_model; ++i) {
-            // Cada par de dimensiones usa una frecuencia distinta, de modo que
-            // la distancia relativa entre posiciones sea una función suave.
+            // Each pair of dimensions uses a different frequency, so that the
+            // relative distance between positions is a smooth function.
             const size_t pair = i / 2;
             const float exponent = 2.0f * static_cast<float>(pair) / static_cast<float>(d_model);
             const float angle = static_cast<float>(pos) / std::pow(10000.0f, exponent);
@@ -245,8 +245,8 @@ Tensor scaled_dot_product_attention(const Tensor& query, const Tensor& key,
                                     " y " + key.shape_str() + ".");
     }
 
-    // Sin el escalado, el producto escalar crece con d_k, el softmax se satura
-    // y los gradientes se desvanecen.
+    // Without the scaling the dot product grows with d_k, the softmax saturates
+    // and the gradients vanish.
     const float scale = 1.0f / std::sqrt(static_cast<float>(d_k));
     Tensor scores = query.matmul(key.transpose()) * scale;
 
@@ -294,8 +294,8 @@ Tensor MultiHeadAttention::forward(const Tensor& input, const Tensor* mask) {
     const size_t seq = input.shape()[1];
 
     // (B, S, d_model) -> (B, S, H, head_dim) -> (B, H, S, head_dim).
-    // La permutación es lo que deja a cada cabeza con su secuencia completa
-    // contigua, para que el matmul por lotes opere cabeza a cabeza.
+    // The permutation is what leaves each head with its full sequence contiguous,
+    // so that the batched matmul operates head by head.
     auto split_heads = [&](const Tensor& projected) {
         return projected.reshape({batch, seq, num_heads_, head_dim_}).permute({0, 2, 1, 3});
     };
@@ -307,7 +307,7 @@ Tensor MultiHeadAttention::forward(const Tensor& input, const Tensor* mask) {
     Tensor attended = scaled_dot_product_attention(
         q, k, v, mask, keep_attention_ ? &last_attention_ : nullptr);
 
-    // Deshacer la separación en cabezas: (B, H, S, hd) -> (B, S, d_model)
+    // Undo the split into heads: (B, H, S, hd) -> (B, S, d_model)
     Tensor merged = attended.permute({0, 2, 1, 3}).reshape({batch, seq, d_model_});
     return w_out_(merged);
 }
@@ -359,8 +359,8 @@ Tensor TransformerBlock::forward(const Tensor& input) {
 }
 
 Tensor TransformerBlock::forward(const Tensor& input, const Tensor* mask) {
-    // Pre-norm: la conexión residual queda libre de normalizaciones, así que
-    // el gradiente llega intacto a las capas de abajo.
+    // Pre-norm: the residual connection is left free of normalisation, so the
+    // gradient reaches the layers below intact.
     Tensor h = input + attention_.forward(norm1_(input), mask);
     return h + ff2_(ff1_(norm2_(h)).relu());
 }

@@ -1,8 +1,8 @@
-// Contexto, memoria y contabilidad de transferencias del backend CUDA.
+// Context, memory and transfer accounting for the CUDA backend.
 //
-// Los kernels están en src/cuda/kernels.cu. Aquí sólo vive lo que rodea al
-// cálculo: descubrir el dispositivo, reservar y liberar memoria, y medir lo
-// que cuesta cruzar el PCIe.
+// The kernels live in src/cuda/kernels.cu. Only what surrounds the computation
+// is here: discovering the device, allocating and freeing memory, and measuring
+// what crossing PCIe costs.
 
 #include "engine/cuda.hpp"
 
@@ -19,9 +19,9 @@ namespace cuda {
 
 namespace {
 
-// Una llamada de CUDA que falla no debe pasar desapercibida: sin comprobarlas,
-// un error de reserva se manifiesta mucho más tarde como resultados
-// silenciosamente incorrectos.
+// A failing CUDA call must not go unnoticed: unchecked, an allocation error
+// shows up much later as silently incorrect results.
+//
 void check(cudaError_t status, const char* what) {
     if (status != cudaSuccess) {
         throw std::runtime_error(std::string("CUDA: ") + what + ": " +
@@ -38,11 +38,11 @@ size_t env_size(const char* name, size_t fallback) {
     return static_cast<size_t>(value);
 }
 
-// Núcleos CUDA por multiprocesador. No hay ninguna propiedad del runtime que
-// lo dé: depende de la arquitectura y hay que mirarlo en una tabla, igual que
-// hace el helper_cuda.h de los ejemplos del toolkit. Sin este número no se
-// puede calcular el pico teórico, y sin el pico teórico un GFLOP/s medido no
-// dice si el kernel va bien o mal.
+// CUDA cores per multiprocessor. No runtime property provides it: it depends on
+// the architecture and has to be looked up in a table, exactly as the toolkit
+// samples' helper_cuda.h does. Without this number the theoretical peak cannot
+// be computed, and without the peak a measured GFLOP/s does not say whether the
+// kernel is doing well or badly.
 int cores_per_sm(int major, int minor) {
     switch (major) {
         case 3: return 192;                          // Kepler
@@ -61,10 +61,10 @@ struct Context {
     DeviceInfo info;
     double peak_gflops = 0.0;
     double peak_bandwidth = 0.0;
-    // Si la tarjeta admite el pool de memoria del driver. Se mira una sola vez
-    // y no cambia en toda la vida del proceso: device_alloc() y device_free()
-    // tienen que elegir la misma vía siempre, porque liberar con cudaFree un
-    // puntero de cudaMallocAsync (o al revés) es comportamiento indefinido.
+    // Whether the card supports the driver's memory pool. Checked once and constant
+    // for the life of the process: device_alloc() and device_free() must always
+    // pick the same route, because freeing a cudaMallocAsync pointer with cudaFree
+    // (or the other way round) is undefined behaviour.
     bool memory_pools = false;
 
     Context() {
@@ -81,22 +81,22 @@ struct Context {
         info.multiprocessors = props.multiProcessorCount;
         info.total_memory = props.totalGlobalMem;
 
-        // Las frecuencias se piden por atributo y no por campo de cudaDeviceProp:
-        // CUDA 13 quitó props.clockRate y props.memoryClockRate, y
-        // cudaDeviceGetAttribute es la vía que vale igual en 11, 12 y 13.
+        // The clocks are queried by attribute rather than from a cudaDeviceProp field:
+        // CUDA 13 removed props.clockRate and props.memoryClockRate, and
+        // cudaDeviceGetAttribute is the route that works the same on 11, 12 and 13.
         int clock_khz = 0;          // frecuencia de núcleo, en kHz
         int memory_clock_khz = 0;   // frecuencia de memoria, en kHz
         cudaDeviceGetAttribute(&clock_khz, cudaDevAttrClockRate, 0);
         cudaDeviceGetAttribute(&memory_clock_khz, cudaDevAttrMemoryClockRate, 0);
 
-        // El factor 2 es porque una FMA cuenta como dos operaciones en punto
-        // flotante, que es el convenio con el que se publican las cifras de las
-        // tarjetas.
+        // The factor of 2 is because an FMA counts as two floating-point operations,
+        // which is the convention the cards' published figures use.
+        //
         peak_gflops = static_cast<double>(props.multiProcessorCount) *
                       cores_per_sm(props.major, props.minor) * 2.0 *
                       (static_cast<double>(clock_khz) * 1e3) / 1e9;
 
-        // El otro 2 es la doble tasa de transferencia de la memoria gráfica.
+        // The other 2 is graphics memory's double data rate.
         peak_bandwidth = (static_cast<double>(memory_clock_khz) * 1e3) * 2.0 *
                          (static_cast<double>(props.memoryBusWidth) / 8.0) / 1e9;
 
@@ -106,8 +106,8 @@ struct Context {
 
         usable = true;
 
-        // ENGINE_CUDA=0 apaga el backend sin recompilar, para comparar contra
-        // el camino de CPU en la misma máquina y el mismo binario.
+        // ENGINE_CUDA=0 turns the backend off without recompiling, to compare against
+        // the CPU path on the same machine and the same binary.
         const char* flag = std::getenv("ENGINE_CUDA");
         on = !(flag != nullptr && (flag[0] == '0' || flag[0] == 'n' || flag[0] == 'N'));
     }
@@ -118,8 +118,8 @@ Context& context() {
     return ctx;
 }
 
-// Los umbrales y los contadores los toca sólo el hilo que despacha: el reparto
-// entre hilos del motor vive en el camino de CPU, y ese no llega hasta aquí.
+// Only the dispatching thread touches the thresholds and counters: the engine's
+// thread splitting lives on the CPU path, and that never reaches here.
 size_t g_min_matmul_flops = env_size("ENGINE_CUDA_MIN_FLOPS", size_t{1} << 22);
 size_t g_min_elements = env_size("ENGINE_CUDA_MIN_ELEMENTS", size_t{1} << 20);
 
@@ -154,8 +154,8 @@ void synchronize() {
     check(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
 }
 
-// Constante de compilación: es la única de las tres que dice de verdad con qué
-// toolkit se generó este binario.
+// A compile-time constant: it is the only one of the three that really says
+// which toolkit produced this binary.
 int compiled_version() { return CUDART_VERSION; }
 
 int runtime_version() {
@@ -189,15 +189,15 @@ const char* matmul_kernel_name(MatmulKernel kernel) {
     return "desconocido";
 }
 
-// La resolución de `Auto`, en un solo sitio para que el banco de pruebas pueda
-// preguntar qué se va a ejecutar sin duplicar el criterio.
+// The resolution of `Auto`, in one place so the benchmark can ask what will run
+// without duplicating the criterion.
 //
-// Dos condiciones, y las dos son de corrección antes que de velocidad:
-//   - Las cargas float4 exigen que las filas empiecen en una dirección
-//     múltiplo de 16 bytes, o sea K y N múltiplos de 4. Es la misma clase de
-//     selección de kernel por alineación que hace cuBLAS por dentro.
-//   - Con matrices pequeñas, un bloque de 128x128 desperdicia casi toda la
-//     malla rellenando con ceros, así que ahí gana el kernel de teselas.
+// Two conditions, and both are about correctness before speed:
+//   - float4 loads require rows to start at an address that is a multiple of
+//     16 bytes, that is K and N multiples of 4. It is the same kind of
+//     alignment-driven kernel selection cuBLAS does internally.
+//   - With small matrices a 128x128 block wastes almost the whole grid padding
+//     with zeros, so the tiled kernel wins there.
 MatmulKernel resolve_matmul_kernel(size_t rows, size_t inner_dim, size_t cols) {
     if (g_matmul_kernel != MatmulKernel::Auto) return g_matmul_kernel;
     if (rows < 128 || cols < 128) return MatmulKernel::Tiled;
@@ -218,27 +218,27 @@ void reset_transfer_stats() { g_stats = TransferStats{}; }
 
 namespace detail {
 
-// Las incrementa launched_ok(), en kernels.cu.
+// Incremented by launched_ok(), in kernels.cu.
 void note_kernel_launched() { ++g_launched; }
 void note_kernel_failed() { ++g_failed; }
 
-// cudaMalloc y cudaFree sincronizan el dispositivo y bajan al sistema, que con
-// búferes grandes cuesta milisegundos. Como cada operación del motor crea un
-// tensor de salida, eso se paga por operación y acaba dominando el tiempo: en
-// una suma de 16,7M valores medí 3,64 ms de reserva y liberación frente a 0,51
-// del kernel, o sea que el 86% del tiempo no era calcular.
+// cudaMalloc and cudaFree synchronise the device and go down to the system,
+// which costs milliseconds on large buffers. Since every engine operation
+// creates an output tensor, that is paid per operation and ends up dominating
+// the time: on a 16.7M-value addition I measured 3.64 ms of allocation and free
+// against 0.51 for the kernel, so 86% of the time was not computing.
 //
-// El pool que el driver ya mantiene detrás de cudaMallocAsync devuelve el
-// bloque a una lista libre en vez de al sistema, y la siguiente reserva del
-// mismo tamaño lo reutiliza: los mismos 3,64 ms bajan a 0,60. No hace falta un
-// asignador propio para esto.
+// The pool the driver already keeps behind cudaMallocAsync returns the block to
+// a free list instead of to the system, and the next allocation of the same size
+// reuses it: the same 3.64 ms drops to 0.60. No custom allocator is needed for
+// this.
 //
-// El umbral de retención del pool (cudaMemPoolAttrReleaseThreshold) se deja en
-// su valor por defecto a propósito: subirlo a 512 MiB daba 0,599 ms frente a
-// 0,638, un 6% que no justifica el ajuste ni el knob para configurarlo.
+// The pool's release threshold (cudaMemPoolAttrReleaseThreshold) is left at its
+// default deliberately: raising it to 512 MiB gave 0.599 ms against 0.638, a 6%
+// that justifies neither the tuning nor a knob to configure it.
 //
-// Todo el motor lanza en el stream por defecto, así que el orden de stream que
-// cudaFreeAsync respeta es el mismo en el que se usó la memoria.
+// The whole engine launches on the default stream, so the stream order
+// cudaFreeAsync respects is the same one the memory was used in.
 float* device_alloc(size_t elements) {
     if (elements == 0) return nullptr;
     void* ptr = nullptr;
@@ -253,17 +253,17 @@ float* device_alloc(size_t elements) {
 
 void device_free(float* ptr) {
     if (ptr == nullptr) return;
-    // El destructor de Storage llama aquí, así que no puede lanzar: durante el
-    // apagado del proceso el contexto de CUDA puede haberse destruido ya, y
-    // eso no es un fallo que merezca terminar el programa.
+    // Storage's destructor calls in here, so it cannot throw: during process
+    // shutdown the CUDA context may already have been destroyed, and that is not a
+    // failure worth terminating the program over.
     const cudaError_t status =
         context().memory_pools ? cudaFreeAsync(ptr, 0) : cudaFree(ptr);
 
-    // No lanzar no es lo mismo que no enterarse. Sin esto, una doble liberación
-    // o un puntero que no salió de este asignador son completamente invisibles:
-    // el error se queda pegado al hilo y aparece luego en la siguiente llamada
-    // de CUDA que sí comprueba, señalando a un sitio que no tiene la culpa. Se
-    // avisa una vez, igual que con los kernels, y se limpia para no contaminar.
+    // Not throwing is not the same as not noticing. Without this, a double free or
+    // a pointer that did not come from this allocator are completely invisible: the
+    // error sticks to the thread and shows up at the next CUDA call that does check,
+    // pointing at somewhere that is not to blame. It is reported once, as with the
+    // kernels, and cleared so as not to contaminate.
     if (status != cudaSuccess && status != cudaErrorCudartUnloading) {
         static bool reported = false;
         if (!reported) {
@@ -287,10 +287,10 @@ void copy_to_device(float* dst, const float* src, size_t elements) {
     ++g_stats.to_device_count;
 }
 
-// Sin contabilizar: no cruza el PCIe. Va a la velocidad de la memoria de la
-// tarjeta —cientos de GB/s frente a los ~12 de un PCIe 3.0 x16—, que es
-// justamente el motivo de que exista: reshape copia el bufer entero por
-// definicion, y hacerlo aqui evita bajarlo y volverlo a subir.
+// Not accounted for: it does not cross PCIe. It runs at the card's memory speed
+// -- hundreds of GB/s against a PCIe 3.0 x16's ~12 -- which is exactly why it
+// exists: reshape copies the whole buffer by definition, and doing it here
+// avoids pulling it down and pushing it back up.
 void copy_device_to_device(float* dst, const float* src, size_t elements) {
     if (elements == 0) return;
     check(cudaMemcpy(dst, src, elements * sizeof(float), cudaMemcpyDeviceToDevice),
@@ -300,9 +300,9 @@ void copy_device_to_device(float* dst, const float* src, size_t elements) {
 void copy_to_host(float* dst, const float* src, size_t elements) {
     if (elements == 0) return;
     const auto start = std::chrono::steady_clock::now();
-    // cudaMemcpy es sincronizante, así que este tiempo incluye la espera a que
-    // terminen los kernels pendientes sobre el búfer de origen. Es justo lo
-    // que se quiere medir: el coste real de leer un resultado desde host.
+    // cudaMemcpy is synchronising, so this time includes waiting for kernels still
+    // pending on the source buffer. That is exactly what should be measured: the
+    // real cost of reading a result from the host.
     check(cudaMemcpy(dst, src, elements * sizeof(float), cudaMemcpyDeviceToHost),
           "cudaMemcpy D2H");
     g_stats.to_host_seconds += seconds_since(start);

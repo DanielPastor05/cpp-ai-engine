@@ -1,10 +1,10 @@
 #ifndef ENGINE_DETAIL_TENSOR_IMPL_HPP
 #define ENGINE_DETAIL_TENSOR_IMPL_HPP
 
-// Representación interna de un nodo del grafo. Solo la necesitan la propia
-// librería y quien registre operaciones nuevas; se mantiene fuera de
-// engine/tensor.hpp para no arrastrar <functional> a cada unidad de
-// traducción que solo quiere usar tensores.
+// The internal representation of a graph node. Only the library itself and
+// anyone registering new operations need it; it is kept out of
+// engine/tensor.hpp so that <functional> is not dragged into every translation
+// unit that just wants to use tensors.
 
 #include <functional>
 #include <memory>
@@ -16,17 +16,18 @@ namespace engine {
 
 class Tensor;
 
-// Estructura interna para almacenar el estado y los nodos del grafo Autograd.
+// Internal structure holding the state and the autograd graph edges.
 //
-// Nota sobre la propiedad de la memoria: un nodo referencia a sus padres con
-// shared_ptr (aristas hijo -> padre) y nunca a sus hijos, de modo que el grafo
-// es acíclico también en el conteo de referencias. Por eso backward_fn recibe
-// el gradiente de salida como argumento en lugar de capturar su propio tensor:
-// capturarlo crearía un ciclo y el grafo jamás se liberaría.
+// A note on ownership: a node references its parents with shared_ptr (child ->
+// parent edges) and never its children, so the graph is acyclic in the
+// reference count as well. That is why backward_fn takes the output gradient as
+// an argument instead of capturing its own tensor: capturing it would create a
+// cycle and the graph would never be freed.
 struct TensorImpl {
-    // El búfer y de qué lado vive. Antes era un std::vector<float> a secas;
-    // sacarlo a un tipo propio es lo que permite que un tensor resida en la GPU
-    // entre operaciones en vez de ir y volver por PCIe en cada una.
+    // The buffer and which side it lives on. This used to be a plain
+    // std::vector<float>; lifting it into a type of its own is what lets a
+    // tensor stay resident on the GPU between operations instead of crossing
+    // PCIe on each one.
     Storage storage;
     std::vector<size_t> shape;
     std::vector<size_t> strides;

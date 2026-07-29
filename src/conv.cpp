@@ -19,8 +19,8 @@ namespace nn {
 
 namespace {
 
-// Mismo criterio que en el tensor: repartir cuesta unos 8 us, así que solo
-// compensa a partir de bastante trabajo por región.
+// Same criterion as in the tensor: splitting costs about 8 us, so it only pays
+// once there is a fair amount of work per region.
 constexpr size_t kConvRowsPerThread = 4096;
 
 size_t output_size(size_t in_size, size_t kernel, size_t stride, size_t padding) {
@@ -72,9 +72,9 @@ Tensor im2col(const Tensor& input, const Window2d& window) {
 
     Tensor cols({N * oH * oW, K}, 0.0f, false);
 
-    // Primero se ofrece al dispositivo. Si se hace cargo, las columnas se quedan
-    // arriba y el producto que viene detrás las lee sin que crucen el PCIe: son
-    // kH*kW veces la entrada, así que subirlas cuesta más que multiplicarlas.
+    // It is offered to the device first. If the device takes it, the columns stay
+    // up there and the product behind reads them without crossing PCIe: they are
+    // kH*kW times the input, so uploading them costs more than multiplying them.
     if (cuda::ops::im2col(input.get_impl()->storage, cols.get_impl()->storage,
                           {N, C, H, W, kH, kW, window.stride, window.padding, oH, oW})) {
         return cols;
@@ -83,8 +83,8 @@ Tensor im2col(const Tensor& input, const Window2d& window) {
     const std::vector<float>& src = input.data();
     std::vector<float>& dst = cols.data();
 
-    // Cada fila de salida la escribe una única iteración, así que repartir por
-    // filas no crea ninguna carrera.
+    // A single iteration writes each output row, so splitting by rows creates no
+    // race.
     parallel::parallel_for(N * oH * oW, kConvRowsPerThread, [&](size_t from, size_t to) {
     for (size_t row = from; row < to; ++row) {
         {
@@ -94,7 +94,7 @@ Tensor im2col(const Tensor& input, const Window2d& window) {
                 const size_t ow = row % oW;
                 for (size_t c = 0; c < C; ++c) {
                     for (size_t i = 0; i < kH; ++i) {
-                        // Coordenada en la imagen sin relleno; puede quedar fuera
+                        // Coordinate in the unpadded image; it may fall outside
                         const long long h = static_cast<long long>(oh * window.stride + i) -
                                             static_cast<long long>(window.padding);
                         if (h < 0 || static_cast<size_t>(h) >= H) continue;
@@ -149,9 +149,9 @@ Tensor col2im(const Tensor& cols, const std::vector<size_t>& input_shape, const 
     const std::vector<float>& src = cols.data();
     std::vector<float>& dst = out.data();
 
-    // Aquí NO se puede repartir por filas: dos ventanas solapadas acumulan en
-    // el mismo píxel. Se reparte por imagen del lote, que son regiones
-    // disjuntas de la salida.
+    // Splitting by rows is NOT possible here: two overlapping windows accumulate
+    // into the same pixel. The split is by batch image, which are disjoint regions
+    // of the output.
     parallel::parallel_for(N, 1, [&](size_t n_from, size_t n_to) {
     for (size_t n = n_from; n < n_to; ++n) {
         for (size_t oh = 0; oh < oH; ++oh) {
@@ -169,9 +169,9 @@ Tensor col2im(const Tensor& cols, const std::vector<size_t>& input_shape, const 
                             if (w < 0 || static_cast<size_t>(w) >= W) continue;
 
                             const size_t k = (c * kH + i) * kW + j;
-                            // Suma, no asignación: con stride < kernel las
-                            // ventanas se solapan y varias filas contribuyen
-                            // al mismo píxel.
+                            // Add, do not assign: with stride < kernel the
+                            // windows overlap and several rows contribute
+                            // to the same pixel.
                             dst[((n * C + c) * H + static_cast<size_t>(h)) * W +
                                 static_cast<size_t>(w)] += src[row * K + k];
                         }
@@ -190,15 +190,15 @@ Tensor col2im(const Tensor& cols, const std::vector<size_t>& input_shape, const 
 
 namespace {
 
-// im2col con su nodo de autograd colgado.
+// im2col with its autograd node attached.
 //
-// Es la única derivada de esta capa que sigue escrita a mano, y cabe en una
-// línea porque su adjunto ya existía: col2im reparte el gradiente de cada
-// ventana a los píxeles que la formaron y suma los solapes, que es exactamente
-// lo que la hace correcta.
+// It is the only derivative in this layer still written by hand, and it fits on
+// one line because its adjoint already existed: col2im scatters each window's
+// gradient back to the pixels that formed it and sums the overlaps, which is
+// exactly what makes it correct.
 //
-// La función pública im2col() se queda como está: las pruebas la usan suelta y
-// no tiene por qué construir grafo.
+// The public im2col() stays as it is: the tests use it on its own and it has no
+// reason to build a graph.
 Tensor im2col_node(const Tensor& input, const Window2d& window) {
     Tensor cols = im2col(input, window);
     if (!autograd::grad_enabled() || !input.requires_grad()) return cols;
@@ -227,8 +227,8 @@ Conv2d::Conv2d(size_t in_channels, size_t out_channels, const Window2d& window, 
         throw std::invalid_argument("Conv2d requiere un kernel y un paso mayores que cero.");
     }
 
-    // Xavier/Glorot con los abanicos de una convolución:
-    // fan_in = C*kH*kW (entradas por neurona), fan_out = outC*kH*kW.
+    // Xavier/Glorot with a convolution's fans:
+    // fan_in = C*kH*kW (inputs per neuron), fan_out = outC*kH*kW.
     const size_t receptive = window_.kernel_h * window_.kernel_w;
     const float fan_in = static_cast<float>(in_channels * receptive);
     const float fan_out = static_cast<float>(out_channels * receptive);
@@ -258,40 +258,40 @@ Tensor Conv2d::forward(const Tensor& input) {
     const size_t spatial = oH * oW;
     const size_t K = in_channels_ * window_.kernel_h * window_.kernel_w;
 
-    // im2col reduce la convolución a un producto matricial, y a partir de ahí
-    // no hay nada que escribir a mano: cada operación de las de abajo trae su
-    // propia derivada y su propio kernel, así que la convolución entera —ida y
-    // vuelta— se va a la GPU y el paso hacia atrás lo deduce autograd.
+    // im2col reduces the convolution to a matrix product, and from there nothing
+    // has to be written by hand: every operation below carries its own derivative
+    // and its own kernel, so the whole convolution -- forward and backward -- goes
+    // to the GPU and autograd derives the backward pass.
     //
-    // Antes esto llevaba un producto y un backward_fn propios, con dos pasadas
-    // paralelas sobre ejes disjuntos para no tener carreras. Funcionaba, pero
-    // por no pasar por Tensor::matmul el backend no lo veía nunca: el motor
-    // tenía cuatro kernels de producto afinados y las convoluciones no tocaban
-    // ninguno. Es lo que hacía que MNIST no ganara nada con la tarjeta.
+    // This used to carry a product and a backward_fn of its own, with two parallel
+    // passes over disjoint axes to avoid races. It worked, but by not going through
+    // Tensor::matmul the backend never saw it: the engine had four tuned product
+    // kernels and the convolutions touched none of them. That is what made MNIST
+    // gain nothing from the card.
     //
-    // Hay un compromiso que esto invierte, y conviene decirlo en vez de dejar
-    // que se descubra: la versión anterior NO guardaba las columnas para el
-    // backward —ocupan kH*kW veces la entrada— y las recalculaba con un segundo
-    // im2col, cambiando un 5% de tiempo por un orden de magnitud de memoria. El
-    // backward de matmul captura `cols`, así que ahora sí quedan vivas entre la
-    // ida y la vuelta. Es inevitable al componer en lugar de fusionar a mano, y
-    // es lo que hace cualquier framework cuando compone; a cambio desaparece el
-    // backward propio entero y la capa entra en la GPU.
+    // There is a trade-off this reverses, and it is worth saying so rather than
+    // letting it be discovered: the previous version did NOT keep the columns for
+    // the backward -- they take kH*kW times the input -- and recomputed them with a
+    // second im2col, trading 5% of time for an order of magnitude of memory.
+    // matmul's backward captures `cols`, so now they do stay live between the
+    // forward and the backward. It is unavoidable when composing rather than fusing
+    // by hand, and it is what every framework does when it composes; in exchange the
+    // whole hand-written backward disappears and the layer reaches the GPU.
     Tensor cols = im2col_node(input, window_);   // (N*oH*oW, K)
 
-    // weight_ ya guarda outC filas contiguas de K valores, así que verlo como
-    // (outC, K) es reinterpretarlo y no reordenarlo; la transposición es la que
-    // lo deja en (K, outC) para multiplicar por la derecha.
+    // weight_ already stores outC contiguous rows of K values, so viewing it as
+    // (outC, K) reinterprets rather than reorders it; the transpose is what leaves
+    // it as (K, outC) to multiply from the right.
     Tensor out = cols.matmul(weight_.reshape({out_channels_, K}).transpose());
     if (use_bias_) out = out + bias_;  // difusión del vector de canales por fila
 
-    // El producto sale ordenado (N, oH*oW, outC) y la capa devuelve
-    // (N, outC, oH, oW): intercambiar los dos últimos ejes es todo lo que falta.
+    // The product comes out ordered (N, oH*oW, outC) and the layer returns
+    // (N, outC, oH, oW): swapping the last two axes is all that is left.
     //
-    // permute({0,2,1}) y no transpose(), aunque sobre un tensor 3D hagan lo
-    // mismo y transpose tenga bucle propio: medido, transpose sale un 5% peor
-    // aquí. Escribe con paso y lee contiguo, y a este tamaño mandan los accesos
-    // a memoria, no la aritmética de índices que permute hace por elemento.
+    // permute({0,2,1}) rather than transpose(), even though on a 3D tensor they do
+    // the same and transpose has a loop of its own: measured, transpose comes out 5%
+    // worse here. It writes with a stride and reads contiguously, and at this size
+    // memory access rules, not the per-element index arithmetic permute does.
     return out.reshape({N, spatial, out_channels_})
               .permute({0, 2, 1})
               .reshape({N, out_channels_, oH, oW});
@@ -314,8 +314,8 @@ std::string Conv2d::name() const {
 // ---------------------------------------------------------
 
 MaxPool2d::MaxPool2d(const Window2d& window) : window_(window) {
-    // Con relleno >= kernel habría ventanas enteramente dentro de la zona
-    // rellenada, sin ningún valor real que maximizar: la salida sería -infinito.
+    // With padding >= kernel there would be windows entirely inside the padded
+    // region, with no real value to maximise: the output would be -infinity.
     if (window_.padding >= window_.kernel_h || window_.padding >= window_.kernel_w) {
         throw std::invalid_argument(
             "MaxPool2d requiere un relleno menor que el kernel; con " +
@@ -341,13 +341,13 @@ Tensor MaxPool2d::forward(const Tensor& input) {
     const size_t oW = window_.out_w(W);
 
     Tensor out({N, C, oH, oW}, 0.0f, false);
-    // Posición ganadora de cada ventana, en índices planos de la entrada: es lo
-    // único que hace falta guardar para la propagación hacia atrás.
+    // The winning position of each window, in flat input indices: it is the only
+    // thing the backward pass needs saved.
     //
-    // Va en un Tensor y no en un vector<size_t> para que pueda quedarse en el
-    // dispositivo. Con el índice en host, esta capa cortaba la cadena justo
-    // entre las dos convoluciones y obligaba a bajar y volver a subir la salida
-    // entera de la primera.
+    // It goes in a Tensor rather than a vector<size_t> so it can stay on the
+    // device. With the index on the host this layer broke the chain right between
+    // the two convolutions and forced the first one's whole output down and back
+    // up again.
     Tensor argmax(out.shape(), 0.0f, false);
 
     const cuda::ops::WindowShape shape{N, C, H, W, window_.kernel_h, window_.kernel_w,
@@ -359,11 +359,11 @@ Tensor MaxPool2d::forward(const Tensor& input) {
         std::vector<float>& dst = out.data();
         float* am = argmax.data().data();
 
-        // Era la única operación de este fichero sin repartir, teniendo im2col y
-        // col2im paralelos justo encima. Cada plano (n, c) escribe su propio
-        // trozo de la salida y no lee nada de los demás, así que el reparto por
-        // planos no cruza ninguna frontera y da el mismo resultado con uno o con
-        // ocho hilos.
+        // It was the only operation in this file not split across threads, with im2col
+        // and col2im parallel right above it. Each (n, c) plane writes its own chunk
+        // of the output and reads nothing from the others, so splitting by plane
+        // crosses no boundary and gives the same result with one thread or with eight.
+        //
         const size_t planes = N * C;
         const size_t work_per_plane = oH * oW * window_.kernel_h * window_.kernel_w;
         const size_t planes_per_thread =
@@ -416,7 +416,7 @@ Tensor MaxPool2d::forward(const Tensor& input) {
 
     out.get_impl()->backward_fn =
         [input_copy, argmax, shape](const Tensor& grad_out) mutable {
-            // Solo el máximo influyó en la salida, así que solo él recibe gradiente.
+            // Only the maximum influenced the output, so only it receives gradient.
             Tensor dX(input_copy.shape(), 0.0f, false);
             if (!cuda::ops::maxpool_backward(argmax.get_impl()->storage,
                                              grad_out.get_impl()->storage,
@@ -424,8 +424,8 @@ Tensor MaxPool2d::forward(const Tensor& input) {
                 const float* ENGINE_RESTRICT a = argmax.data().data();
                 const float* ENGINE_RESTRICT g = grad_out.data().data();
                 float* ENGINE_RESTRICT d = dX.data().data();
-                // El += es necesario: con paso menor que el kernel dos ventanas
-                // solapadas pueden haber elegido el mismo píxel.
+                // The += is necessary: with a stride smaller than the kernel, two
+                // overlapping windows may have chosen the same pixel.
                 for (size_t i = 0; i < argmax.size(); ++i) {
                     d[static_cast<size_t>(a[i])] += g[i];
                 }
@@ -454,7 +454,7 @@ Tensor Flatten::forward(const Tensor& input) {
     if (N == 0) {
         throw std::invalid_argument("Flatten recibió un lote vacío.");
     }
-    // reshape ya lleva su propia derivada, así que Flatten no necesita nodo propio.
+    // reshape already carries its own derivative, so Flatten needs no node.
     return input.reshape({N, input.size() / N});
 }
 

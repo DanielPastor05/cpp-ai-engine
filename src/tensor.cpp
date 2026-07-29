@@ -14,7 +14,7 @@
 namespace engine {
 
 // ---------------------------------------------------------
-// Generador aleatorio global
+// Global random generator
 // ---------------------------------------------------------
 
 std::mt19937& global_rng() {
@@ -28,25 +28,25 @@ void manual_seed(uint64_t seed) {
 
 namespace {
 
-// El grafo solo se construye si el tensor lo pide y el modo autograd está
-// activo (durante el backward y dentro de los optimizadores está desactivado).
-// Umbrales de reparto, calibrados con el coste medido de despachar una región
-// paralela: unos 8 us con cuatro hilos en esta máquina. Por debajo de unos
-// 100 us de trabajo, repartir sale más caro que calcular.
+// The graph is only built if the tensor asks for it and autograd mode is on
+// (during backward and inside the optimisers it is off).
+// Split thresholds, calibrated against the measured cost of dispatching a
+// parallel region: about 8 us on four threads on this machine. Below roughly
+// 100 us of work, splitting costs more than computing.
 //
-// El primer intento usó umbrales diez veces menores y los ejemplos se volvieron
-// más LENTOS: el del Transformer pasó de 15,9 s a 22,6 s, porque encadena
-// muchos productos pequeños y cada uno pagaba la sincronización sin ganar nada.
+// The first attempt used thresholds ten times lower and the examples got
+// SLOWER: the Transformer one went from 15.9 s to 22.6 s, because it chains
+// many small products and each paid for synchronisation without gaining.
 
-// Un producto de 1M de multiplicaciones y sumas son unos 130 us a 15 GFLOP/s.
+// A product of 1M multiply-adds is about 130 us at 15 GFLOP/s.
 constexpr size_t kMatmulParallelFloor = 1u << 20;
-// Trozos de ~65k operaciones: bastantes para que el reparto dinámico equilibre,
-// sin que el coste de pedir el siguiente trozo pese.
+// Chunks of ~65k operations: enough for the dynamic split to balance, without
+// the cost of asking for the next chunk weighing in.
 constexpr size_t kMatmulChunkWork = 1u << 16;
 
 using parallel::kElementsPerThread;
 
-// Devuelve 0 —«ejecuta en línea»— cuando el producto no da para repartir.
+// Returns 0 -- "run inline" -- when the product is too small to split.
 inline size_t matmul_rows_per_thread(size_t rows, size_t K, size_t N) {
     const size_t per_row = std::max<size_t>(1, K * N);
     if (rows * per_row < kMatmulParallelFloor) return 0;
@@ -64,13 +64,13 @@ size_t product(const std::vector<size_t>& dims, size_t from = 0, size_t to = 0) 
     return total;
 }
 
-// Difusión por sufijo: `other` se difunde sobre `base` si, tras descartar sus
-// unos iniciales, su forma es un sufijo de la de `base`. Cubre el sesgo de una
-// capa densa (1, N) sobre (M, N), la codificación posicional (S, D) sobre
-// (B, S, D) y la máscara (S, S) sobre (B, H, S, S).
+// Suffix broadcasting: `other` broadcasts over `base` if, after dropping its
+// leading ones, its shape is a suffix of `base`'s. It covers a dense layer's
+// bias (1, N) over (M, N), the positional encoding (S, D) over (B, S, D) and
+// the mask (S, S) over (B, H, S, S).
 //
-// Como el tensor es contiguo en orden C, la difusión sobre los ejes iniciales
-// se reduce a repetir el bloque final: base[i] + other[i % inner].
+// Because the tensor is contiguous in C order, broadcasting over the leading
+// axes reduces to repeating the final block: base[i] + other[i % inner].
 struct BroadcastPlan {
     bool valid = false;
     size_t inner = 1;   // tamaño del bloque que se repite
@@ -93,20 +93,20 @@ BroadcastPlan plan_broadcast(const std::vector<size_t>& base, const std::vector<
 
     plan.valid = true;
     plan.inner = product(base, offset);
-    // El número de repeticiones se deduce del total, no de un producto parcial:
-    // con offset == 0 (mismo rango tras descartar unos iniciales) un producto
-    // sobre el rango vacío se confundiría con el producto completo.
+    // The repetition count is derived from the total, not from a partial product:
+    // with offset == 0 (same rank after dropping leading ones) a product over the
+    // empty range would be mistaken for the full product.
     plan.repeat = (plan.inner == 0) ? 0 : product(base) / plan.inner;
     return plan;
 }
 
-// Materializa el operando difundido con la forma de la base. Solo se usa en
-// las derivadas, donde tener ambas formas iguales simplifica las fórmulas.
+// Materialises the broadcast operand at the base's shape. Only used in the
+// derivatives, where having both shapes equal simplifies the formulas.
 Tensor expand_operand(const Tensor& other, const std::vector<size_t>& base_shape,
                       size_t total, size_t inner) {
-    // Los accesores se izan fuera del bucle: data() no es un puntero, es la
-    // puerta al lado host, y llamarla por elemento comprueba la validez del
-    // espejo del dispositivo una vez por valor copiado.
+    // The accessors are hoisted out of the loop: data() is not a pointer, it is
+    // the door to the host side, and calling it per element checks the device
+    // mirror's validity once per value copied.
     Tensor full(base_shape, 0.0f, false);
     const float* ENGINE_RESTRICT src = other.data().data();
     float* ENGINE_RESTRICT dst = full.data().data();
@@ -114,9 +114,9 @@ Tensor expand_operand(const Tensor& other, const std::vector<size_t>& base_shape
     return full;
 }
 
-// Suma los ejes iniciales de `full` hasta dejar la forma `target`. Es el
-// adjunto de difundir un operando sobre un lote, y lo usan tanto la suma
-// difundida como el matmul con un operando compartido.
+// Sums the leading axes of `full` down to the shape `target`. It is the adjoint
+// of broadcasting an operand over a batch, used both by the broadcast addition
+// and by matmul with a shared operand.
 Tensor fold_leading(const Tensor& full, const std::vector<size_t>& target) {
     const size_t inner = product(target);
     const size_t repeat = full.size() / inner;
@@ -132,13 +132,13 @@ Tensor fold_leading(const Tensor& full, const std::vector<size_t>& target) {
     return folded;
 }
 
-// Un tensor nuevo con los mismos valores, otra forma y sin historial.
+// A new tensor with the same values, a different shape and no history.
 //
-// La diferencia con Tensor(shape, data(), ...) es que ese data() **es una
-// bajada a host**: el búfer se copia igual, pero pasando por el PCIe dos veces
-// si el tensor vivía en la GPU. clone() copia conservando el lado en el que
-// está. Lo usan reshape() y detach(), que son justo las dos que se aplican a
-// salidas recién calculadas por un kernel.
+// The difference from Tensor(shape, data(), ...) is that this data() **is a
+// trip down to host**: the buffer is copied either way, but crossing PCIe twice
+// if the tensor lived on the GPU. clone() copies keeping the side it is on.
+// reshape() and detach() use it, and those are exactly the two applied to
+// outputs a kernel has just computed.
 Tensor clone_with_shape(const Storage& src, const std::vector<size_t>& shape, bool req_grad) {
     auto impl = std::make_shared<TensorImpl>();
     impl->storage = src.clone();
@@ -148,13 +148,13 @@ Tensor clone_with_shape(const Storage& src, const std::vector<size_t>& shape, bo
     return Tensor::from_impl(impl);
 }
 
-// Ofrece la operación al backend CUDA. Devuelve true si la GPU se hizo cargo;
-// false significa «no hay dispositivo» o «a este tamaño no compensa», y el
-// llamante sigue por el camino de CPU. Sin CUDA la llamada es una función que
-// devuelve false y el enlazador la elimina.
+// Offers the operation to the CUDA backend. Returns true if the GPU took it;
+// false means "no device" or "not worth it at this size", and the caller
+// carries on down the CPU path. Without CUDA the call is a function returning
+// false and the linker removes it.
 //
-// Traducción de la difusión: el operando derecho tiene `inner` elementos que se
-// repiten `repeat` veces, exactamente el mismo plan que usa el bucle de CPU.
+// Translating the broadcast: the right operand has `inner` elements repeated
+// `repeat` times, exactly the plan the CPU loop uses.
 bool offer_to_device(cuda::ops::Binary op, const Tensor& a, const Tensor& b, Tensor& out,
                      bool broadcast, const BroadcastPlan& plan) {
     const size_t inner = broadcast ? plan.inner : a.size();
@@ -166,7 +166,7 @@ bool offer_to_device(cuda::ops::Binary op, const Tensor& a, const Tensor& b, Ten
 } // namespace
 
 // ---------------------------------------------------------
-// Implementación de TensorImpl
+// TensorImpl implementation
 // ---------------------------------------------------------
 
 TensorImpl::TensorImpl(const std::vector<size_t>& s, float fill_val, bool req_grad)
@@ -212,7 +212,7 @@ size_t TensorImpl::get_flat_index(const std::vector<size_t>& indices) const {
 }
 
 // ---------------------------------------------------------
-// Implementación de la clase wrapper Tensor
+// The Tensor wrapper class
 // ---------------------------------------------------------
 
 Tensor::Tensor()
@@ -234,7 +234,7 @@ Tensor Tensor::from_impl(std::shared_ptr<TensorImpl> impl) {
     return Tensor(std::move(impl));
 }
 
-// Métodos estáticos de fábrica
+// Factory methods
 Tensor Tensor::zeros(const std::vector<size_t>& shape, bool requires_grad) {
     return Tensor(shape, 0.0f, requires_grad);
 }
@@ -261,7 +261,7 @@ Tensor Tensor::randn(const std::vector<size_t>& shape, float mean, float stddev,
     return t;
 }
 
-// Métodos Autograd y Gradientes
+// Autograd and gradients
 bool Tensor::requires_grad() const {
     return impl_->requires_grad;
 }
@@ -282,11 +282,11 @@ bool Tensor::has_grad() const {
 }
 
 void Tensor::zero_grad() {
-    // assign() y no host_mut() + fill(): host_mut() sincroniza, o sea que se
-    // baja del dispositivo un gradiente que sólo vamos a machacar con ceros, una
-    // vez por parámetro y por paso. assign() marca host como bueno y dispositivo
-    // como obsoleto sin copiar nada, y conserva la reserva de GPU porque el
-    // tamaño no cambia.
+    // assign() rather than host_mut() + fill(): host_mut() synchronises, which
+    // pulls a gradient off the device only to overwrite it with zeros, once per
+    // parameter per step. assign() marks host valid and device stale without
+    // copying anything, and keeps the GPU allocation because the size does not
+    // change.
     if (impl_->grad) {
         impl_->grad->storage.assign(impl_->grad->storage.size(), 0.0f);
     }
@@ -298,28 +298,28 @@ void Tensor::add_grad(const Tensor& g) {
         throw std::invalid_argument("Forma del gradiente " + g.shape_str() +
                                     " incompatible con la del tensor " + shape_str() + ".");
     }
-    // Aquí se decidía toda la residencia del backward sin querer. Construir el
-    // gradiente desde g.data() lo bajaba del dispositivo, y autograd se lo pasa
-    // tal cual al siguiente backward_fn, que tenía que volver a subirlo: ni un
-    // solo nodo se quedaba en GPU, daba igual el tamaño y daban igual los
-    // umbrales. El forward lleva esta invariante bien resuelta desde la Fase 6;
-    // esto es aplicarle al gradiente la misma.
+    // This is where the backward's whole residency was being decided by accident.
+    // Building the gradient from g.data() pulled it off the device, and autograd
+    // hands it straight to the next backward_fn, which had to upload it again: not
+    // one node stayed on the GPU, whatever the size and whatever the thresholds.
+    // The forward has had this invariant right since Phase 6; this applies the same
+    // one to the gradient.
     //
-    // La rama que importa es la primera escritura, no el +=: autograd descarta
-    // el gradiente de los nodos intermedios antes del recorrido y lo libera en
-    // cuanto se consume, así que un nodo con un solo consumidor —el caso
-    // normal— entra siempre por aquí y nunca por la acumulación.
+    // The branch that matters is the first write, not the +=: autograd discards
+    // intermediate nodes' gradients before the traversal and frees them as soon as
+    // they are consumed, so a node with a single consumer -- the normal case --
+    // always comes through here and never through the accumulation.
     const bool initialize = !impl_->grad;
-    // A ceros para que el camino de CPU sea un único bucle: sobre ceros, sumar
-    // es asignar. Copiar el Storage de g no valdría de atajo, porque su
-    // constructor de copia se lleva sólo el lado host y para eso sincroniza:
-    // sería exactamente la bajada que estamos quitando.
+    // Zeroed so the CPU path is a single loop: over zeros, adding is assigning.
+    // Copying g's Storage would not do as a shortcut, because its copy constructor
+    // takes only the host side and synchronises to do so: that would be exactly the
+    // download being removed here.
     if (initialize) impl_->grad = std::make_shared<TensorImpl>(shape(), 0.0f, false);
 
     Storage& acc = impl_->grad->storage;
     if (!cuda::ops::accumulate_grad(acc, g.get_impl()->storage, initialize)) {
-        // g.data() se queda dentro del if a propósito: fuera, la bajada volvería
-        // por la puerta de atrás en el camino que sí acelera el dispositivo.
+        // g.data() stays inside the if deliberately: outside, the download would come
+        // back in through the back door on the path the device does accelerate.
         std::vector<float>& dst = acc.host_mut();
         const float* ENGINE_RESTRICT src = g.data().data();
         float* ENGINE_RESTRICT out = dst.data();
@@ -342,7 +342,7 @@ void Tensor::backward(const Tensor& grad_output) {
     autograd::backward(*this);
 }
 
-// Accessors y propiedades
+// Accessors and properties
 size_t Tensor::get_flat_index(const std::vector<size_t>& indices) const {
     return impl_->get_flat_index(indices);
 }
@@ -381,9 +381,9 @@ const float& Tensor::at(size_t flat_index) const {
 
 const std::vector<size_t>& Tensor::shape() const { return impl_->shape; }
 const std::vector<size_t>& Tensor::strides() const { return impl_->strides; }
-// data() es la puerta al lado host. La sobrecarga mutable marca de paso el
-// espejo del dispositivo como obsoleto, que es lo que mantiene coherentes las
-// dos copias sin que ninguna operación tenga que acordarse de hacerlo.
+// data() is the door to the host side. The mutable overload also marks the
+// device mirror stale, which is what keeps the two copies coherent without any
+// operation having to remember to do it.
 const std::vector<float>& Tensor::data() const { return impl_->storage.host(); }
 std::vector<float>& Tensor::data() { return impl_->storage.host_mut(); }
 size_t Tensor::size() const { return impl_->storage.size(); }
@@ -399,21 +399,21 @@ std::string Tensor::shape_str() const {
 }
 
 Tensor Tensor::detach() const {
-    // Aquí es donde se guarda la salida que el paso hacia atrás va a necesitar
-    // —el jacobiano del softmax depende de ella—, así que pasaba una vez por
-    // host por cada softmax del modelo aunque el tensor fuera a quedarse arriba.
+    // This is where the output the backward pass will need gets saved -- softmax's
+    // Jacobian depends on it -- so it went through host once per softmax in the
+    // model even when the tensor was going to stay up there.
     return clone_with_shape(impl_->storage, shape(), false);
 }
 
 // ---------------------------------------------------------
-// Operadores Matemáticos con Registro Autograd
+// Arithmetic operators, with autograd registration
 //
-// Todas las lambdas reciben el gradiente de salida (grad_out) como parámetro
-// y solo capturan los tensores de entrada, nunca el resultado: capturar el
-// resultado formaría un ciclo de shared_ptr y el grafo nunca se liberaría.
+// Every lambda takes the output gradient (grad_out) as a parameter and captures
+// only the input tensors, never the result: capturing the result would form a
+// shared_ptr cycle and the graph would never be freed.
 // ---------------------------------------------------------
 
-// Suma de tensores, con difusión por sufijo del operando derecho
+// Tensor addition, broadcasting the right operand by suffix
 Tensor Tensor::operator+(const Tensor& other) const {
     const bool broadcast = shape() != other.shape();
     BroadcastPlan plan;
@@ -429,8 +429,8 @@ Tensor Tensor::operator+(const Tensor& other) const {
     Tensor res(shape(), 0.0f, req_g);
 
     if (!offer_to_device(cuda::ops::Binary::Add, *this, other, res, broadcast, plan)) {
-        // Los accesores se izan fuera del bucle: llamarlos por elemento impide
-        // que el compilador vectorice.
+        // The accessors are hoisted out of the loop: calling them per element stops
+        // the compiler from vectorising.
         const size_t n = size();
         const float* ENGINE_RESTRICT lhs = data().data();
         const float* ENGINE_RESTRICT rhs = other.data().data();
@@ -440,8 +440,8 @@ Tensor Tensor::operator+(const Tensor& other) const {
                 for (size_t i = from; i < to; ++i) out[i] = lhs[i] + rhs[i];
             });
         } else {
-            // Por bloques en lugar de con un módulo por elemento: el operando
-            // difundido se repite tal cual, y así el bucle interno vectoriza.
+            // By blocks rather than with a modulo per element: the broadcast operand
+            // repeats verbatim, so the inner loop vectorises.
             const size_t inner = plan.inner;
             for (size_t r = 0; r < plan.repeat; ++r) {
                 const float* ENGINE_RESTRICT l = lhs + r * inner;
@@ -462,8 +462,8 @@ Tensor Tensor::operator+(const Tensor& other) const {
             if (!broadcast) {
                 other_copy.add_grad(grad_out);
             } else {
-                // El operando difundido se repitió `repeat` veces, así que su
-                // gradiente es la suma de todas esas copias.
+                // The broadcast operand was repeated `repeat` times, so its gradient
+                // is the sum of all those copies.
                 Tensor db(other_copy.shape(), 0.0f, false);
                 for (size_t r = 0; r < plan.repeat; ++r) {
                     for (size_t j = 0; j < plan.inner; ++j) {
@@ -477,7 +477,7 @@ Tensor Tensor::operator+(const Tensor& other) const {
     return res;
 }
 
-// Resta de tensores, con difusión del operando derecho
+// Tensor subtraction, broadcasting the right operand
 Tensor Tensor::operator-(const Tensor& other) const {
     const bool broadcast = shape() != other.shape();
     BroadcastPlan plan;
@@ -502,8 +502,8 @@ Tensor Tensor::operator-(const Tensor& other) const {
                 for (size_t i = from; i < to; ++i) out[i] = lhs[i] - rhs[i];
             });
         } else {
-            // Por bloques en lugar de con un módulo por elemento: el operando
-            // difundido se repite tal cual, y así el bucle interno vectoriza.
+            // By blocks rather than with a modulo per element: the broadcast operand
+            // repeats verbatim, so the inner loop vectorises.
             const size_t inner = plan.inner;
             for (size_t r = 0; r < plan.repeat; ++r) {
                 const float* ENGINE_RESTRICT l = lhs + r * inner;
@@ -522,9 +522,9 @@ Tensor Tensor::operator-(const Tensor& other) const {
             [self_copy, other_copy, broadcast](const Tensor& grad_out) mutable {
                 if (self_copy.requires_grad()) self_copy.add_grad(grad_out);
                 if (!other_copy.requires_grad()) return;
-                // El operando difundido recoge la suma de todas sus copias.
-                // La resta no necesita el plan: su derivada no depende de los
-                // valores del operando, solo de su forma.
+                // The broadcast operand collects the sum of all its copies.
+                // Subtraction does not need the plan: its derivative depends on the
+                // operand's shape, not its values.
                 Tensor d = grad_out * -1.0f;
                 other_copy.add_grad(broadcast ? fold_leading(d, other_copy.shape()) : d);
             };
@@ -532,7 +532,7 @@ Tensor Tensor::operator-(const Tensor& other) const {
     return res;
 }
 
-// Multiplicación elemento a elemento (Hadamard), con difusión del operando derecho
+// Element-wise (Hadamard) multiplication, broadcasting the right operand
 Tensor Tensor::operator*(const Tensor& other) const {
     const bool broadcast = shape() != other.shape();
     BroadcastPlan plan;
@@ -557,8 +557,8 @@ Tensor Tensor::operator*(const Tensor& other) const {
                 for (size_t i = from; i < to; ++i) out[i] = lhs[i] * rhs[i];
             });
         } else {
-            // Por bloques en lugar de con un módulo por elemento: el operando
-            // difundido se repite tal cual, y así el bucle interno vectoriza.
+            // By blocks rather than with a modulo per element: the broadcast operand
+            // repeats verbatim, so the inner loop vectorises.
             const size_t inner = plan.inner;
             for (size_t r = 0; r < plan.repeat; ++r) {
                 const float* ENGINE_RESTRICT l = lhs + r * inner;
@@ -588,7 +588,7 @@ Tensor Tensor::operator*(const Tensor& other) const {
     return res;
 }
 
-// División elemento a elemento, con difusión del operando derecho
+// Element-wise division, broadcasting the right operand
 Tensor Tensor::operator/(const Tensor& other) const {
     const bool broadcast = shape() != other.shape();
     BroadcastPlan plan;
@@ -613,8 +613,8 @@ Tensor Tensor::operator/(const Tensor& other) const {
                 for (size_t i = from; i < to; ++i) out[i] = lhs[i] / rhs[i];
             });
         } else {
-            // Por bloques en lugar de con un módulo por elemento: el operando
-            // difundido se repite tal cual, y así el bucle interno vectoriza.
+            // By blocks rather than with a modulo per element: the broadcast operand
+            // repeats verbatim, so the inner loop vectorises.
             const size_t inner = plan.inner;
             for (size_t r = 0; r < plan.repeat; ++r) {
                 const float* ENGINE_RESTRICT l = lhs + r * inner;
@@ -645,12 +645,12 @@ Tensor Tensor::operator/(const Tensor& other) const {
     return res;
 }
 
-// Suma con escalar
+// Scalar addition
 Tensor Tensor::operator+(float scalar) const {
     bool req_g = track(requires_grad());
     Tensor res(shape(), 0.0f, req_g);
-    // out = x * 1 + k. Los accesores se quedan dentro del else: llamarlos fuera
-    // bajaria el tensor a host justo en el camino que no lo necesita.
+    // out = x * 1 + k. The accessors stay inside the else: calling them outside
+    // would pull the tensor down to host on the very path that does not need it.
     if (!cuda::ops::scalar(impl_->storage, res.impl_->storage, 1.0f, scalar)) {
         const size_t n = size();
         const float* ENGINE_RESTRICT lhs = data().data();
@@ -667,17 +667,17 @@ Tensor Tensor::operator+(float scalar) const {
     return res;
 }
 
-// Resta con escalar
+// Scalar subtraction
 Tensor Tensor::operator-(float scalar) const {
     return (*this) + (-scalar);
 }
 
-// Multiplicación por escalar
+// Scalar multiplication
 Tensor Tensor::operator*(float scalar) const {
     bool req_g = track(requires_grad());
     Tensor res(shape(), 0.0f, req_g);
-    // out = x * k + 0. Es el escalado de la atencion, entre dos matmul que sí
-    // tienen kernel: sin este, la cadena bajaba a host justo en medio.
+    // out = x * k + 0. This is the attention scaling, between two matmuls that do
+    // have kernels: without it the chain went down to host right in the middle.
     if (!cuda::ops::scalar(impl_->storage, res.impl_->storage, scalar, 0.0f)) {
         const size_t n = size();
         const float* ENGINE_RESTRICT lhs = data().data();
@@ -694,7 +694,7 @@ Tensor Tensor::operator*(float scalar) const {
     return res;
 }
 
-// División por escalar
+// Scalar division
 Tensor Tensor::operator/(float scalar) const {
     if (scalar == 0.0f) {
         throw std::invalid_argument("División por cero.");
@@ -702,9 +702,9 @@ Tensor Tensor::operator/(float scalar) const {
     return (*this) * (1.0f / scalar);
 }
 
-// Transposición: intercambia los dos últimos ejes.
-// Para un tensor 2D es la transposición de toda la vida; para (B, ..., M, N)
-// transpone cada matriz del lote, que es lo que necesita la atención.
+// Transpose: swaps the last two axes.
+// For a 2D tensor it is the ordinary transpose; for (B, ..., M, N) it
+// transposes each matrix in the batch, which is what attention needs.
 Tensor Tensor::transpose() const {
     if (ndim() < 2) {
         throw std::invalid_argument("Transpose requiere al menos 2 dimensiones, este tensor es " +
@@ -721,9 +721,9 @@ Tensor Tensor::transpose() const {
     bool req_g = track(requires_grad());
     Tensor res(out_shape, 0.0f, req_g);
 
-    // Transponer es permutar intercambiando los dos ultimos ejes, asi que
-    // comparte kernel con permute(): los strides de la entrada leidos en el
-    // orden de la salida son toda la diferencia entre las dos operaciones.
+    // Transposing is permuting with the last two axes swapped, so it shares a
+    // kernel with permute(): the input strides read in the output's order are the
+    // whole difference between the two operations.
     std::vector<size_t> src_strides = strides();
     std::swap(src_strides[nd - 2], src_strides[nd - 1]);
 
@@ -731,9 +731,9 @@ Tensor Tensor::transpose() const {
                             out_shape.data(), src_strides.data(), nd)) {
         const float* ENGINE_RESTRICT src_base = data().data();
         float* ENGINE_RESTRICT dst_base = res.data().data();
-        // Se reparte por fila de origen: cada una escribe una columna entera del
-        // destino, y ninguna toca lo de las demás. El umbral se cuenta en filas
-        // porque el trabajo de cada una son sus `cols` elementos.
+        // Split by source row: each writes one whole column of the destination and
+        // none touches another's. The threshold is counted in rows because each row's
+        // work is its `cols` elements.
         const size_t rows_per_thread =
             std::max<size_t>(1, kElementsPerThread / std::max<size_t>(1, cols));
         parallel::parallel_for(batch * rows, rows_per_thread, [&](size_t from, size_t to) {
@@ -757,9 +757,9 @@ Tensor Tensor::transpose() const {
     return res;
 }
 
-// Permutación general de ejes: order[i] indica qué eje de la entrada pasa a
-// ocupar la posición i. Es lo que reordena (B, S, H, d) a (B, H, S, d) para
-// que cada cabeza de atención opere sobre su propia secuencia.
+// General axis permutation: order[i] says which input axis moves into position
+// i. It is what reorders (B, S, H, d) into (B, H, S, d) so that each attention
+// head operates on its own sequence.
 Tensor Tensor::permute(const std::vector<size_t>& order) const {
     const size_t nd = ndim();
     if (order.size() != nd) {
@@ -780,7 +780,7 @@ Tensor Tensor::permute(const std::vector<size_t>& order) const {
     bool req_g = track(requires_grad());
     Tensor res(out_shape, 0.0f, req_g);
 
-    // Strides del tensor de salida expresados sobre la memoria de la entrada
+    // The output tensor's strides expressed over the input's memory
     std::vector<size_t> src_strides(nd);
     for (size_t i = 0; i < nd; ++i) src_strides[i] = strides()[order[i]];
 
@@ -788,14 +788,14 @@ Tensor Tensor::permute(const std::vector<size_t>& order) const {
                             out_shape.data(), src_strides.data(), nd)) {
         const float* ENGINE_RESTRICT src_data = data().data();
         float* ENGINE_RESTRICT dst_data = res.data().data();
-        // El contador con acarreo es barato por elemento pero encadena cada uno
-        // con el anterior, y esa dependencia es la que obligaba a recorrerlo en
-        // serie. Basta con sembrarlo: cada trozo calcula las coordenadas de su
-        // primer elemento —una división por eje, pagada una vez por trozo— y a
-        // partir de ahí sigue con el acarreo de siempre.
+        // The carry counter is cheap per element but chains each one to the previous,
+        // and that dependency is what forced a serial traversal. Seeding it is enough:
+        // each chunk computes the coordinates of its first element -- one division per
+        // axis, paid once per chunk -- and carries on with the usual carry from there.
         //
-        // No se notaba mientras permute era cosa de la atención, con tensores de
-        // unos miles de elementos. Conv2d permuta la salida entera de cada capa.
+        //
+        // It went unnoticed while permute was an attention concern, with tensors of a
+        // few thousand elements. Conv2d permutes each layer's entire output.
         parallel::parallel_for(size(), kElementsPerThread, [&](size_t from, size_t to) {
             std::vector<size_t> idx(nd, 0);
             size_t rem = from;
@@ -820,7 +820,7 @@ Tensor Tensor::permute(const std::vector<size_t>& order) const {
     if (req_g) {
         res.impl_->parents = { impl_ };
         Tensor self_copy = *this;
-        // La derivada es la permutación inversa
+        // The derivative is the inverse permutation
         std::vector<size_t> inverse(nd);
         for (size_t i = 0; i < nd; ++i) inverse[order[i]] = i;
 
@@ -831,7 +831,7 @@ Tensor Tensor::permute(const std::vector<size_t>& order) const {
     return res;
 }
 
-// Multiplicación matricial, con lotes sobre los ejes iniciales.
+// Matrix multiplication, batched over the leading axes.
 // (M, K) x (K, N) -> (M, N) y (B..., M, K) x (B..., K, N) -> (B..., M, N).
 Tensor Tensor::matmul(const Tensor& B) const {
     if (ndim() < 2 || B.ndim() < 2) {
@@ -843,8 +843,8 @@ Tensor Tensor::matmul(const Tensor& B) const {
     const std::vector<size_t> batch_a(shape().begin(), shape().end() - 2);
     const std::vector<size_t> batch_b(B.shape().begin(), B.shape().end() - 2);
 
-    // Un operando 2D se comparte con todas las matrices del lote del otro:
-    // (B, M, K) x (K, N) aplica la misma matriz a cada elemento del lote.
+    // A 2D operand is shared with every matrix in the other's batch:
+    // (B, M, K) x (K, N) applies the same matrix to each batch element.
     const bool a_batched = !batch_a.empty();
     const bool b_batched = !batch_b.empty();
     if (a_batched && b_batched && batch_a != batch_b) {
@@ -871,35 +871,35 @@ Tensor Tensor::matmul(const Tensor& B) const {
     bool req_g = track(requires_grad() || B.requires_grad());
     Tensor C(out_shape, 0.0f, req_g);
 
-    // Un operando no lotificado usa paso 0: se reutiliza en cada iteración
+    // An unbatched operand uses stride 0: it is reused on every iteration
     const size_t a_stride = a_batched ? M * K : 0;
     const size_t b_stride = b_batched ? K * N : 0;
 
-    // Primero se ofrece al dispositivo. Si se hace cargo, C se queda residente
-    // en la GPU y ni siquiera se baja a host: sólo la lectura de un valor
-    // desde el programa provoca la copia de vuelta.
+    // It is offered to the device first. If the device takes it, C stays resident
+    // on the GPU and never comes down to host: only reading a value from the
+    // program triggers the copy back.
     if (!cuda::ops::matmul(impl_->storage, B.impl_->storage, C.impl_->storage,
                            batch, M, K, N, a_batched, b_batched)) {
         const std::vector<float>& a_data = data();
         const std::vector<float>& b_data = B.data();
         std::vector<float>& c_data = C.data();
 
-        // Bucle en orden i -> k -> j: el recorrido de j es contiguo en memoria, de
-        // modo que la fila de B se lee y la de C se escribe secuencialmente.
+        // Loop ordered i -> k -> j: walking j is contiguous in memory, so B's row is
+        // read and C's is written sequentially.
         //
-        // Los punteros de fila se izan fuera del bucle interno y se marcan con
-        // ENGINE_RESTRICT: sin esa promesa de no solapamiento el compilador no
-        // puede vectorizar el acumulador.
+        // The row pointers are hoisted out of the inner loop and marked with
+        // ENGINE_RESTRICT: without that promise of no overlap the compiler cannot
+        // vectorise the accumulator.
         //
-        // La comprobación de a_ik == 0 sí compensa, aunque impida vectorizar esa
-        // rama. Sobre datos densos cuesta un 40%, pero las matrices que llegan
-        // aquí a menudo son salidas de ReLU con la mitad de los valores en cero
-        // exacto —la segunda capa densa de cada bloque Transformer, por ejemplo—
-        // y ahí se salta la mitad del trabajo. Medido de las dos formas sobre el
-        // ejemplo del Transformer: sin la rama 18,7 s, con ella 15,9 s.
-        // El reparto va por filas de la salida: cada fila la calcula un único hilo
-        // de principio a fin, así que el orden de acumulación no cambia y el
-        // resultado es idéntico bit a bit sea cual sea el número de hilos.
+        // The a_ik == 0 check does pay, even though it prevents vectorising that
+        // branch. On dense data it costs 40%, but the matrices arriving here are often
+        // ReLU outputs with half the values at exact zero -- the second dense layer of
+        // every Transformer block, for instance -- and there it skips half the work.
+        // Measured both ways on the Transformer example: without the branch 18.7 s,
+        // with it 15.9 s.
+        // The split goes by output row: each row is computed by a single thread from
+        // start to finish, so the accumulation order never changes and the result is
+        // identical bit for bit whatever the thread count.
         const size_t rows = batch * M;
         parallel::parallel_for(rows, matmul_rows_per_thread(rows, K, N),
                                [&](size_t from, size_t to) {
@@ -929,10 +929,10 @@ Tensor Tensor::matmul(const Tensor& B) const {
         Tensor B_copy = B;
 
         C.impl_->backward_fn = [self_copy, B_copy](const Tensor& grad_out) mutable {
-            // Las mismas formulas que en 2D, aplicadas a cada matriz del lote:
+            // The same formulas as in 2D, applied to each matrix in the batch:
             // dL/dA = dL/dC x B^T   y   dL/dB = A^T x dL/dC.
-            // Si un operando se compartió con todo el lote, su gradiente es la
-            // suma de las contribuciones de cada elemento.
+            // If an operand was shared with the whole batch, its gradient is the
+            // sum of each element's contribution.
             if (self_copy.requires_grad()) {
                 Tensor dA = grad_out.matmul(B_copy.transpose());
                 self_copy.add_grad(dA.shape() == self_copy.shape()
@@ -950,7 +950,7 @@ Tensor Tensor::matmul(const Tensor& B) const {
     return C;
 }
 
-// Función de activación ReLU
+// ReLU activation
 Tensor Tensor::relu() const {
     bool req_g = track(requires_grad());
     Tensor res(shape(), 0.0f, req_g);
@@ -982,13 +982,13 @@ Tensor Tensor::relu() const {
     return res;
 }
 
-// Softmax sobre el último eje (estable numéricamente: se resta el máximo).
+// Softmax over the last axis (numerically stable: the maximum is subtracted).
 Tensor Tensor::softmax() const {
     if (ndim() == 0 || size() == 0) {
         throw std::invalid_argument("Softmax necesita un tensor no vacio.");
     }
-    // Siempre normaliza sobre el ultimo eje: para (N, C) son las filas y para
-    // (B, H, S, S) son las puntuaciones de atencion de cada consulta.
+    // It always normalises over the last axis: for (N, C) those are the rows, and
+    // for (B, H, S, S) the attention scores of each query.
     const size_t cols = shape().back();
     const size_t rows = size() / cols;
 
@@ -1014,8 +1014,8 @@ Tensor Tensor::softmax() const {
     if (req_g) {
         res.impl_->parents = { impl_ };
         Tensor self_copy = *this;
-        // El jacobiano del softmax depende de la salida, así que se guarda una
-        // copia desligada del grafo (igual que hace PyTorch con save_for_backward).
+        // Softmax's Jacobian depends on its output, so a copy detached from the graph
+        // is saved (the same thing PyTorch does with save_for_backward).
         Tensor saved = res.detach();
 
         res.impl_->backward_fn = [self_copy, saved, rows, cols](const Tensor& grad_out) mutable {
@@ -1041,12 +1041,12 @@ Tensor Tensor::softmax() const {
     return res;
 }
 
-// Reducción Suma a un escalar {1}
+// Sum reduction to a {1} scalar
 Tensor Tensor::sum() const {
-    // El acumulador es double aunque los datos sean float, igual que en
-    // clip_grad_norm. Sumar un millon de valores en float pierde los bits bajos
-    // en cuanto el total crece frente a cada sumando, y de esta reduccion cuelga
-    // mean(), o sea mse_loss y el gradiente inicial de cualquier backward.
+    // The accumulator is double even though the data is float, as in
+    // clip_grad_norm. Summing a million values in float loses the low bits as soon
+    // as the total grows against each addend, and mean() hangs off this reduction,
+    // which means mse_loss and the initial gradient of every backward.
     double total = 0.0;
     for (float v : data()) total += v;
     bool req_g = track(requires_grad());
@@ -1064,7 +1064,7 @@ Tensor Tensor::sum() const {
     return res;
 }
 
-// Reducción Media a un escalar {1}
+// Mean reduction to a {1} scalar
 Tensor Tensor::mean() const {
     if (size() == 0) {
         throw std::invalid_argument("No se puede calcular la media de un tensor vacío.");
@@ -1082,14 +1082,14 @@ Tensor Tensor::reshape(const std::vector<size_t>& new_shape) const {
     }
     bool req_g = track(requires_grad());
 
-    // El tensor que se reinterpreta suele venir de un matmul y estar residente
-    // en la GPU —split_heads, en la atención, es exactamente eso—, así que
-    // construirlo desde data() costaba una bajada y la subida de la operación
-    // siguiente, dos veces por proyección.
+    // The tensor being reinterpreted usually comes from a matmul and is resident on
+    // the GPU -- split_heads, in attention, is exactly that -- so building it from
+    // data() cost one download plus the next operation's upload, twice per
+    // projection.
     //
-    // ponytail: sigue siendo una copia del búfer entero, no una vista. Quitarla
-    // del todo pide un Storage compartido con desplazamiento y forma propios, y
-    // eso toca el grafo de autograd; esto se lleva la parte cara sin ese cambio.
+    // ponytail: this is still a copy of the whole buffer, not a view. Removing it
+    // entirely needs a shared Storage with its own offset and shape, and that
+    // touches the autograd graph; this takes the expensive part without that change.
     Tensor res = clone_with_shape(impl_->storage, new_shape, req_g);
 
     if (req_g) {
@@ -1104,11 +1104,11 @@ Tensor Tensor::reshape(const std::vector<size_t>& new_shape) const {
 
 
 // ---------------------------------------------------------
-// Reducciones por eje
+// Reductions along an axis
 //
-// Un tensor contiguo se ve, respecto a un eje, como un bloque
-// (outer, axis_len, inner): outer son los ejes anteriores, inner los
-// posteriores. Con eso, reducir es recorrer axis_len para cada (outer, inner).
+// Relative to one axis, a contiguous tensor looks like an
+// (outer, axis_len, inner) block: outer is the axes before it, inner the ones
+// after. With that, reducing is walking axis_len for each (outer, inner).
 // ---------------------------------------------------------
 
 namespace {
@@ -1169,7 +1169,7 @@ Tensor Tensor::sum(size_t axis, bool keepdim) const {
         res.impl_->parents = { impl_ };
         Tensor self_copy = *this;
         res.impl_->backward_fn = [self_copy, v](const Tensor& grad_out) mutable {
-            // Cada elemento contribuyó una vez, así que recibe el gradiente entero
+            // Each element contributed once, so it receives the whole gradient
             Tensor dX(self_copy.shape(), 0.0f, false);
             for (size_t o = 0; o < v.outer; ++o) {
                 const float* g = grad_out.data().data() + o * v.inner;
@@ -1197,7 +1197,7 @@ Tensor Tensor::max(size_t axis, bool keepdim) const {
 
     bool req_g = track(requires_grad());
     Tensor res(reduced_shape(shape(), axis, keepdim), 0.0f, req_g);
-    // Posición ganadora de cada reducción, para repartir el gradiente
+    // The winning position of each reduction, for routing the gradient
     std::vector<size_t> argmax(res.size(), 0);
 
     for (size_t o = 0; o < v.outer; ++o) {
@@ -1217,7 +1217,7 @@ Tensor Tensor::max(size_t axis, bool keepdim) const {
         res.impl_->parents = { impl_ };
         Tensor self_copy = *this;
         res.impl_->backward_fn = [self_copy, argmax](const Tensor& grad_out) mutable {
-            // Solo el máximo influyó en la salida
+            // Only the maximum influenced the output
             Tensor dX(self_copy.shape(), 0.0f, false);
             for (size_t k = 0; k < argmax.size(); ++k) {
                 dX.data()[argmax[k]] += grad_out.data()[k];
@@ -1229,7 +1229,7 @@ Tensor Tensor::max(size_t axis, bool keepdim) const {
 }
 
 // ---------------------------------------------------------
-// Rebanado, concatenación y apilado
+// Slicing, concatenation and stacking
 // ---------------------------------------------------------
 
 Tensor Tensor::slice(size_t axis, size_t start, size_t count) const {
@@ -1258,7 +1258,7 @@ Tensor Tensor::slice(size_t axis, size_t start, size_t count) const {
         res.impl_->parents = { impl_ };
         Tensor self_copy = *this;
         res.impl_->backward_fn = [self_copy, v, start, count](const Tensor& grad_out) mutable {
-            // El gradiente vuelve a su hueco; el resto del tensor recibe cero
+            // The gradient goes back to its slot; the rest of the tensor gets zero
             Tensor dX(self_copy.shape(), 0.0f, false);
             for (size_t o = 0; o < v.outer; ++o) {
                 const float* g = grad_out.data().data() + o * count * v.inner;
@@ -1318,7 +1318,7 @@ Tensor Tensor::concat(const std::vector<Tensor>& parts, size_t axis) {
         res.impl_->parents = parents;
 
         res.impl_->backward_fn = [copies, axis, out_view](const Tensor& grad_out) mutable {
-            // Cada parte recibe la franja del gradiente que aportó
+            // Each part receives the band of the gradient it contributed
             size_t off = 0;
             for (Tensor& t : copies) {
                 const size_t len = t.shape()[axis];
@@ -1344,7 +1344,7 @@ Tensor Tensor::stack(const std::vector<Tensor>& parts, size_t axis) {
         throw std::out_of_range("stack: el eje " + std::to_string(axis) +
                                 " no cabe en un tensor " + parts[0].shape_str() + ".");
     }
-    // Apilar es concatenar tras insertar un eje de tamaño 1 en cada parte
+    // Stacking is concatenating after inserting a size-1 axis into each part
     std::vector<Tensor> expanded;
     expanded.reserve(parts.size());
     for (const Tensor& t : parts) {
@@ -1359,7 +1359,7 @@ Tensor Tensor::stack(const std::vector<Tensor>& parts, size_t axis) {
     return concat(expanded, axis);
 }
 
-// Selección de filas (recogida de un mini-lote)
+// Row selection (gathering a mini-batch)
 Tensor Tensor::select_rows(const std::vector<size_t>& indices) const {
     if (ndim() < 2) {
         throw std::invalid_argument("select_rows requiere al menos 2 dimensiones, este tensor es " +
@@ -1370,8 +1370,8 @@ Tensor Tensor::select_rows(const std::vector<size_t>& indices) const {
     }
 
     const size_t rows = shape()[0];
-    // Todo lo que hay tras el primer eje viaja junto: para (N, C, H, W) cada
-    // "fila" es una imagen completa de C*H*W valores contiguos.
+    // Everything after the first axis travels together: for (N, C, H, W) each
+    // "row" is a whole image of C*H*W contiguous values.
     const size_t row_size = (rows == 0) ? 0 : size() / rows;
 
     for (size_t idx : indices) {
@@ -1397,8 +1397,8 @@ Tensor Tensor::select_rows(const std::vector<size_t>& indices) const {
         std::vector<size_t> idx_copy = indices;
 
         res.impl_->backward_fn = [self_copy, idx_copy, row_size](const Tensor& grad_out) mutable {
-            // Dispersión inversa: cada fila devuelve su gradiente a la fila de
-            // origen. El += es necesario porque un índice puede repetirse.
+            // Inverse scatter: each row returns its gradient to the source row. The += is
+            // necessary because an index may repeat.
             Tensor dX(self_copy.shape(), 0.0f, false);
             for (size_t i = 0; i < idx_copy.size(); ++i) {
                 for (size_t j = 0; j < row_size; ++j) {
@@ -1412,14 +1412,14 @@ Tensor Tensor::select_rows(const std::vector<size_t>& indices) const {
 }
 
 // ---------------------------------------------------------
-// Operadores con el escalar a la izquierda
+// Scalar-on-the-left operators
 // ---------------------------------------------------------
 
 Tensor operator+(float scalar, const Tensor& t) { return t + scalar; }
 Tensor operator*(float scalar, const Tensor& t) { return t * scalar; }
 Tensor operator-(float scalar, const Tensor& t) { return (t * -1.0f) + scalar; }
 
-// Impresión por consola
+// Console printing
 void Tensor::print(const std::string& name) const {
     if (!name.empty()) {
         std::cout << name << " = ";

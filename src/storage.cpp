@@ -12,10 +12,10 @@ Storage::Storage(size_t count, float fill) : host_(count, fill) {}
 
 Storage::Storage(std::vector<float> values) : host_(std::move(values)) {}
 
-// La copia se lleva sólo el lado host. Duplicar además el búfer del
-// dispositivo reservaría memoria de GPU en cada copia de un tensor, que es lo
-// último que conviene en el bucle de entrenamiento; el espejo se vuelve a
-// crear en cuanto alguien pida el dispositivo.
+// A copy takes only the host side. Duplicating the device buffer as well would
+// allocate GPU memory on every tensor copy, which is the last thing a training
+// loop needs; the mirror is recreated as soon as somebody asks for the device.
+//
 Storage::Storage(const Storage& other) : host_(other.host()) {}
 
 Storage& Storage::operator=(const Storage& other) {
@@ -73,7 +73,7 @@ const std::vector<float>& Storage::host() const {
 std::vector<float>& Storage::host_mut() {
 #ifdef ENGINE_CUDA
     sync_host();
-    // Quien escriba por esta referencia deja obsoleto lo que hubiera en la GPU.
+    // Anyone writing through this reference makes whatever is on the GPU stale.
     device_valid_ = false;
 #endif
     return host_;
@@ -81,12 +81,12 @@ std::vector<float>& Storage::host_mut() {
 
 Storage Storage::clone() const {
 #ifdef ENGINE_CUDA
-    // Solo cuando el dispositivo es el unico que tiene el dato bueno. Si host
-    // tambien vale, copiarlo es gratis y ademas no reserva memoria de GPU.
+    // Only when the device is the sole holder of the good data. If host is valid
+    // too, copying it is free and allocates no GPU memory either.
     if (device_valid_ && !host_valid_ && device_ != nullptr) {
         Storage copy;
-        // El vector se dimensiona pero no se rellena: size() sale de el, y su
-        // contenido esta marcado obsoleto hasta que alguien pida el lado host.
+        // The vector is sized but not filled: size() comes from it, and its contents
+        // are marked stale until somebody asks for the host side.
         copy.host_.resize(host_.size());
         copy.ensure_device_buffer();
         cuda::detail::copy_device_to_device(copy.device_, device_, host_.size());
@@ -153,8 +153,8 @@ float* Storage::device_mut() {
 
 float* Storage::device_write() {
     ensure_device_buffer();
-    // No se sube nada: el kernel va a escribir el búfer entero. Lo que había
-    // en host deja de valer en cuanto vuelva.
+    // Nothing is uploaded: the kernel is going to write the whole buffer. What was
+    // on the host stops being valid as soon as it comes back.
     host_valid_ = false;
     device_valid_ = true;
     return device_;

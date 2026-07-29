@@ -1,10 +1,10 @@
-// Backend CUDA cuando el motor se compila sin CUDA.
+// The CUDA backend when the engine is built without CUDA.
 //
-// No es un fichero de relleno: es lo que permite que engine/cuda.hpp forme
-// parte de la API pública sin obligar a nadie a instalar el toolkit, y que el
-// despacho en src/tensor.cpp sea una condición normal en lugar de un #ifdef
-// por operación. Todas las operaciones devuelven false —«no lo hice»— y el
-// llamante sigue por CPU.
+// This is not filler: it is what lets engine/cuda.hpp be part of the public API
+// without forcing anyone to install the toolkit, and what makes the dispatch in
+// src/tensor.cpp an ordinary condition instead of an #ifdef per operation. Every
+// operation returns false -- "I did not do it" -- and the caller carries on down
+// the CPU path.
 
 #ifndef ENGINE_CUDA
 
@@ -37,8 +37,8 @@ MatmulKernel matmul_kernel() { return MatmulKernel::Auto; }
 void set_matmul_kernel(MatmulKernel) {}
 MatmulKernel resolve_matmul_kernel(size_t, size_t, size_t) { return MatmulKernel::Auto; }
 
-// Este sí devuelve algo útil sin CUDA: el banco de pruebas y las pruebas
-// imprimen el nombre de la variante aunque no haya dispositivo.
+// This one does return something useful without CUDA: the benchmark and the
+// tests print the variant's name even with no device.
 const char* matmul_kernel_name(MatmulKernel kernel) {
     switch (kernel) {
         case MatmulKernel::Auto: return "auto";
@@ -59,9 +59,9 @@ void reset_transfer_stats() {}
 
 namespace detail {
 
-// Storage sólo llama a estas cuando alguien pide el lado del dispositivo, y
-// sin ENGINE_CUDA ese código ni se compila. Llegar aquí sería un error de
-// programación, no una condición de ejecución.
+// Storage only calls these when somebody asks for the device side, and without
+// ENGINE_CUDA that code is not even compiled. Reaching here would be a
+// programming error, not a runtime condition.
 void note_kernel_launched() {}
 void note_kernel_failed() {}
 

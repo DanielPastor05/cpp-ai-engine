@@ -10,23 +10,23 @@ namespace engine {
 namespace data {
 
 // ---------------------------------------------------------
-// Lector del formato IDX (el de MNIST)
+// Reader for the IDX format (the one MNIST uses)
 //
-//   magic       int32   0x00000803 imágenes, 0x00000801 etiquetas
-//   dimensiones int32   una por eje
-//   datos       uint8
+//   magic       int32   0x00000803 images, 0x00000801 labels
+//   dimensions  int32   one per axis
+//   data        uint8
 //
-// Ojo con el orden de bytes: IDX es **big-endian por especificación**, al
-// contrario que el formato de pesos de engine/serialize.hpp, que exige
-// little-endian. Aquí hay que intercambiar los bytes explícitamente en vez de
-// leer los enteros directamente.
+// Mind the byte order: IDX is **big-endian by specification**, unlike the
+// weight format in engine/serialize.hpp, which requires little-endian. Here the
+// bytes have to be swapped explicitly rather than reading the integers
+// directly.
 // ---------------------------------------------------------
 
-// Imágenes normalizadas a [0, 1] con forma (N, 1, alto, ancho), lista para
-// alimentar una Conv2d. Con max_samples > 0 se leen solo las primeras.
+// Images normalised to [0, 1] with shape (N, 1, height, width), ready to feed
+// a Conv2d. With max_samples > 0 only the first ones are read.
 Tensor load_idx_images(const std::string& path, size_t max_samples = 0);
 
-// Etiquetas como índices de clase.
+// Labels as class indices.
 std::vector<size_t> load_idx_labels(const std::string& path, size_t max_samples = 0);
 
 // ---------------------------------------------------------
@@ -47,10 +47,10 @@ struct MnistPaths {
     bool full = false; // true si es el conjunto completo, false si el subconjunto
 };
 
-// Busca MNIST en el directorio dado. Prefiere el conjunto completo
-// (train-images-idx3-ubyte, descargado con tools/download_mnist.sh) y, si no
-// está, cae al subconjunto que viene con el repositorio para que los ejemplos
-// funcionen recién clonados. Lanza excepción si no encuentra ninguno.
+// Looks for MNIST in the given directory. It prefers the full set
+// (train-images-idx3-ubyte, downloaded with tools/download_mnist.sh) and, if
+// that is not there, falls back to the subset shipped with the repository so
+// the examples work on a fresh clone. Throws if it finds neither.
 MnistPaths find_mnist(const std::string& directory = "data/mnist");
 
 Dataset load_mnist_train(const MnistPaths& paths, size_t max_samples = 0);

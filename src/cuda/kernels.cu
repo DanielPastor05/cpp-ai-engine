@@ -1,16 +1,16 @@
-// Kernels CUDA del motor.
+// The engine's CUDA kernels.
 //
-// Cubren lo que el perfilado señaló como caliente: el producto de matrices
-// (53% del tiempo del ejemplo del Transformer), las operaciones elemento a
-// elemento, ReLU y softmax. El resto sigue en CPU, y eso está bien: portar una
-// operación que no domina el perfil sólo añade transferencias.
+// They cover what profiling flagged as hot: the matrix product (53% of the
+// Transformer example's time), the element-wise operations, ReLU and softmax.
+// The rest stays on the CPU, and that is fine: porting an operation that does
+// not dominate the profile only adds transfers.
 //
-// Cada punto de entrada devuelve false cuando decide no hacerse cargo, y el
-// llamante sigue por CPU. Las condiciones de rechazo son de dos tipos:
-//   - no compensa (tamaño por debajo del umbral medido), o
-//   - no cabe en la geometría de lanzamiento (lotes o dimensiones enormes).
-// Las segundas no deberían ocurrir con formas realistas, pero devolver false
-// es preferible a lanzar una malla inválida y obtener basura.
+// Every entry point returns false when it decides not to take the work, and the
+// caller carries on down the CPU path. Refusals come in two kinds:
+//   - not worth it (size below the measured threshold), or
+//   - it does not fit the launch geometry (huge batches or dimensions).
+// The second kind should not happen with realistic shapes, but returning false
+// beats launching an invalid grid and getting garbage.
 
 #include "engine/cuda.hpp"
 #include "engine/detail/cuda_ops.hpp"
@@ -32,11 +32,11 @@ constexpr int kTile = 32;       // lado del bloque compartido del matmul
 constexpr int kBlock = 256;     // hilos por bloque en los kernels 1D
 constexpr int kReduceBlock = 256; // potencia de dos: lo exige la reducción
 
-// Geometría del matmul con teselado de registros. Los cinco números están
-// atados entre sí y no se pueden tocar por separado:
-//   (kBM / kTM) * (kBN / kTN) == kRegBlock   -> cada hilo, su cuadrado de salida
-//   kBM * kBK == kBN * kBK == 1024           -> una tesela cabe en 4 pasadas de
-//                                               carga escalar, o 1 vectorizada
+// Geometry of the register-tiled matmul. The five numbers are tied to each
+// other and cannot be changed independently:
+//   (kBM / kTM) * (kBN / kTN) == kRegBlock   -> one output square per thread
+//   kBM * kBK == kBN * kBK == 1024           -> a tile fits in 4 scalar load
+//                                               passes, or 1 vectorised
 constexpr int kBM = 128;        // filas de la salida por bloque
 constexpr int kBN = 128;        // columnas de la salida por bloque
 constexpr int kBK = 8;          // paso sobre K
@@ -48,25 +48,25 @@ static_assert(kRegBlock == 256, "los índices de carga suponen 256 hilos por blo
 static_assert(kBM * kBK == 1024 && kBN * kBK == 1024,
               "cada tesela debe ser de 1024 valores para que el reparto cuadre");
 
-// Límite de gridDim.y y gridDim.z en todas las arquitecturas soportadas.
+// The gridDim.y and gridDim.z limit on every supported architecture.
 constexpr size_t kMaxGridYZ = 65535;
 
 constexpr size_t kMaxInt = static_cast<size_t>(std::numeric_limits<int>::max());
 
-// Ejes que admite el kernel de permutacion. Cuatro son los que usa el motor
-// —(B, H, S, d) en la atencion, (N, C, H, W) en la convolucion—; ocho da margen
-// sin que el plan deje de caber holgado en el espacio de argumentos del kernel.
+// Axes the permutation kernel accepts. Four is what the engine uses -- (B, H,
+// S, d) in attention, (N, C, H, W) in convolution -- and eight leaves room
+// while the plan still fits comfortably in the kernel argument space.
 constexpr int kMaxPermuteDims = 8;
 
-// cudaGetLastError() solo ve fallos **de lanzamiento**. Si el fallo ocurre
-// dentro del cuerpo del kernel —un acceso fuera de rango, por ejemplo— el error
-// se queda pegado al contexto y aflora en la siguiente copia, que suele estar
-// tres operaciones mas alla y no tiene ninguna culpa.
+// cudaGetLastError() only sees **launch** failures. If the fault happens inside
+// the kernel body -- an out-of-range access, say -- the error sticks to the
+// context and surfaces at the next copy, which is usually three operations
+// later and is in no way to blame.
 //
-// Sincronizar aqui lo ataja en el lanzamiento culpable, pero es una barrera por
-// kernel y el motor lanza cientos por paso: seria pagar en produccion por un
-// diagnostico que solo interesa mientras se persigue un fallo. De ahi la
-// variable de entorno, apagada por defecto.
+// Synchronising here catches it at the guilty launch, but that is a barrier per
+// kernel and the engine launches hundreds per step: it would mean paying in
+// production for a diagnostic that only matters while chasing a fault. Hence
+// the environment variable, off by default.
 //
 //   ENGINE_CUDA_SYNC=1 .\build-cuda\Release\test_engine.exe
 bool sync_after_launch() {
@@ -77,18 +77,18 @@ bool sync_after_launch() {
     return on;
 }
 
-// Un kernel que falla al lanzarse no aborta el programa: se informa y se
-// devuelve false, de modo que el resultado lo calcula la CPU. Un motor que se
-// cae porque la GPU está ocupada es peor que uno que va más lento.
+// A kernel that fails to launch does not abort the program: it is reported and
+// false is returned, so the CPU computes the result. An engine that crashes
+// because the GPU is busy is worse than one that runs slower.
 //
-// Va aparte de launched_ok() porque no todo lanzamiento fallido se deshace
-// igual: quien pidió la salida con device_write() tiene que revertir, y quien
-// la pidió con device_mut() no debe hacerlo. Ver accumulate_grad().
+// It is separate from launched_ok() because not every failed launch is undone
+// the same way: whoever asked for the output with device_write() has to revert,
+// and whoever used device_mut() must not. See accumulate_grad().
 bool launch_ok(const char* what) {
     cudaError_t status = cudaGetLastError();
-    // Con ENGINE_CUDA_SYNC el error de ejecucion del kernel se recoge aqui, en
-    // el lanzamiento que lo provoco, en lugar de en la siguiente copia. El
-    // camino de recuperacion es el mismo: se informa y se calcula en CPU.
+    // With ENGINE_CUDA_SYNC the kernel's execution error is picked up here, at
+    // the launch that caused it, rather than at the next copy. The recovery
+    // path is the same: report it and compute on the CPU.
     if (status == cudaSuccess && sync_after_launch()) status = cudaDeviceSynchronize();
     if (status == cudaSuccess) {
         detail::note_kernel_launched();
@@ -97,16 +97,16 @@ bool launch_ok(const char* what) {
 
     detail::note_kernel_failed();
 
-    // Sólo el primero, y con el diagnóstico completo. La versión anterior
-    // imprimía una línea por lanzamiento fallido: en una suite de pruebas eso
-    // son cientos de líneas identicas que tapan la salida real y no dicen la
-    // causa. El resto se cuenta y se consulta con cuda::kernels_failed().
+    // Only the first one, and with the full diagnosis. The previous version
+    // printed a line per failed launch: in a test suite that is hundreds of
+    // identical lines burying the real output without saying why. The rest are
+    // counted and read back with cuda::kernels_failed().
     static bool reported = false;
     if (!reported) {
         reported = true;
-        // La comparacion util es la del toolkit que compilo esto contra el
-        // driver. runtime_version() no sirve aqui: sigue al driver, asi que
-        // nunca sale por delante y la pista no se imprimiria jamas.
+        // The useful comparison is the toolkit that compiled this against the
+        // driver. runtime_version() is no use here: it follows the driver, so it
+        // never comes out ahead and the hint would never print.
         const int built = compiled_version();
         const int drv = driver_version();
         std::fprintf(stderr,
@@ -116,10 +116,10 @@ bool launch_ok(const char* what) {
                      what, cudaGetErrorString(status),
                      built / 1000, (built % 1000) / 10, drv / 1000, (drv % 1000) / 10);
 
-        // Las dos pistas son independientes y pueden darse a la vez: un binario
-        // con la arquitectura equivocada cae a compilar el PTX, y es entonces
-        // cuando un driver mas antiguo que el toolkit remata el fallo. Encadenar
-        // las con else-if contaria media historia.
+        // The two hints are independent and can both apply: a binary with the wrong
+        // architecture falls back to compiling the PTX, and that is when a driver
+        // older than the toolkit finishes the failure off. Chaining them with
+        // else-if would tell half the story.
         if (drv > 0 && built > drv) {
             std::fprintf(stderr,
                          "  El driver es mas antiguo que el toolkit: actualiza el driver de\n"
@@ -140,12 +140,12 @@ bool launch_ok(const char* what) {
     return false;
 }
 
-// Lo mismo, para la salida que se pidió con device_write().
+// The same, for an output that was requested with device_write().
 //
-// Hay que deshacer ese device_write(). Si no, el camino de CPU pediría el búfer
-// de host, Storage se lo bajaría del dispositivo sin inicializar, y matmul —que
-// acumula sobre una salida que supone a cero— devolvería basura en lugar de un
-// resultado correcto más lento.
+// That device_write() has to be undone. Otherwise the CPU path would ask for the
+// host buffer, Storage would pull it uninitialised off the device, and matmul --
+// which accumulates into an output it assumes is zeroed -- would return garbage
+// instead of a correct, slower result.
 bool launched_ok(const char* what, Storage& out) {
     if (launch_ok(what)) return true;
     out.revert_device_write();
@@ -153,7 +153,7 @@ bool launched_ok(const char* what, Storage& out) {
 }
 
 // ---------------------------------------------------------
-// Operaciones elemento a elemento
+// Element-wise operations
 // ---------------------------------------------------------
 
 template <int Op>
@@ -169,17 +169,17 @@ __global__ void binary_contiguous(const float* __restrict__ a,
                                   const float* __restrict__ b,
                                   float* __restrict__ out,
                                   long long n) {
-    // Bucle con paso de malla: así el número de bloques no depende de n y
-    // nunca se desborda gridDim.x.
+    // Grid-stride loop: this way the block count does not depend on n and
+    // gridDim.x never overflows.
     const long long stride = (long long)blockDim.x * gridDim.x;
     for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
         out[i] = apply<Op>(a[i], b[i]);
     }
 }
 
-// Difusión por sufijo. Igual que en CPU, no se calcula ningún módulo: el eje y
-// de la malla recorre las repeticiones y el eje x el bloque que se repite.
-// Un módulo de 64 bits por elemento costaría aquí bastante más que en CPU.
+// Suffix broadcasting. As on the CPU, no modulo is computed: the grid's y axis
+// walks the repetitions and the x axis the block being repeated.
+// A 64-bit modulo per element would cost far more here than on the CPU.
 template <int Op>
 __global__ void binary_broadcast(const float* __restrict__ a,
                                  const float* __restrict__ b,
@@ -206,10 +206,10 @@ __global__ void relu_grad(const float* __restrict__ x, const float* __restrict__
     }
 }
 
-// El acumulador del backward: out = g la primera vez, out += g después.
+// The backward accumulator: out = g the first time, out += g afterwards.
 //
-// initialize es uniforme en toda la malla —lo decide el llamante mirando si el
-// tensor ya tenía gradiente—, así que la rama no divide ningún warp.
+// initialize is uniform across the grid -- the caller decides it by looking at
+// whether the tensor already had a gradient -- so the branch splits no warp.
 __global__ void grad_accumulate(const float* __restrict__ g, float* __restrict__ out,
                                 long long n, bool initialize) {
     const long long stride = (long long)blockDim.x * gridDim.x;
@@ -218,10 +218,10 @@ __global__ void grad_accumulate(const float* __restrict__ g, float* __restrict__
     }
 }
 
-// out = x * mul + add. Una sola forma para las dos operaciones con escalar:
-// multiplicar es add = 0 y sumar es mul = 1. Con esos valores el producto o la
-// suma sobran, y da igual: el kernel esta limitado por la memoria, no por las
-// dos operaciones de coma flotante que hace por elemento.
+// out = x * mul + add. One shape for both scalar operations: multiplying is
+// add = 0 and adding is mul = 1. With those values the product or the sum is
+// redundant, and it does not matter: the kernel is memory bound, not bound by
+// the two floating-point operations it does per element.
 __global__ void scalar_affine(const float* __restrict__ x, float* __restrict__ out,
                               float mul, float add, long long n) {
     const long long stride = (long long)blockDim.x * gridDim.x;
@@ -231,21 +231,21 @@ __global__ void scalar_affine(const float* __restrict__ x, float* __restrict__ o
 }
 
 // ---------------------------------------------------------
-// Reordenacion de ejes
+// Axis reordering
 // ---------------------------------------------------------
 //
-// Un plano de la salida se traduce a coordenadas y de ahi a un desplazamiento
-// sobre la entrada, exactamente igual que en el camino de CPU. La escritura es
-// contigua y la lectura salta: es la orientacion correcta de las dos, porque
-// una escritura dispersa serializa el ancho de banda mucho peor que una lectura
-// dispersa, que al menos se solapa con el resto del warp.
+// A flat output index is turned into coordinates and from there into an offset
+// into the input, exactly as on the CPU path. The write is contiguous and the
+// read jumps: that is the right way round of the two, because a scattered write
+// serialises bandwidth far worse than a scattered read, which at least overlaps
+// with the rest of the warp.
 //
-// El plan viaja por valor. Los argumentos de un kernel van a memoria constante,
-// asi que las ocho parejas se leen de ahi y no hacen falta ni reserva ni copia
-// aparte para pasarlos.
+// The plan travels by value. Kernel arguments live in constant memory, so the
+// eight pairs are read from there and need neither an allocation nor a separate
+// copy to pass them.
 //
-// ponytail: division entera por elemento y por eje; si el perfil la senala, se
-// sustituye por el truco de multiplicar por el reciproco magico.
+// ponytail: integer division per element per axis; if the profile flags it,
+// swap in the magic-reciprocal multiplication trick.
 struct PermutePlan {
     int shape[kMaxPermuteDims];
     long long stride[kMaxPermuteDims];
@@ -257,7 +257,7 @@ __global__ void permute_gather(const float* __restrict__ x, float* __restrict__ 
     for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += grid_stride) {
         long long rem = i;
         long long src = 0;
-        // De atras hacia delante: el ultimo eje es el que varia mas rapido.
+        // Back to front: the last axis is the fastest varying one.
         for (int d = nd - 1; d >= 0; --d) {
             const long long extent = plan.shape[d];
             src += (rem % extent) * plan.stride[d];
@@ -267,12 +267,12 @@ __global__ void permute_gather(const float* __restrict__ x, float* __restrict__ 
     }
 }
 
-// Suma sobre un eje visto como (outer, axis_len, inner): un hilo por elemento
-// de la salida, que recorre el eje.
+// Sum over one axis viewed as (outer, axis_len, inner): one thread per output
+// element, walking the axis.
 //
-// El orden de acumulacion es el mismo que en CPU —el eje de menor a mayor— y
-// tampoco hay ninguna multiplicacion que el compilador pueda fundir en un FMA,
-// asi que este kernel si coincide bit a bit con el camino de CPU.
+// The accumulation order matches the CPU -- the axis from low to high -- and
+// there is no multiplication the compiler could fuse into an FMA either, so
+// this kernel does agree bit for bit with the CPU path.
 __global__ void sum_over_axis(const float* __restrict__ x, float* __restrict__ out,
                               long long axis_len, long long inner, long long n) {
     const long long stride = (long long)blockDim.x * gridDim.x;
@@ -290,15 +290,15 @@ __global__ void sum_over_axis(const float* __restrict__ x, float* __restrict__ o
 // im2col / col2im
 // ---------------------------------------------------------
 //
-// Los dos recorren la salida, no la entrada, y esa es toda la diferencia entre
-// que hagan falta operaciones atomicas o no.
+// Both walk the output rather than the input, and that alone is the difference
+// between needing atomics and not.
 //
-// im2col escribe cada elemento de las columnas una sola vez, asi que sale
-// directo. col2im es su adjunto: varias ventanas solapadas contribuyen al mismo
-// pixel, y recorrer las ventanas obligaria a sumar con atomicas —lentas y, peor
-// aun, con un orden de acumulacion que cambia de una ejecucion a otra—. Se
-// invierte el recorrido: un hilo por pixel de **entrada**, que busca las
-// ventanas que lo cubren. Sin atomicas, y con el mismo orden que la CPU.
+// im2col writes each element of the columns exactly once, so it comes out
+// directly. col2im is its adjoint: several overlapping windows contribute to the
+// same pixel, and walking the windows would force atomic adds -- slow and, worse,
+// with an accumulation order that changes from run to run. So the traversal is
+// inverted: one thread per **input** pixel, which looks for the windows covering
+// it. No atomics, and the same order as the CPU.
 
 struct WindowDims {
     int channels, height, width;
@@ -328,10 +328,10 @@ __global__ void im2col_gather(const float* __restrict__ input, float* __restrict
         const long long h = oh * d.stride + ki - d.padding;
         const long long w = ow * d.stride + kj - d.padding;
 
-        // El cero se escribe explicitamente. El camino de CPU se apoya en que el
-        // tensor nace a ceros y se salta las posiciones de relleno; aqui la
-        // salida se pidio con device_write(), que no sube nada, asi que saltarse
-        // una posicion la dejaria con lo que hubiera antes en ese bufer.
+        // The zero is written explicitly. The CPU path relies on the tensor being
+        // born zeroed and skips the padding positions; here the output was
+        // requested with device_write(), which uploads nothing, so skipping a
+        // position would leave it holding whatever was in that buffer before.
         float value = 0.0f;
         if (h >= 0 && h < d.height && w >= 0 && w < d.width) {
             value = input[((b * d.channels + c) * d.height + h) * d.width + w];
@@ -352,9 +352,9 @@ __global__ void col2im_scatter(const float* __restrict__ cols, float* __restrict
         const long long c = (i / ((long long)d.width * d.height)) % d.channels;
         const long long b = i / ((long long)d.width * d.height * d.channels);
 
-        // Ventanas que cubren este pixel: de h + padding = oh*stride + ki con
-        // 0 <= ki < kH se despeja el rango de oh, y dentro de el **toda** oh es
-        // valida, asi que no hace falta comprobar divisibilidad.
+        // Windows covering this pixel: from h + padding = oh*stride + ki with
+        // 0 <= ki < kH the range of oh follows, and inside it **every** oh is
+        // valid, so no divisibility check is needed.
         const long long hp = h + d.padding;
         const long long wp = w + d.padding;
         long long oh_lo = (hp - d.kernel_h + d.stride) / d.stride;   // techo de (hp-kH+1)/stride
@@ -364,8 +364,8 @@ __global__ void col2im_scatter(const float* __restrict__ cols, float* __restrict
         const long long oh_hi = min(hp / d.stride, (long long)d.out_h - 1);
         const long long ow_hi = min(wp / d.stride, (long long)d.out_w - 1);
 
-        // oh y ow ascendentes: el mismo orden en que acumula el bucle de CPU, de
-        // modo que la suma se hace con los mismos redondeos.
+        // oh and ow ascending: the same order the CPU loop accumulates in, so
+        // that the sum is done with the same roundings.
         float acc = 0.0f;
         for (long long oh = oh_lo; oh <= oh_hi; ++oh) {
             const long long ki = hp - oh * d.stride;
@@ -381,18 +381,18 @@ __global__ void col2im_scatter(const float* __restrict__ cols, float* __restrict
 }
 
 // ---------------------------------------------------------
-// Submuestreo por maximo
+// Max pooling
 // ---------------------------------------------------------
 //
-// El forward guarda, junto al maximo, el indice plano del pixel que lo gano:
-// es lo unico que el paso hacia atras necesita, y con el criterio de desempate
-// del camino de CPU —gana el primero en orden de recorrido, porque la
-// comparacion es estricta—.
+// The forward saves, alongside the maximum, the flat index of the pixel that
+// won it: that is all the backward pass needs, and it uses the CPU path's
+// tie-break -- the first in traversal order wins, because the comparison is
+// strict.
 //
-// El backward recorre la **entrada**, como col2im y por el mismo motivo: dos
-// ventanas solapadas pueden haber elegido el mismo pixel, y recorrer las
-// ventanas obligaria a sumar con atomicas. Asi cada pixel busca las ventanas
-// que lo cubren, se queda con las que lo eligieron, y suma en un orden fijo.
+// The backward walks the **input**, like col2im and for the same reason: two
+// overlapping windows may have chosen the same pixel, and walking the windows
+// would force atomic adds. This way each pixel looks for the windows covering
+// it, keeps the ones that chose it, and sums in a fixed order.
 
 __global__ void maxpool_windows(const float* __restrict__ input, float* __restrict__ out,
                                 float* __restrict__ argmax, WindowDims d, long long n) {
@@ -418,7 +418,7 @@ __global__ void maxpool_windows(const float* __restrict__ input, float* __restri
 
                 const long long idx = ((b * d.channels + c) * d.height + h) * d.width + w;
                 const float v = input[idx];
-                // Estricto, no >=: en un empate gana el primero, igual que en CPU.
+                // Strict, not >=: on a tie the first one wins, exactly as on the CPU.
                 if (!found || v > best) { best = v; best_idx = idx; found = true; }
             }
         }
@@ -452,7 +452,7 @@ __global__ void maxpool_windows_grad(const float* __restrict__ argmax,
         for (long long oh = oh_lo; oh <= oh_hi; ++oh) {
             for (long long ow = ow_lo; ow <= ow_hi; ++ow) {
                 const long long out_idx = ((b * d.channels + c) * d.out_h + oh) * d.out_w + ow;
-                // Solo suma si esta ventana eligio precisamente este pixel.
+                // Only adds if this window chose precisely this pixel.
                 if ((long long)argmax[out_idx] == i) acc += g[out_idx];
             }
         }
@@ -461,23 +461,23 @@ __global__ void maxpool_windows_grad(const float* __restrict__ argmax,
 }
 
 // ---------------------------------------------------------
-// Producto de matrices con teselas en memoria compartida
+// Matrix product with shared-memory tiles
 // ---------------------------------------------------------
 //
-// Cada bloque calcula una tesela de 32x32 de la salida. La tesela recorre K:
-// en cada paso los 1024 hilos cargan una tesela de A y otra de B a memoria
-// compartida y luego cada hilo hace sus 32 productos leyendo de ahí.
+// Each block computes a 32x32 tile of the output. The tile walks K: at each
+// step the 1024 threads load one tile of A and one of B into shared memory and
+// then each thread does its 32 products reading from there.
 //
-// El motivo es el tráfico a memoria global: sin teselas, cada elemento de A se
-// lee N veces y cada uno de B, M veces. Con teselas de lado T cada uno se lee
-// N/T y M/T veces, o sea 32 veces menos.
+// The reason is global memory traffic: without tiles, each element of A is read
+// N times and each of B M times. With tiles of side T they are read N/T and M/T
+// times, that is 32 times fewer.
 //
-// El orden de acumulación es fijo (k ascendente, igual que en CPU), así que el
-// resultado es reproducible de una ejecución a otra. No es idéntico bit a bit
-// al de la CPU, y eso es esperable: el compilador de dispositivo funde
-// multiplicación y suma en una sola instrucción FMA, que redondea una vez en
-// lugar de dos. Por eso la prueba de paridad compara con tolerancia y no con
-// igualdad exacta.
+// The accumulation order is fixed (k ascending, as on the CPU), so the result is
+// reproducible from run to run. It is not bit-identical to the CPU, and that is
+// expected: the device compiler fuses multiply and add into a single FMA that
+// rounds once instead of twice. That is why the parity test compares to a
+// tolerance rather than for exact equality.
+//
 __global__ void matmul_tiled(const float* __restrict__ A,
                              const float* __restrict__ B,
                              float* __restrict__ C,
@@ -501,9 +501,9 @@ __global__ void matmul_tiled(const float* __restrict__ A,
         const int a_col = t * kTile + threadIdx.x;
         const int b_row = t * kTile + threadIdx.y;
 
-        // Los bordes se rellenan con ceros en lugar de acortar el bucle: así
-        // todos los hilos del bloque llegan a los mismos __syncthreads(), que
-        // es obligatorio para que la barrera sea válida.
+        // Edges are padded with zeros instead of shortening the loop: that way
+        // every thread in the block reaches the same __syncthreads(), which is
+        // mandatory for the barrier to be valid.
         As[threadIdx.y][threadIdx.x] =
             (row < M && a_col < K) ? A[(long long)row * K + a_col] : 0.0f;
         Bs[threadIdx.y][threadIdx.x] =
@@ -511,9 +511,9 @@ __global__ void matmul_tiled(const float* __restrict__ A,
 
         __syncthreads();
 
-        // As[ty][k] es una difusión dentro del warp y Bs[k][tx] recorre bancos
-        // consecutivos: ninguno de los dos accesos genera conflictos, así que
-        // la memoria compartida no necesita relleno.
+        // As[ty][k] is a broadcast within the warp and Bs[k][tx] walks consecutive
+        // banks: neither access produces conflicts, so shared memory needs no
+        // padding.
         #pragma unroll
         for (int k = 0; k < kTile; ++k) {
             acc += As[threadIdx.y][k] * Bs[k][threadIdx.x];
@@ -528,12 +528,12 @@ __global__ void matmul_tiled(const float* __restrict__ A,
 }
 
 // ---------------------------------------------------------
-// Producto de matrices sin memoria compartida
+// Matrix product without shared memory
 // ---------------------------------------------------------
 //
-// Existe para tener una referencia inferior honesta en la tabla del banco de
-// pruebas. Cada hilo lee sus dos operandos directamente de memoria global, así
-// que cada elemento de A se lee N veces y cada uno de B, M veces.
+// It exists so the benchmark table has an honest lower bound. Each thread reads
+// both operands straight from global memory, so each element of A is read N
+// times and each of B M times.
 __global__ void matmul_naive(const float* __restrict__ A,
                              const float* __restrict__ B,
                              float* __restrict__ C,
@@ -556,56 +556,56 @@ __global__ void matmul_naive(const float* __restrict__ A,
 }
 
 // ---------------------------------------------------------
-// Producto de matrices con teselado de registros
+// Matrix product with register tiling
 // ---------------------------------------------------------
 //
-// Éste es el salto de verdad, y conviene entender **por qué** el kernel de
-// teselas de arriba se queda corto. No es la ocupación, y no es el tráfico a
-// memoria global: eso ya lo arreglaron las teselas. Es la intensidad
-// aritmética *a nivel de registro*.
+// This is the real jump, and it is worth understanding **why** the tiled kernel
+// above falls short. It is not occupancy, and it is not global memory traffic:
+// the tiles already fixed that. It is arithmetic intensity *at the register
+// level*.
 //
-// En matmul_tiled, cada hilo por cada paso de K hace:
-//     1 FMA   contra   2 lecturas de memoria compartida
-// Esa proporción de 1:2 es la que manda, porque las unidades de carga se
-// saturan mucho antes que las de cálculo. Da igual cuántos warps haya en vuelo.
+// In matmul_tiled, each thread per step of K does:
+//     1 FMA   against   2 shared-memory reads
+// That 1:2 ratio is what rules, because the load units saturate long before the
+// arithmetic ones. It makes no difference how many warps are in flight.
 //
-// La solución es que cada hilo calcule un **bloque** de resultados en lugar de
-// uno solo. Con TM x TN = 8 x 8 salidas vivas en registros, por cada paso de K
-// un hilo lee 8 valores de A y 8 de B, y con ellos hace 64 productos:
-//     64 FMA   contra   16 lecturas de memoria compartida
-// La proporción pasa de 1:2 a 4:1 — ocho veces mejor. Los 64 acumuladores
-// viven en registros y no se tocan hasta el final.
+// The fix is for each thread to compute a **block** of results instead of a
+// single one. With TM x TN = 8 x 8 outputs live in registers, per step of K a
+// thread reads 8 values of A and 8 of B and does 64 products with them:
+//     64 FMA   against   16 shared-memory reads
+// The ratio goes from 1:2 to 4:1 -- eight times better. The 64 accumulators
+// live in registers and are not touched until the end.
 //
-// Geometría: bloques de 128x128 de la salida, 256 hilos, paso BK=8 sobre K.
-// La memoria compartida son 2 x 8 x 128 x 4 = 8 KB por bloque.
+// Geometry: 128x128 output blocks, 256 threads, step BK=8 over K.
+// Shared memory comes to 2 x 8 x 128 x 4 = 8 KB per block.
 //
-// `As` se guarda **transpuesta** (índice [k][m] en vez de [m][k]) para que las
-// ocho lecturas de A de cada hilo sean contiguas en el eje m; sin eso irían con
-// paso K y cada una tocaría un banco distinto.
+// `As` is stored **transposed** ([k][m] instead of [m][k]) so that each thread's
+// eight reads of A are contiguous along m; without that they would go with stride
+// K and each would hit a different bank.
 //
-// Sobre la ocupación: con 64 acumuladores más los registros de trabajo, esto
-// gasta del orden de 80-100 registros por hilo y baja la ocupación a la mitad
-// respecto al kernel de teselas. **Es intencionado.** El paralelismo a nivel de
-// instrucción dentro de cada hilo compensa de sobra tener menos warps: es el
-// compromiso clásico de este kernel, y es justo lo que se ve al perfilarlo.
+// On occupancy: with 64 accumulators plus working registers, this burns on the
+// order of 80-100 registers per thread and halves occupancy against the tiled
+// kernel. **That is deliberate.** The instruction-level parallelism inside each
+// thread more than makes up for having fewer warps: it is this kernel's classic
+// trade-off, and it is exactly what shows up under the profiler.
 //
-// UseVector4 elige cómo se cargan las teselas desde memoria global. La versión
-// vectorizada mueve 16 bytes por instrucción en lugar de 4, lo que reduce el
-// número de instrucciones de carga en el camino global -> compartida. Exige que
-// K y N sean múltiplos de 4 para que las direcciones estén alineadas, cosa que
-// comprueba el lado del host antes de elegir esta variante.
+// UseVector4 picks how the tiles are loaded from global memory. The vectorised
+// version moves 16 bytes per instruction instead of 4, which cuts the number of
+// load instructions on the global -> shared path. It requires K and N to be
+// multiples of 4 so the addresses are aligned, which the host side checks before
+// choosing this variant.
 template <bool UseVector4>
 __global__ void matmul_register_tiled(const float* __restrict__ A,
                                       const float* __restrict__ B,
                                       float* __restrict__ C,
                                       int M, int K, int N,
                                       long long a_stride, long long b_stride) {
-    // Sin atributo de alineación a propósito: nada lee estas dos matrices en
-    // bloques de 16 bytes. La carga vectorizada actúa sobre memoria **global**,
-    // que es donde está la ganancia; lo que se escribe y se lee aquí es
-    // escalar, así que no hay ningún requisito de alineación que cumplir. Es
-    // además lo portable, porque __align__ se escribe distinto según el
-    // compilador de host.
+    // No alignment attribute, deliberately: nothing reads these two matrices in
+    // 16-byte blocks. The vectorised load acts on **global** memory, which is
+    // where the gain is; what is written and read here is scalar, so there is
+    // no alignment requirement to meet. It is also the portable choice, because
+    // __align__ is spelled differently depending on the host compiler.
+    //
     __shared__ float As[kBK][kBM];  // transpuesta: [k][m]
     __shared__ float Bs[kBK][kBN];
 
@@ -617,7 +617,7 @@ __global__ void matmul_register_tiled(const float* __restrict__ A,
     const int block_row = blockIdx.y * kBM;
     const int block_col = blockIdx.x * kBN;
 
-    // Cada hilo se queda con un cuadrado de kTM x kTN de la tesela de salida.
+    // Each thread takes a kTM x kTN square of the output tile.
     const int thread_row = threadIdx.x / (kBN / kTN);  // [0, 16)
     const int thread_col = threadIdx.x % (kBN / kTN);  // [0, 16)
 
@@ -628,9 +628,9 @@ __global__ void matmul_register_tiled(const float* __restrict__ A,
         for (int j = 0; j < kTN; ++j) acc[i][j] = 0.0f;
     }
 
-    // Índices de carga, distintos de los de cálculo: para traer las teselas
-    // interesa que los hilos consecutivos lean posiciones consecutivas, no que
-    // cada uno lea lo que luego va a usar.
+    // Load indices, distinct from the compute ones: to bring the tiles in it
+    // matters that consecutive threads read consecutive positions, not that each
+    // reads what it will later use.
     const int a_load_row_v = threadIdx.x / (kBK / 4);   // [0, 128) con float4
     const int a_load_col_v = (threadIdx.x % (kBK / 4)) * 4;
     const int b_load_row_v = threadIdx.x / (kBN / 4);   // [0, 8) con float4
@@ -643,18 +643,18 @@ __global__ void matmul_register_tiled(const float* __restrict__ A,
 
     for (int k_base = 0; k_base < K; k_base += kBK) {
         if (UseVector4) {
-            // Una sola instrucción de 16 bytes por hilo cubre la tesela de A:
-            // 128 filas x 8 columnas = 1024 valores = 256 float4 = 256 hilos.
+            // A single 16-byte instruction per thread covers the A tile:
+            // 128 rows x 8 columns = 1024 values = 256 float4 = 256 threads.
             {
                 const int g_row = block_row + a_load_row_v;
                 const int g_col = k_base + a_load_col_v;
                 float4 v = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-                // K es múltiplo de 4 y g_col también, así que el float4 entra
-                // entero o no entra: no hay resto parcial que tratar.
+                // K is a multiple of 4 and so is g_col, so the float4 either fits
+                // whole or not at all: there is no partial remainder to handle.
                 if (g_row < M && g_col < K) {
                     v = *reinterpret_cast<const float4*>(A + (long long)g_row * K + g_col);
                 }
-                // El almacenamiento sí es escalar, porque va transpuesto.
+                // The store is scalar, because it goes in transposed.
                 As[a_load_col_v + 0][a_load_row_v] = v.x;
                 As[a_load_col_v + 1][a_load_row_v] = v.y;
                 As[a_load_col_v + 2][a_load_row_v] = v.z;
@@ -673,8 +673,8 @@ __global__ void matmul_register_tiled(const float* __restrict__ A,
                 Bs[b_load_row_v][b_load_col_v + 3] = v.w;
             }
         } else {
-            // Sin vectorizar hacen falta cuatro pasadas por tesela: 256 hilos
-            // contra 1024 valores.
+            // Without vectorising, four passes per tile are needed: 256 threads
+            // against 1024 values.
             #pragma unroll
             for (int off = 0; off < kBM; off += 256 / kBK) {
                 const int g_row = block_row + a_load_row_s + off;
@@ -693,9 +693,9 @@ __global__ void matmul_register_tiled(const float* __restrict__ A,
 
         __syncthreads();
 
-        // El bucle caliente. Las lecturas de compartida se izan a registros
-        // antes de los productos: sin eso el compilador volvería a leer de
-        // compartida dentro del doble bucle y se perdería toda la ventaja.
+        // The hot loop. The shared-memory reads are hoisted into registers before
+        // the products: without that the compiler would read from shared inside the
+        // double loop and the whole advantage would be lost.
         #pragma unroll
         for (int dot = 0; dot < kBK; ++dot) {
             float reg_m[kTM];
@@ -728,16 +728,16 @@ __global__ void matmul_register_tiled(const float* __restrict__ A,
 }
 
 // ---------------------------------------------------------
-// Softmax sobre el último eje
+// Softmax over the last axis
 // ---------------------------------------------------------
 //
-// Un bloque por fila. Dos reducciones sobre memoria compartida: primero el
-// máximo (para restarlo y que la exponencial no se desborde, igual que en CPU)
-// y después la suma.
+// One block per row. Two reductions over shared memory: first the maximum (to
+// subtract it so the exponential does not overflow, as on the CPU) and then the
+// sum.
 //
-// Se usa expf y no __expf: la versión rápida ahorra unos ciclos pero pierde
-// precisión, y estos valores se comparan contra PyTorch en la prueba de
-// referencia. La exponencial no es el cuello de botella aquí.
+// expf is used rather than __expf: the fast version saves a few cycles but loses
+// precision, and these values are compared against PyTorch in the reference
+// test. The exponential is not the bottleneck here.
 __global__ void softmax_rows(const float* __restrict__ x, float* __restrict__ y, int cols) {
     __shared__ float shared[kReduceBlock];
 
@@ -801,11 +801,11 @@ __global__ void softmax_rows_grad(const float* __restrict__ y, const float* __re
 }
 
 // ---------------------------------------------------------
-// Ayudas de despacho
+// Dispatch helpers
 // ---------------------------------------------------------
 
-// Número de bloques para un kernel con paso de malla: suficientes para llenar
-// el dispositivo, sin pasarse.
+// Block count for a grid-stride kernel: enough to fill the device, without
+// overdoing it.
 int grid_for(long long n) {
     const long long want = (n + kBlock - 1) / kBlock;
     const long long cap = 65535 * 16;
@@ -816,8 +816,8 @@ bool elementwise_worth_it(size_t n) {
     return enabled() && n > 0 && n >= min_elementwise_elements();
 }
 
-// Traduce la geometria a los enteros del kernel, o dice que no cabe. Los dos
-// puntos de entrada de la convolucion comparten estas comprobaciones.
+// Translates the geometry into the kernel's integers, or says it does not fit.
+// Both convolution entry points share these checks.
 bool window_dims(const WindowShape& s, WindowDims& d) {
     const size_t all[] = {s.batch, s.channels, s.height, s.width, s.kernel_h,
                           s.kernel_w, s.stride, s.padding, s.out_h, s.out_w};
@@ -864,8 +864,8 @@ bool binary(Binary op, const Storage& a, const Storage& b, Storage& out,
     if (inner == 0 || repeat == 0) return false;
     if (inner * repeat != a.size() || out.size() != a.size()) return false;
     if (b.size() < inner) return false;
-    // Con difusión la malla se organiza por repeticiones, y eso limita cuántas
-    // caben; por encima de ese punto lo hace la CPU.
+    // With broadcasting the grid is organised by repetitions, which limits how many
+    // fit; past that point the CPU takes it.
     if (repeat > 1 && repeat > kMaxGridYZ) return false;
 
     switch (op) {
@@ -883,8 +883,8 @@ bool matmul(const Storage& a, const Storage& b, Storage& out,
     if (!enabled()) return false;
     if (batch == 0 || rows == 0 || inner_dim == 0 || cols == 0) return false;
 
-    // El umbral es el trabajo total del lote: un lote de matrices pequeñas sí
-    // puede merecer la pena aunque cada una por separado no lo mereciera.
+    // The threshold is the batch's total work: a batch of small matrices can be
+    // worth it even when none of them would be on its own.
     const double flops = 2.0 * (double)batch * rows * inner_dim * cols;
     if (flops < (double)min_matmul_flops()) return false;
 
@@ -892,8 +892,8 @@ bool matmul(const Storage& a, const Storage& b, Storage& out,
     if (batch > kMaxGridYZ) return false;
     if (out.size() != batch * rows * cols) return false;
 
-    // Paso 0 en el operando no lotificado: la misma matriz para todo el lote,
-    // exactamente igual que en el camino de CPU.
+    // Stride 0 on the unbatched operand: the same matrix for the whole batch,
+    // exactly as on the CPU path.
     const long long a_stride = a_batched ? (long long)rows * inner_dim : 0;
     const long long b_stride = b_batched ? (long long)inner_dim * cols : 0;
 
@@ -903,10 +903,10 @@ bool matmul(const Storage& a, const Storage& b, Storage& out,
 
     MatmulKernel choice = resolve_matmul_kernel(rows, inner_dim, cols);
 
-    // Si alguien pidió a mano la variante vectorizada sobre una forma que no
-    // cumple la alineación, se degrada en silencio a la de registros en lugar
-    // de calcular mal. Una lectura float4 desalineada no da un error: da otro
-    // valor, que es bastante peor.
+    // If someone asked for the vectorised variant by hand on a shape that does not
+    // meet the alignment, it degrades quietly to the register-tiled one instead of
+    // computing wrongly. A misaligned float4 read does not raise an error: it
+    // returns a different value, which is considerably worse.
     if (choice == MatmulKernel::Vectorized && (K % 4 != 0 || N % 4 != 0)) {
         choice = MatmulKernel::RegisterTiled;
     }
@@ -965,8 +965,8 @@ bool permute(const Storage& x, Storage& out,
         plan.stride[d] = (long long)src_strides[d];
         total *= out_shape[d];
     }
-    // La forma de salida tiene que cubrir la entrada entera: si no cuadra, el
-    // kernel leeria fuera del bufer en lugar de dar un resultado equivocado.
+    // The output shape has to cover the whole input: if it does not add up, the
+    // kernel would read past the buffer rather than give a wrong result.
     if (total != x.size()) return false;
 
     const long long n = (long long)x.size();
@@ -1002,8 +1002,8 @@ bool im2col(const Storage& input, Storage& cols, const WindowShape& s) {
 }
 
 bool col2im(const Storage& cols, Storage& input, const WindowShape& s) {
-    // El trabajo se mide por las columnas, que es el lado grande, aunque la
-    // malla recorra la entrada: con kernel 3x3 son nueve veces mas valores.
+    // Work is measured by the columns, the big side, even though the grid walks
+    // the input: with a 3x3 kernel that is nine times more values.
     if (!elementwise_worth_it(cols.size())) return false;
 
     WindowDims d{};
@@ -1027,17 +1027,17 @@ bool maxpool(const Storage& input, Storage& out, Storage& argmax, const WindowSh
     if (input.size() != s.batch * s.channels * s.height * s.width) return false;
     if (out.size() != s.batch * s.channels * s.out_h * s.out_w) return false;
     if (argmax.size() != out.size()) return false;
-    // El indice viaja en float, que solo representa enteros exactos hasta 2^24.
-    // Por encima de ese tamano el redondeo elegiria otro pixel, asi que se
-    // rechaza el despacho y lo hace la CPU.
+    // The index travels as a float, which only represents integers exactly up to
+    // 2^24. Above that size the rounding would pick a different pixel, so the
+    // dispatch is refused and the CPU takes it.
     if (input.size() > (size_t{1} << 24)) return false;
 
     const long long n = (long long)out.size();
     maxpool_windows<<<grid_for(n), kBlock>>>(input.device(), out.device_write(),
                                              argmax.device_write(), d, n);
-    // Dos salidas, y las dos se pidieron con device_write(): si el lanzamiento
-    // falla hay que deshacer las dos, o el camino de CPU bajaria a host un bufer
-    // sin inicializar.
+    // Two outputs, both requested with device_write(): if the launch fails both
+    // have to be undone, or the CPU path would pull an uninitialised buffer down
+    // to host.
     if (launch_ok("maxpool_windows")) return true;
     out.revert_device_write();
     argmax.revert_device_write();
@@ -1081,10 +1081,10 @@ bool relu_backward(const Storage& x, const Storage& grad_out, Storage& out) {
 bool accumulate_grad(Storage& grad, const Storage& g, bool initialize) {
     if (!elementwise_worth_it(g.size())) return false;
     if (grad.size() != g.size()) return false;
-    // Sólo si no cuesta ni una transferencia. El gradiente acaba leyéndose en
-    // host —el optimizador va por CPU—, así que subir algo para sumarlo aquí
-    // pagaría el viaje dos veces y saldría peor que no acelerar nada. Al
-    // inicializar, el destino se escribe entero y no hay nada que subir.
+    // Only if it costs no transfer at all. The gradient ends up being read on the
+    // host -- the optimiser runs on the CPU -- so uploading something to add it here
+    // would pay the trip twice and come out worse than not accelerating at all. When
+    // initialising, the destination is written in full and there is nothing to send.
     if (!g.resident_on_device()) return false;
     if (!initialize && !grad.resident_on_device()) return false;
 
@@ -1093,11 +1093,11 @@ bool accumulate_grad(Storage& grad, const Storage& g, bool initialize) {
     grad_accumulate<<<grid_for(n), kBlock>>>(g.device(), out, n, initialize);
     if (launch_ok("grad_accumulate")) return true;
 
-    // Asimetría deliberada, y por eso este no usa launched_ok(). device_write()
-    // dio el búfer por válido sin subirlo, así que si el kernel no salió hay que
-    // deshacerlo. device_mut() sí subió: el dispositivo tiene el dato bueno y el
-    // host está marcado obsoleto, de modo que el camino de CPU lo bajará intacto.
-    // Revertir ahí ascendería a válido un host que no lo está.
+    // A deliberate asymmetry, which is why this one does not use launched_ok().
+    // device_write() marked the buffer valid without uploading it, so if the kernel
+    // never ran that has to be undone. device_mut() did upload: the device holds the
+    // good data and the host is marked stale, so the CPU path will pull it down
+    // intact. Reverting there would promote a host copy that is not valid.
     if (initialize) grad.revert_device_write();
     return false;
 }

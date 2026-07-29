@@ -1,10 +1,10 @@
 #ifndef ENGINE_TENSOR_HPP
 #define ENGINE_TENSOR_HPP
 
-// Esta cabecera la incluye todo el motor, así que solo trae lo que la
-// declaración de Tensor necesita. Lo demás vive donde se usa:
-//   - TensorImpl (y <functional>) en engine/detail/tensor_impl.hpp
-//   - global_rng() (y <random>) en engine/random.hpp
+// Every translation unit in the engine includes this header, so it pulls in
+// nothing beyond what declaring Tensor needs. The rest lives where it is used:
+//   - TensorImpl (and <functional>) in engine/detail/tensor_impl.hpp
+//   - global_rng() (and <random>) in engine/random.hpp
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -16,38 +16,38 @@ namespace engine {
 
 struct TensorImpl;
 
-// Fija la semilla del generador global usado por rand()/randn() y por la
-// inicializacion de las capas, para poder reproducir un entrenamiento.
-// El generador en sí se declara en <engine/random.hpp>.
+// Seeds the global generator used by rand()/randn() and by layer
+// initialisation, so a training run can be reproduced. The generator itself is
+// declared in <engine/random.hpp>.
 //
-// Aviso: el generador es un único objeto compartido, sin protección frente a
-// accesos concurrentes. El motor no usa hilos; si se añadieran, habría que
-// darle uno por hilo o protegerlo.
+// Warning: it is a single shared object with no protection against concurrent
+// access. The engine does not thread through it; if that ever changes, it needs
+// either one generator per thread or a lock.
 void manual_seed(uint64_t seed);
 
 class Tensor {
 private:
     std::shared_ptr<TensorImpl> impl_;
 
-    // Constructor privado para envolver un TensorImpl existente
+    // Private constructor wrapping an existing TensorImpl
     explicit Tensor(std::shared_ptr<TensorImpl> impl);
 
 public:
-    // Constructores públicos
+    // Public constructors
     Tensor();
     explicit Tensor(const std::vector<size_t>& shape, float fill_value = 0.0f, bool requires_grad = false);
     Tensor(const std::vector<size_t>& shape, const std::vector<float>& data, bool requires_grad = false);
 
-    // Método estático auxiliar para envolver una implementación compartida
+    // Static helper for wrapping a shared implementation
     static Tensor from_impl(std::shared_ptr<TensorImpl> impl);
 
-    // Métodos estáticos de fábrica
+    // Factory methods
     static Tensor zeros(const std::vector<size_t>& shape, bool requires_grad = false);
     static Tensor ones(const std::vector<size_t>& shape, bool requires_grad = false);
     static Tensor rand(const std::vector<size_t>& shape, float min_val = -1.0f, float max_val = 1.0f, bool requires_grad = false);
     static Tensor randn(const std::vector<size_t>& shape, float mean = 0.0f, float stddev = 1.0f, bool requires_grad = false);
 
-    // Métodos Autograd y Gradientes
+    // Autograd and gradients
     bool requires_grad() const;
     void set_requires_grad(bool requires_grad);
     Tensor grad() const;
@@ -57,12 +57,13 @@ public:
     void backward();
     void backward(const Tensor& grad_output);
 
-    // Obtener implementación compartida interna
+    // Access to the shared internal implementation
     std::shared_ptr<TensorImpl> get_impl() const { return impl_; }
 
-    // Indexación y propiedades.
-    // La sobrecarga con vector es genérica pero reserva memoria dinámica en
-    // cada acceso; para recorrer una matriz conviene la sobrecarga (fila, col).
+    // Indexing and properties.
+    //
+    // The vector overload is generic but allocates on every access; to walk a
+    // matrix, prefer the (row, col) overload.
     size_t get_flat_index(const std::vector<size_t>& indices) const;
     float& operator()(const std::vector<size_t>& indices);
     const float& operator()(const std::vector<size_t>& indices) const;
@@ -79,11 +80,12 @@ public:
     size_t ndim() const;
     std::string shape_str() const;
 
-    // Operaciones matemáticas con soporte para Autograd
-    // Los cuatro operadores admiten difusión (broadcasting) por sufijo del
-    // operando derecho: (N,) o (1, N) sobre (M, N) para el sesgo, (S, D) sobre
-    // (B, S, D) para la codificación posicional, (S, S) sobre (B, H, S, S)
-    // para la máscara, y {1} como escalar sobre cualquier forma.
+    // Arithmetic, with autograd support.
+    //
+    // All four operators broadcast the right-hand operand by suffix: (N,) or
+    // (1, N) over (M, N) for a bias, (S, D) over (B, S, D) for a positional
+    // encoding, (S, S) over (B, H, S, S) for a mask, and {1} as a scalar over
+    // any shape.
     Tensor operator+(const Tensor& other) const;
     Tensor operator-(const Tensor& other) const;
     Tensor operator*(const Tensor& other) const;
@@ -94,44 +96,44 @@ public:
     Tensor operator*(float scalar) const;
     Tensor operator/(float scalar) const;
 
-    // Concatena a lo largo de un eje; el resto de dimensiones debe coincidir.
+    // Concatenates along an axis; every other dimension must match.
     static Tensor concat(const std::vector<Tensor>& parts, size_t axis);
-    // Apila creando un eje nuevo en la posición indicada.
+    // Stacks, creating a new axis at the given position.
     static Tensor stack(const std::vector<Tensor>& parts, size_t axis = 0);
 
-    // matmul admite lotes: (B..., M, K) x (B..., K, N) -> (B..., M, N).
-    // transpose intercambia los dos últimos ejes; permute reordena todos.
+    // matmul is batched: (B..., M, K) x (B..., K, N) -> (B..., M, N).
+    // transpose swaps the last two axes; permute reorders all of them.
     Tensor matmul(const Tensor& other) const;
     Tensor transpose() const;
     Tensor permute(const std::vector<size_t>& order) const;
     Tensor relu() const;
-    Tensor softmax() const;   // sobre el último eje
+    Tensor softmax() const;   // over the last axis
     Tensor reshape(const std::vector<size_t>& new_shape) const;
-    // Reducciones. Sin argumentos reducen a un escalar {1}; con un eje lo
-    // eliminan (o lo dejan a 1 con keepdim), igual que en NumPy o PyTorch.
+    // Reductions. With no argument they reduce to a {1} scalar; with an axis
+    // they drop it (or leave it at 1 with keepdim), as in NumPy or PyTorch.
     Tensor sum() const;
     Tensor mean() const;
     Tensor sum(size_t axis, bool keepdim = false) const;
     Tensor mean(size_t axis, bool keepdim = false) const;
     Tensor max(size_t axis, bool keepdim = false) const;
 
-    // Sub-tensor contiguo a lo largo de un eje: [start, start + count).
+    // Contiguous sub-tensor along an axis: [start, start + count).
     Tensor slice(size_t axis, size_t start, size_t count) const;
 
-    // Extrae los elementos indicados del primer eje para formar un mini-lote:
-    // de (M, N) toma filas y de (N, C, H, W) toma imágenes completas. Es la
-    // operación que permite el entrenamiento por mini-lotes. Los índices
-    // pueden repetirse: su gradiente se acumula en el elemento de origen.
+    // Gathers the given elements of the first axis into a mini-batch: rows from
+    // an (M, N), whole images from an (N, C, H, W). This is the operation that
+    // makes mini-batch training possible. Indices may repeat: their gradients
+    // accumulate into the source element.
     Tensor select_rows(const std::vector<size_t>& indices) const;
 
-    // Copia desligada del grafo (comparte forma y valores, no el historial)
+    // A copy detached from the graph (shares shape and values, not history)
     Tensor detach() const;
 
-    // Formateo e impresión
+    // Formatting and printing
     void print(const std::string& name = "") const;
 };
 
-// Operadores con el escalar a la izquierda, para poder escribir 2.0f * t
+// Scalar-on-the-left overloads, so that 2.0f * t is valid
 Tensor operator+(float scalar, const Tensor& t);
 Tensor operator-(float scalar, const Tensor& t);
 Tensor operator*(float scalar, const Tensor& t);

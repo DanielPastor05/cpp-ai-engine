@@ -40,22 +40,22 @@ SGD::SGD(std::vector<Tensor> parameters, float lr, float momentum, float weight_
 }
 
 void SGD::step() {
-    // La actualización de pesos nunca debe formar parte del grafo
+    // The weight update must never become part of the graph
     autograd::NoGradGuard no_grad;
 
     for (size_t i = 0; i < params_.size(); ++i) {
         Tensor& p = params_[i];
         if (!p.requires_grad() || !p.has_grad()) continue;
 
-        // Se conserva el Tensor del gradiente en una variable: tomar la
-        // referencia directamente de p.grad().data() apuntaría al interior de
-        // un temporal.
+        // The gradient Tensor is held in a variable: taking the reference straight
+        // from p.grad().data() would point into a temporary.
+        //
         Tensor grad_tensor = p.grad();
         const std::vector<float>& g = grad_tensor.data();
         std::vector<float>& w = p.data();
 
-        // Cada peso se actualiza con su propio gradiente y su propia velocidad:
-        // no hay ninguna reducción, así que el reparto no cambia el resultado.
+        // Each weight is updated with its own gradient and its own velocity: there is
+        // no reduction, so splitting does not change the result.
         const float* ENGINE_RESTRICT gp = g.data();
         float* ENGINE_RESTRICT wp = w.data();
         float* ENGINE_RESTRICT vp = momentum_ != 0.0f ? velocity_[i].data() : nullptr;
@@ -101,8 +101,8 @@ void Adam::step() {
     autograd::NoGradGuard no_grad;
 
     ++t_;
-    // Corrección de sesgo: sin ella los primeros pasos serían demasiado pequeños,
-    // porque m y v arrancan en cero.
+    // Bias correction: without it the first steps would be far too small, because m
+    // and v start at zero.
     const float bias_c1 = 1.0f - std::pow(beta1_, static_cast<float>(t_));
     const float bias_c2 = 1.0f - std::pow(beta2_, static_cast<float>(t_));
 
@@ -110,15 +110,15 @@ void Adam::step() {
         Tensor& p = params_[i];
         if (!p.requires_grad() || !p.has_grad()) continue;
 
-        // Se conserva el Tensor del gradiente en una variable: tomar la
-        // referencia directamente de p.grad().data() apuntaría al interior de
-        // un temporal.
+        // The gradient Tensor is held in a variable: taking the reference straight
+        // from p.grad().data() would point into a temporary.
+        //
         Tensor grad_tensor = p.grad();
         const std::vector<float>& g = grad_tensor.data();
         std::vector<float>& w = p.data();
 
-        // Igual que en SGD: cada peso lleva su propio momento y su propia
-        // varianza, y no se cruza nada entre índices.
+        // As in SGD: each weight carries its own moment and its own variance,
+        // and nothing crosses between indices.
         const float* ENGINE_RESTRICT gp = g.data();
         float* ENGINE_RESTRICT wp = w.data();
         float* ENGINE_RESTRICT mp = m_[i].data();
@@ -142,7 +142,7 @@ void Adam::step() {
 }
 
 // ---------------------------------------------------------
-// Recorte de gradiente
+// Gradient clipping
 // ---------------------------------------------------------
 
 float clip_grad_norm(const std::vector<Tensor>& parameters, float max_norm) {
@@ -151,8 +151,8 @@ float clip_grad_norm(const std::vector<Tensor>& parameters, float max_norm) {
     }
     autograd::NoGradGuard no_grad;
 
-    // La norma es global, sobre todos los parámetros juntos: recortar cada uno
-    // por separado cambiaría la dirección del paso, no solo su longitud.
+    // The norm is global, over all parameters together: clipping each separately
+    // would change the step's direction, not just its length.
     double total = 0.0;
     for (const Tensor& p : parameters) {
         if (!p.has_grad()) continue;
@@ -172,7 +172,7 @@ float clip_grad_norm(const std::vector<Tensor>& parameters, float max_norm) {
 }
 
 // ---------------------------------------------------------
-// Planificadores
+// Schedulers
 // ---------------------------------------------------------
 
 Scheduler::Scheduler(Optimizer& optimizer)
@@ -190,9 +190,9 @@ StepLR::StepLR(Optimizer& optimizer, size_t step_size, float gamma)
 }
 
 float StepLR::compute(size_t epoch) const {
-    // La división entera es intencionada: el learning rate baja a escalones,
-    // no de forma continua. Con step_size = 2, las épocas 0 y 1 dan escalón 0,
-    // las 2 y 3 el escalón 1, y así. Se calcula aparte para dejarlo explícito.
+    // The integer division is intentional: the learning rate drops in steps rather
+    // than continuously. With step_size = 2, epochs 0 and 1 give step 0, epochs 2
+    // and 3 step 1, and so on. Computed separately to make that explicit.
     const size_t completed_steps = epoch / step_size_;
     return base_lr_ * std::pow(gamma_, static_cast<float>(completed_steps));
 }
@@ -225,9 +225,9 @@ WarmupCosineLR::WarmupCosineLR(Optimizer& optimizer, size_t warmup_epochs,
 
 float WarmupCosineLR::compute(size_t epoch) const {
     if (epoch < warmup_epochs_) {
-        // Rampa lineal repartida en warmup_epochs pasos: tras el último, la
-        // época `warmup_epochs` ya cae en la rama del coseno con t = 0, que
-        // vale exactamente el learning rate base.
+        // A linear ramp spread over warmup_epochs steps: after the last one, epoch
+        // `warmup_epochs` already falls in the cosine branch with t = 0, which is
+        // exactly the base learning rate.
         return base_lr_ * static_cast<float>(epoch) / static_cast<float>(warmup_epochs_);
     }
     const float t = static_cast<float>(epoch - warmup_epochs_) /

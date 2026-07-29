@@ -13,7 +13,7 @@ namespace engine {
 namespace nn {
 
 // ---------------------------------------------------------
-// Abstracción base de todas las capas
+// The base abstraction behind every layer
 // ---------------------------------------------------------
 class Module {
 public:
@@ -21,32 +21,32 @@ public:
 
     virtual Tensor forward(const Tensor& input) = 0;
 
-    // Azúcar sintáctico: modulo(x) equivale a modulo.forward(x)
+    // Syntactic sugar: module(x) is the same as module.forward(x)
     Tensor operator()(const Tensor& input) { return forward(input); }
 
-    // Parámetros entrenables de la capa (vacío para capas sin estado).
-    // Los Tensor devueltos comparten la implementación interna, así que
-    // escribir en ellos actualiza los pesos de la capa.
+    // The layer's trainable parameters (empty for stateless layers).
+    // The returned Tensors share the internal implementation, so writing to
+    // them updates the layer's weights.
     virtual std::vector<Tensor> parameters() { return {}; }
 
-    // Parámetros con un nombre estable, para poder guardarlos y volver a
-    // cargarlos casando cada tensor con el suyo. El orden debe coincidir
-    // siempre con el de parameters().
+    // Parameters under a stable name, so a checkpoint can be saved and
+    // reloaded matching each tensor with its own. The order must always agree
+    // with parameters().
     virtual std::vector<std::pair<std::string, Tensor>> named_parameters(
         const std::string& prefix = "");
 
-    // Modo de entrenamiento. Capas como Dropout se comportan distinto al
-    // entrenar y al inferir; el interruptor se propaga a las subcapas.
+    // Training mode. Layers like Dropout behave differently when training and
+    // when inferring; the switch propagates to sub-layers.
     virtual void train(bool mode = true) { training_ = mode; }
     void eval() { train(false); }
     bool is_training() const { return training_; }
 
     virtual std::string name() const { return "Module"; }
 
-    // Pone a cero los gradientes acumulados de todos los parámetros
+    // Zeroes the accumulated gradients of every parameter
     void zero_grad();
 
-    // Número total de escalares entrenables
+    // Total number of trainable scalars
     size_t num_parameters();
 
 protected:
@@ -54,11 +54,11 @@ protected:
 };
 
 // ---------------------------------------------------------
-// Capa densa (totalmente conectada): y = x · W + b
+// Dense (fully connected) layer: y = x . W + b
 // ---------------------------------------------------------
 class Linear : public Module {
 public:
-    // Inicialización Xavier/Glorot uniforme: U(-limit, limit) con
+    // Uniform Xavier/Glorot initialisation: U(-limit, limit) with
     // limit = sqrt(6 / (in_features + out_features)).
     Linear(size_t in_features, size_t out_features, bool use_bias = true);
 
@@ -80,7 +80,7 @@ private:
 };
 
 // ---------------------------------------------------------
-// Activaciones (sin parámetros)
+// Activations (no parameters)
 // ---------------------------------------------------------
 class ReLU : public Module {
 public:
@@ -106,19 +106,19 @@ public:
     std::string name() const override { return "Tanh"; }
 };
 
-// GELU en su aproximación por tangente hiperbólica, la que usan GPT y BERT.
-// A diferencia de ReLU no tiene un pliegue en el origen, y deja pasar un poco
-// de señal negativa en lugar de anularla del todo.
+// GELU in its hyperbolic-tangent approximation, the one GPT and BERT use.
+// Unlike ReLU it has no kink at the origin, and it lets a little negative
+// signal through instead of clamping it away entirely.
 class GELU : public Module {
 public:
     Tensor forward(const Tensor& input) override;
     std::string name() const override { return "GELU"; }
 };
 
-// Anula cada activación con probabilidad p durante el entrenamiento y escala
-// el resto por 1/(1-p), de modo que la media se conserve. En modo eval() no
-// hace nada. Es regularización: obliga a la red a no depender de una neurona
-// concreta.
+// Zeroes each activation with probability p during training and scales the
+// rest by 1/(1-p), so the mean is preserved. In eval() mode it does nothing.
+// It is regularisation: it forces the network not to depend on any one
+// neuron.
 class Dropout : public Module {
 public:
     explicit Dropout(float p = 0.5f);
@@ -132,7 +132,7 @@ private:
 };
 
 // ---------------------------------------------------------
-// Contenedor secuencial de capas
+// Sequential container of layers
 // ---------------------------------------------------------
 class Sequential : public Module {
 public:
@@ -156,26 +156,26 @@ private:
     std::vector<std::shared_ptr<Module>> layers_;
 };
 
-// Ayudas de construcción
+// Construction helpers
 template <typename T, typename... Args>
 std::shared_ptr<T> make(Args&&... args) {
     return std::make_shared<T>(std::forward<Args>(args)...);
 }
 
 // ---------------------------------------------------------
-// Funciones de pérdida
+// Loss functions
 // ---------------------------------------------------------
 
-// Error cuadrático medio: mean((pred - target)^2)
+// Mean squared error: mean((pred - target)^2)
 Tensor mse_loss(const Tensor& prediction, const Tensor& target);
 
-// Entropía cruzada sobre logits sin normalizar, con las clases correctas dadas
-// como índices enteros. Fusiona log-softmax y NLL en un solo nodo del grafo:
-// es más estable numéricamente que encadenar Softmax + log, y su gradiente se
-// reduce a (softmax(logits) - one_hot) / N.
+// Cross entropy over unnormalised logits, with the correct classes given as
+// integer indices. It fuses log-softmax and NLL into a single graph node: that
+// is numerically more stable than chaining Softmax + log, and its gradient
+// reduces to (softmax(logits) - one_hot) / N.
 //
-//   logits  : (N, C) sin normalizar
-//   targets : N índices de clase en [0, C)
+//   logits  : (N, C), unnormalised
+//   targets : N class indices in [0, C)
 Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targets);
 
 class CrossEntropyLoss {
@@ -188,7 +188,7 @@ public:
     }
 };
 
-// Índice de la clase de mayor puntuación por fila (para calcular la exactitud)
+// Index of the highest-scoring class per row (used to compute accuracy)
 std::vector<size_t> argmax_rows(const Tensor& logits);
 float accuracy(const Tensor& logits, const std::vector<size_t>& targets);
 

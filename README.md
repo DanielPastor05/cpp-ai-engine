@@ -348,6 +348,39 @@ target_link_libraries(my_app PRIVATE engine::engine)
 
 ---
 
+## How this was built
+
+This engine was written with heavy AI assistance — most commits carry a
+`Co-Authored-By: Claude` trailer, and the history is short and dense because of
+it. Those trailers are deliberate and were never stripped. Saying so here rather
+than letting a reader work it out from `git log` seems like the only honest
+option, so: what follows is what was mine and what was not.
+
+**Mine.** The architecture and every decision that constrains it: `Tensor` as a
+handle over a shared `TensorImpl`; splitting the buffer into a `Storage` with
+host/device validity flags *before* writing the first kernel, because the
+alternative was host/device branches spread through every operation; the
+`bool`-returning dispatch contract that keeps `src/tensor.cpp` free of `#ifdef`.
+The decision to validate against PyTorch instead of trusting numerical gradient
+checks. Choosing what to measure, reading the measurements, and the calls that
+followed from them — including killing optimisations that turned out to be
+slower, and the ones recorded in [docs/PERFORMANCE.md](docs/PERFORMANCE.md) as
+failures. Which of the four `matmul` kernels was worth keeping and why the
+progression itself is the result.
+
+**Not mine, or not only mine.** Most of the code as typed. The register-tiled
+GEMM was written against an arithmetic-intensity argument I set out and then
+verified by profiling, but I did not derive the load-index algebra by hand.
+Large parts of the prose in `docs/`.
+
+**What I claim.** That I can defend any of it. The design notes in
+[docs/DESIGN.md](docs/DESIGN.md) state each decision with the alternative it
+rejected, and [docs/ENGINEERING.md](docs/ENGINEERING.md) logs the bugs that were
+actually hit, with the regression test each one left behind. Those two documents
+are the part I would most want read.
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

@@ -1,12 +1,12 @@
 #ifndef ENGINE_RANDOM_HPP
 #define ENGINE_RANDOM_HPP
 
-// Generador aleatorio global del motor. Vive aparte de engine/tensor.hpp
-// porque <random> es de las cabeceras estándar más caras de compilar y solo
-// hace falta donde se generan números.
+// The engine's global random generator. It lives apart from engine/tensor.hpp
+// because <random> is one of the most expensive standard headers to compile and
+// is only needed where numbers are actually generated.
 //
-// Aviso: es un único objeto compartido y no está protegido frente a accesos
-// concurrentes.
+// Warning: it is a single shared object with no protection against concurrent
+// access.
 
 #include <random>
 

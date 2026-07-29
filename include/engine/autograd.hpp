@@ -12,14 +12,13 @@ class Tensor;
 
 namespace autograd {
 
-// Estado global de construccion del grafo. Cuando esta desactivado, las
-// operaciones no registran nodos ni funciones de gradiente.
+// Global graph-construction state. While it is off, operations register neither
+// nodes nor gradient functions.
 bool grad_enabled();
 void set_grad_enabled(bool enabled);
 
-// Guarda RAII para desactivar temporalmente el registro del grafo.
-// Se usa durante la propagacion hacia atras (los gradientes no necesitan
-// gradientes) y en los optimizadores.
+// RAII guard that temporarily disables graph recording. Used during the
+// backward pass (gradients do not need gradients) and inside the optimisers.
 class NoGradGuard {
 public:
     NoGradGuard();
@@ -32,8 +31,8 @@ private:
     bool previous_;
 };
 
-// Ejecuta el ordenamiento topologico (DFS) y la propagacion de gradientes
-// hacia atras (Backpropagation) partiendo de root_tensor.
+// Runs the topological sort (DFS) and propagates gradients backwards from
+// root_tensor.
 void backward(Tensor& root_tensor);
 
 } // namespace autograd
