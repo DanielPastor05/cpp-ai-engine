@@ -22,6 +22,23 @@ void test_tensor_basics() {
     Tensor R = A.reshape({3, 2});
     check(R.shape() == std::vector<size_t>({3, 2}), "reshape to (3, 2) preserves the data");
     check_close(R({2, 1}), 6.0f, "reshape keeps the memory order");
+
+    // reshape is a **view**: same buffer, different label on the axes. This is
+    // PyTorch's semantics and it is a deliberate choice, not a side effect, so
+    // it gets pinned here rather than left to be discovered.
+    //
+    // It is also what makes the operation free. When this copied the buffer it
+    // was the most expensive line in the engine that computed nothing -- three
+    // copies per Conv2d forward, two per attention projection, each of them
+    // megabytes, each with a mirror in the backward.
+    //
+    // Nothing in src/ writes through a reshape result today. If something
+    // starts to, this check is what turns that into a decision instead of a
+    // surprise.
+    R.data()[0] = 99.0f;
+    check_close(A({0, 0}), 99.0f, "a write through a reshaped tensor is visible in the original");
+    A.data()[5] = -7.0f;
+    check_close(R({2, 1}), -7.0f, "and the other way round: they are one buffer");
 }
 
 void test_matmul() {

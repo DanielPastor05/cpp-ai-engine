@@ -148,6 +148,30 @@ Tensor clone_with_shape(const Storage& src, const std::vector<size_t>& shape, bo
     return Tensor::from_impl(impl);
 }
 
+// The same, but sharing the buffer instead of copying it: a view.
+//
+// Only reshape uses this, and only because reshape is the one operation that
+// changes nothing about the data -- same values, same order, same count, a
+// different label on the axes. Everything else in the engine that produces a
+// new shape (transpose, permute, slice off axis 0) genuinely moves elements
+// around, and a view of those would need non-contiguous strides threaded
+// through every kernel and every CPU loop.
+//
+// The aliasing this introduces is real and is the point: writing through the
+// reshaped tensor is visible in the original, exactly as in PyTorch. It is safe
+// here because nothing in the engine writes through a reshape result -- checked
+// across the twelve in-place write sites in src/, all of which write to tensors
+// they created on the line above. tests/test_tensor.cpp pins the semantics so a
+// future one cannot start doing it by accident.
+Tensor view_with_shape(const Storage& src, const std::vector<size_t>& shape, bool req_grad) {
+    auto impl = std::make_shared<TensorImpl>();
+    impl->storage = src.share();
+    impl->shape = shape;
+    impl->compute_strides();
+    impl->requires_grad = req_grad;
+    return Tensor::from_impl(impl);
+}
+
 // Offers the operation to the CUDA backend. Returns true if the GPU took it;
 // false means "no device" or "not worth it at this size", and the caller
 // carries on down the CPU path. Without CUDA the call is a function returning
@@ -1094,15 +1118,15 @@ Tensor Tensor::reshape(const std::vector<size_t>& new_shape) const {
     }
     bool req_g = track(requires_grad());
 
-    // The tensor being reinterpreted usually comes from a matmul and is resident on
-    // the GPU -- split_heads, in attention, is exactly that -- so building it from
-    // data() cost one download plus the next operation's upload, twice per
-    // projection.
+    // A view: no bytes move, and neither does the residency. Reshaping a tensor
+    // that is on the GPU gives another handle on the same device buffer.
     //
-    // ponytail: this is still a copy of the whole buffer, not a view. Removing it
-    // entirely needs a shared Storage with its own offset and shape, and that
-    // touches the autograd graph; this takes the expensive part without that change.
-    Tensor res = clone_with_shape(impl_->storage, new_shape, req_g);
+    // This used to copy the whole buffer, and it was the most expensive line in
+    // the engine that computed nothing. Conv2d reshapes three times per forward,
+    // Linear twice on a 3D input, attention twice per projection -- each of them
+    // megabytes, each of them with a mirror in the backward. It was also what
+    // made the composed Conv2d slower than the hand-written one it replaced.
+    Tensor res = view_with_shape(impl_->storage, new_shape, req_g);
 
     if (req_g) {
         res.impl_->parents = {impl_};

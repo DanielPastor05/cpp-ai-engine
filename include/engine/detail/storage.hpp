@@ -2,14 +2,16 @@
 #define ENGINE_DETAIL_STORAGE_HPP
 
 #include <cstddef>
+#include <memory>
 #include <vector>
 
 namespace engine {
 
 // A tensor's buffer, and which side of the bus it lives on.
 //
-// Without CUDA this is exactly a std::vector<float>: the device members are not
-// even declared, so a CPU build pays nothing for the backend existing at all.
+// Without CUDA this is a std::vector<float> behind a shared handle: the CPU
+// build pays one small allocation for the handle and nothing at all for the
+// backend existing.
 //
 // With CUDA it also keeps a device mirror and two validity flags. Nothing is
 // copied until somebody asks for the side that has gone stale, so a chain of
@@ -25,18 +27,18 @@ namespace engine {
 // Invariant: at least one of the two copies is valid at all times.
 class Storage {
 public:
-    Storage() = default;
+    Storage();
     Storage(size_t count, float fill);
     explicit Storage(std::vector<float> values);
 
     Storage(const Storage& other);
     Storage& operator=(const Storage& other);
-    Storage(Storage&& other) noexcept;
-    Storage& operator=(Storage&& other) noexcept;
+    Storage(Storage&& other) noexcept = default;
+    Storage& operator=(Storage&& other) noexcept = default;
     ~Storage();
 
-    size_t size() const { return host_.size(); }
-    bool empty() const { return host_.empty(); }
+    size_t size() const { return buf_->host.size(); }
+    bool empty() const { return buf_->host.empty(); }
 
     // ---- host side ----
     // The mutable version marks the device mirror stale: if the program writes
@@ -51,15 +53,26 @@ public:
 
     void assign(size_t count, float value);
 
-    // A copy with the same values that **keeps whichever side they live on**:
-    // if the data is only on the device, it is duplicated there with an
-    // internal memcpy instead of being pulled down and pushed back up.
+    // An independent copy that **keeps whichever side the values live on**: if
+    // the data is only on the device, it is duplicated there with an internal
+    // memcpy instead of being pulled down and pushed back up.
     //
     // The copy constructor cannot do this: it runs when tensors are copied
     // around, and allocating GPU memory on every tensor copy is the last thing
-    // a training loop needs. Here the situation is the opposite — reshape is
+    // a training loop needs. Here the situation is the opposite — the caller is
     // going to have both copies live anyway — and it saves the round trip.
     Storage clone() const;
+
+    // A second handle on the **same** buffer: both see each other's writes, and
+    // both see the same host/device residency, because there is only one of
+    // each. This is what makes reshape a view rather than a copy.
+    //
+    // Sharing is the dangerous one of the three, so it is a named method rather
+    // than a copy constructor: the caller has to mean it. `reshape` means it.
+    Storage share() const;
+
+    // True if two handles refer to the same buffer. For tests and assertions.
+    bool shares_with(const Storage& other) const { return buf_ == other.buf_; }
 
     // ---- device side ----
 #ifdef ENGINE_CUDA
@@ -79,21 +92,31 @@ public:
 
     // True if the most recent valid copy is on the device. Used by the test
     // suite and by dispatch decisions, never by correctness.
-    bool resident_on_device() const { return device_valid_; }
+    bool resident_on_device() const { return buf_->device_valid; }
 #endif
 
 private:
+    // Everything that a view has to see through its sibling lives here: the
+    // values, the device mirror and the two flags. Splitting any of it out
+    // would let two handles disagree about where the good copy is, which is the
+    // one thing the invariant exists to prevent.
+    struct Buffer {
+        std::vector<float> host;
+#ifdef ENGINE_CUDA
+        float* device = nullptr;
+        bool host_valid = true;
+        bool device_valid = false;
+#endif
+        ~Buffer();
+    };
+
 #ifdef ENGINE_CUDA
     void ensure_device_buffer() const;
     void sync_host() const;
     void sync_device() const;
-    void release_device();
-
-    mutable float* device_ = nullptr;
-    mutable bool host_valid_ = true;
-    mutable bool device_valid_ = false;
 #endif
-    mutable std::vector<float> host_;
+
+    std::shared_ptr<Buffer> buf_;
 };
 
 }  // namespace engine
