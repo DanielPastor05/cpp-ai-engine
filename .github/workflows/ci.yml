@@ -184,21 +184,26 @@ jobs:
       # worse than no configuration: it claims a standard the code does not
       # actually meet. When this job was first added, 45 of the 46 source files
       # failed the project's own format.
+      # Both tools come from pip, at exactly the versions the findings were
+      # triaged against, and that pinning is not fussiness. clang-format's output
+      # changes between major versions, so an unpinned one turns a green tree red
+      # on somebody else's schedule. clang-tidy's check *contents* change too:
+      # bugprone-* and performance-* gain and lose rules, so "clang-tidy is
+      # clean" only means something next to a version number.
+      #
+      # This job first went red for exactly that reason -- validated against 20
+      # locally, run against apt's 18 in CI.
       - name: Install the tooling
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-format-18 clang-tidy-18
-          sudo update-alternatives --install /usr/bin/clang-format clang-format \
-            /usr/bin/clang-format-18 100
-          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy \
-            /usr/bin/clang-tidy-18 100
-          clang-format --version
-          clang-tidy --version
+          python3 -m venv .lint
+          .lint/bin/pip install --quiet clang-format==18.1.8 clang-tidy==20.1.0
+          .lint/bin/clang-format --version
+          .lint/bin/clang-tidy --version
 
       - name: Check the formatting
         run: |
           files=$(git ls-files '*.hpp' '*.cpp' '*.cu')
-          clang-format --dry-run --Werror --style=file $files
+          .lint/bin/clang-format --dry-run --Werror --style=file $files
 
       # compile_commands.json is what tells clang-tidy which flags each file was
       # built with. Without it, every #include of a system header fails and the
@@ -206,22 +211,27 @@ jobs:
       - name: Configure with a compilation database
         run: cmake -B build -S . -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-      # The .cu files are excluded: clang-tidy would need the CUDA headers and a
-      # host/device split that adds nothing here. Everything else is checked, and
-      # every finding is an error.
+      # Only the .cpp files are passed. The headers are still checked -- through
+      # HeaderFilterRegex in .clang-tidy, as they are included from these
+      # translation units -- and handing them over directly was the job's second
+      # failure: a header has no entry in compile_commands.json, so clang-tidy
+      # falls back to a guessed command and reports on flags nobody used.
       #
-      # Its output was read before this was made blocking. The first full run
-      # produced five findings across the library -- two
+      # The .cu files are excluded outright: clang-tidy would need the CUDA
+      # headers and a host/device split that adds nothing here.
+      #
+      # Every finding is an error, and the output was read before that was
+      # switched on. The first full run produced five across the library -- two
       # performance-unnecessary-copy-initialization, one
-      # performance-inefficient-vector-operation, and
-      # bugprone-exception-escape on the autograd backward_fn lambdas. The first
-      # three are fixed; the last is excluded in .clang-tidy with the reason
-      # written out, because this engine reports errors by throwing and those
-      # lambdas are meant to propagate.
+      # performance-inefficient-vector-operation, and bugprone-exception-escape
+      # on the autograd backward_fn lambdas. The first three are fixed; the last
+      # is excluded in .clang-tidy with the reason written out, because this
+      # engine reports errors by throwing and those lambdas are meant to
+      # propagate.
       - name: Run clang-tidy
         run: |
-          files=$(git ls-files 'src/*.cpp' 'include/**/*.hpp')
-          clang-tidy -p build --warnings-as-errors='*' $files
+          files=$(git ls-files 'src/*.cpp')
+          .lint/bin/clang-tidy -p build --warnings-as-errors='*' $files
 
   coverage:
     name: Linux / coverage

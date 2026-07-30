@@ -37,3 +37,6 @@ mnist_cnn.bin
 
 # Local compilation database for clang-tidy: machine-specific absolute paths.
 compile_commands.json
+
+# Lint tool venv, created by the CI lint job and reproducible locally.
+.lint/
