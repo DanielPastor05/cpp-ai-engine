@@ -1,18 +1,18 @@
-// Paridad CPU / GPU.
+// CPU / GPU parity.
 //
-// Cada caso calcula la misma expresión dos veces sobre exactamente los mismos
-// datos —una con el backend apagado y otra con él encendido— y compara. Es la
-// única forma de comprobar un kernel que sirve de algo: los kernels no fallan
-// devolviendo un error, fallan devolviendo números plausibles.
+// Each case computes the same expression twice over exactly the same data -- once
+// with the backend off and once with it on -- and compares. It is the only way to
+// check a kernel that is worth anything: kernels do not fail by returning an
+// error, they fail by returning plausible numbers.
 //
-// La comparación es con tolerancia y no exacta, y eso no es una concesión. El
-// compilador de dispositivo funde multiplicación y suma en una FMA, que
-// redondea una sola vez donde la CPU redondea dos; el resultado difiere en el
-// último bit y va acumulándose con K. Exigir igualdad bit a bit entre CPU y GPU
-// sería exigir que la GPU calcule peor.
+// The comparison is to a tolerance rather than exact, and that is not a
+// concession. The device compiler fuses multiply and add into one FMA, which
+// rounds once where the CPU rounds twice; the result differs in the last bit and
+// accumulates with K. Demanding bit-identical results between CPU and GPU would
+// be demanding that the GPU compute worse.
 //
-// Sin ENGINE_CUDA el fichero se compila a una nota de que no hay nada que
-// comprobar, para que la suite siga siendo una sola y CI no necesite GPU.
+// Without ENGINE_CUDA the file compiles to a note that there is nothing to
+// check, so the suite stays a single one and CI needs no GPU.
 
 #include "test_support.hpp"
 
@@ -27,10 +27,10 @@ namespace {
 
 namespace cuda = engine::cuda;
 
-// Traduce un índice plano a coordenadas, para que un fallo diga «fila 128,
-// columna 0» en vez de «elemento 16384».
+// Turns a flat index into coordinates, so a failure says "row 128, column 0"
+// rather than "element 16384".
 std::string position_of(size_t flat, const std::vector<size_t>& shape) {
-    if (shape.empty()) return "(escalar)";
+    if (shape.empty()) return "(scalar)";
     std::vector<size_t> coords(shape.size());
     for (size_t axis = shape.size(); axis-- > 0;) {
         coords[axis] = (shape[axis] == 0) ? 0 : flat % shape[axis];
@@ -44,18 +44,18 @@ std::string position_of(size_t flat, const std::vector<size_t>& shape) {
     return out + ")";
 }
 
-// Evalúa la misma función con el backend apagado y encendido, y compara.
+// Evaluates the same function with the backend off and on, and compares.
 //
-// Cuando falla, imprime bastante más que el error máximo. El motivo es
-// práctico: estos kernels no se pueden ejecutar en el entorno donde se
-// escriben, así que cada iteración de depuración cuesta una ida y vuelta
-// entera hasta una máquina con GPU. El mensaje tiene que llevar de una vez
-// todo lo necesario para localizar el fallo.
+// When it fails it prints considerably more than the maximum error, for a
+// practical reason: these kernels cannot run in the environment they are written
+// in, so each debugging iteration costs a whole round trip to a machine with a
+// GPU. The message has to carry everything needed to locate the fault in one go.
 //
-// El **reparto** de las diferencias es más informativo que su tamaño:
-//   - unas pocas al final  -> tratamiento de bordes
-//   - todas                -> la fórmula, no los índices
-//   - a intervalos regulares -> un paso o una transposición mal puestos
+//
+// The **distribution** of the differences says more than their size:
+//   - a few at the end      -> edge handling
+//   - all of them          -> the formula, not the indices
+//   - at regular intervals -> a stride or a transposition in the wrong place
 void compare(const std::string& what, const std::function<Tensor()>& compute, float tol = 1e-5f) {
     cuda::set_enabled(false);
     const Tensor on_cpu = compute();
@@ -69,21 +69,21 @@ void compare(const std::string& what, const std::function<Tensor()>& compute, fl
 
     ++testing::g_checks;
 
-    // Sin esto la prueba es una trampa. El motor cae al camino de CPU cuando un
-    // kernel no se puede lanzar —correcto en produccion—, de modo que la
-    // comparacion seria CPU contra CPU y pasaria con error exactamente cero sin
-    // haber tocado el dispositivo. Paso de verdad: toda la seccion salia en
-    // verde con 0.00e+00 mientras ningun kernel llegaba a ejecutarse.
+    // Without this the test is a trap. The engine falls back to the CPU path when a
+    // kernel cannot be launched -- correct in production -- so the comparison would
+    // be CPU against CPU and would pass with exactly zero error without ever touching
+    // the device. It really happened: the whole section came out green at 0.00e+00
+    // while not one kernel ever ran.
     if (launched == 0) {
         ++testing::g_failures;
         std::cout << "  [FAIL] " << what
-                  << " (no se lanzo ningun kernel: se comparo CPU contra CPU)\n";
+                  << " (no kernel was launched: this compared CPU against CPU)\n";
         return;
     }
 
     if (got.size() != want.size()) {
         ++testing::g_failures;
-        std::cout << "  [FAIL] " << what << " (tamanos distintos: " << got.size() << " frente a "
+        std::cout << "  [FAIL] " << what << " (different sizes: " << got.size() << " against "
                   << want.size() << ")\n";
         return;
     }
@@ -109,79 +109,79 @@ void compare(const std::string& what, const std::function<Tensor()>& compute, fl
     }
 
     if (differing == 0) {
-        std::cout << "  [ ok ] " << what << " (error relativo maximo " << std::scientific
+        std::cout << "  [ ok ] " << what << " (max relative error " << std::scientific
                   << std::setprecision(2) << worst << std::defaultfloat << ")\n";
         return;
     }
 
     ++testing::g_failures;
     std::cout << "  [FAIL] " << what << "\n"
-              << "         error relativo maximo " << std::scientific << std::setprecision(3)
-              << worst << " > " << tol << std::defaultfloat << "\n"
-              << "         difieren " << differing << " de " << want.size() << " elementos, del "
-              << first << " al " << last << "\n"
-              << "         el peor en " << worst_at << " = " << position_of(worst_at, shape)
-              << ": esperado " << want[worst_at] << ", obtenido " << got[worst_at] << "\n";
+              << "         max relative error " << std::scientific << std::setprecision(3) << worst
+              << " > " << tol << std::defaultfloat << "\n"
+              << "         " << differing << " of " << want.size() << " elements differ, from "
+              << first << " to " << last << "\n"
+              << "         worst at " << worst_at << " = " << position_of(worst_at, shape)
+              << ": expected " << want[worst_at] << ", got " << got[worst_at] << "\n";
 
     if (differing == want.size()) {
-        std::cout << "         difieren todos: apunta a la formula, no a los indices\n";
+        std::cout << "         all differ: points at the formula, not the indices\n";
     } else if (first > 0 && last + 1 == want.size()) {
-        std::cout << "         difiere la cola: apunta al tratamiento de bordes\n";
+        std::cout << "         the tail differs: points at the edge handling\n";
     } else if (differing * 4 < want.size()) {
-        std::cout << "         difiere una minoria dispersa: apunta a un paso o una"
-                     " transposicion\n";
+        std::cout << "         a scattered minority differs: points at a stride or a"
+                     " transposition\n";
     }
 }
 
 }  // namespace
 
 void run_cuda_parity_tests() {
-    testing::section("Paridad CPU / GPU (Fase 6)");
+    testing::section("CPU / GPU parity (Phase 6)");
 
     if (!cuda::available()) {
-        std::cout << "  (compilado con CUDA, pero no hay dispositivo: se omite)\n";
+        std::cout << "  (built with CUDA but no device present: skipped)\n";
         return;
     }
 
     const cuda::DeviceInfo info = cuda::device_info();
-    // Las tres versiones, y en este orden, porque el desajuste que rompe la
-    // ejecucion es toolkit > driver. Imprimir solo el runtime lo esconde: sigue
-    // al driver, asi que en una maquina con driver 13.2 y toolkit 13.3 esta
-    // linea decia «13.2 y 13.2» y parecia que todo cuadraba.
+    // All three versions, and in this order, because the mismatch that breaks
+    // execution is toolkit > driver. Printing only the runtime hides it: it follows
+    // the driver, so on a machine with driver 13.2 and toolkit 13.3 this line said
+    // "13.2 and 13.2" and everything looked consistent.
     const int built = cuda::compiled_version();
     const int rt = cuda::runtime_version();
     const int drv = cuda::driver_version();
-    std::cout << "  Dispositivo: " << info.name << " (cc " << info.compute_major << "."
+    std::cout << "  Device: " << info.name << " (cc " << info.compute_major << "."
               << info.compute_minor << ", " << info.multiprocessors << " SM, "
               << (info.total_memory >> 20) << " MiB)\n"
-              << "  Compilado con CUDA " << built / 1000 << "." << (built % 1000) / 10
-              << ", runtime CUDA " << rt / 1000 << "." << (rt % 1000) / 10 << " cargado"
+              << "  Built with CUDA " << built / 1000 << "." << (built % 1000) / 10
+              << ", runtime CUDA " << rt / 1000 << "." << (rt % 1000) / 10 << " loaded"
               << ", driver CUDA " << drv / 1000 << "." << (drv % 1000) / 10 << "\n";
     if (drv > 0 && built > drv) {
-        std::cout << "  Aviso: el toolkit va por delante del driver. Si algun kernel no\n"
-                     "         arranca, es lo primero que hay que mirar.\n";
+        std::cout << "  Warning: the toolkit is ahead of the driver. If a kernel does not\n"
+                     "         start, that is the first thing to look at.\n";
     }
 
     cuda::reset_kernel_counters();
 
-    // Los umbrales normales mandarían a la CPU todo lo que hay aquí, que es
-    // justo lo contrario de lo que quiere una prueba de paridad: interesa
-    // ejercitar formas pequeñas y con restos, donde los bordes de las teselas
-    // son quienes fallan. Se ponen a cero durante la prueba y se restauran al
-    // final.
+    // The normal thresholds would send everything here to the CPU, which is the
+    // opposite of what a parity test wants: the point is to exercise small shapes
+    // with remainders, where the tile edges are what fail. They are zeroed for the
+    // duration of the test and restored at the end.
+    //
     const size_t saved_flops = cuda::min_matmul_flops();
     const size_t saved_elements = cuda::min_elementwise_elements();
     cuda::set_thresholds(0, 0);
 
     engine::manual_seed(20260728);
 
-    // --- producto de matrices, las cuatro variantes ---
+    // --- the matrix product, all four variants ---
     //
-    // Cada kernel se comprueba por separado, y sobre las mismas formas. Es lo
-    // que de verdad protege este trabajo: el kernel de teselas de registros
-    // opera sobre bloques de 128x128, así que sus fallos aparecen justo en las
-    // formas que no son múltiplo de eso, y sólo ahí. Probar únicamente la
-    // variante por defecto dejaría a las otras tres sin red.
+    // Each kernel is checked separately, over the same shapes. That is what really
+    // protects this work: the register-tiled kernel operates on 128x128 blocks, so
+    // its failures appear precisely on the shapes that are not a multiple of that,
+    // and only there. Testing only the default variant would leave the other three
+    // without a net.
     {
         const cuda::MatmulKernel variants[] = {
             cuda::MatmulKernel::Naive,
@@ -218,23 +218,23 @@ void run_cuda_parity_tests() {
 
             Tensor QB = Tensor::randn({4, 3, 17, 23});
             Tensor KB = Tensor::randn({4, 3, 23, 11});
-            compare(tag + "matmul por lotes (4,3,17,23) x (4,3,23,11)",
+            compare(tag + "batched matmul (4,3,17,23) x (4,3,23,11)",
                     [&] { return QB.matmul(KB); });
 
-            // Operando 2D compartido con todo el lote: comprueba el paso 0.
+            // A 2D operand shared with the whole batch: this checks the stride of 0.
             Tensor X = Tensor::randn({8, 12, 40});
             Tensor W = Tensor::randn({40, 20});
-            compare(tag + "matmul con operando compartido (8,12,40) x (40,20)",
+            compare(tag + "matmul with a shared operand (8,12,40) x (40,20)",
                     [&] { return X.matmul(W); });
         }
 
-        // Una forma cuya K no es múltiplo de 4: pedir la variante vectorizada
-        // tiene que degradarse a la de registros, no leer float4 desalineados.
-        // Una lectura desalineada no da error, da otro valor.
+        // A shape whose K is not a multiple of 4: asking for the vectorised variant has
+        // to degrade to the register-tiled one, not read misaligned float4s.
+        // A misaligned read raises no error; it returns a different value.
         cuda::set_matmul_kernel(cuda::MatmulKernel::Vectorized);
         Tensor A = Tensor::randn({131, 133});
         Tensor B = Tensor::randn({133, 135});
-        compare("[vectorized] se degrada con K y N no alineados (133, 135)",
+        compare("[vectorized] degrades with K and N unaligned (133, 135)",
                 [&] { return A.matmul(B); });
 
         cuda::set_matmul_kernel(cuda::MatmulKernel::Auto);
@@ -384,88 +384,88 @@ void run_cuda_parity_tests() {
         cuda::set_matmul_kernel(cuda::MatmulKernel::Auto);
     }
 
-    // --- operaciones elemento a elemento ---
+    // --- element-wise operations ---
     {
         Tensor A = Tensor::randn({64, 40});
         Tensor B = Tensor::randn({64, 40});
-        compare("suma", [&] { return A + B; });
-        compare("resta", [&] { return A - B; });
-        compare("producto", [&] { return A * B; });
+        compare("addition", [&] { return A + B; });
+        compare("subtraction", [&] { return A - B; });
+        compare("multiplication", [&] { return A * B; });
 
-        // El divisor se aleja del cero: dividir por un valor casi nulo hace que
-        // el resultado dependa del último bit del denominador, y eso mediría el
-        // dato, no el kernel.
+        // The divisor is kept away from zero: dividing by a near-zero value makes the
+        // result depend on the denominator's last bit, which would measure the data
+        // rather than the kernel.
         Tensor D = Tensor::rand({64, 40}, 1.0f, 2.0f);
         compare("division", [&] { return A / D; });
 
-        // Difusión: sesgo de una capa densa y codificación posicional.
+        // Broadcasting: a dense layer's bias and a positional encoding.
         Tensor bias = Tensor::randn({40});
-        compare("suma con difusion (64,40) + (40)", [&] { return A + bias; });
+        compare("broadcast addition (64,40) + (40)", [&] { return A + bias; });
 
         Tensor seq = Tensor::randn({6, 9, 16});
         Tensor pe = Tensor::randn({9, 16});
-        compare("suma con difusion (6,9,16) + (9,16)", [&] { return seq + pe; });
-        compare("producto con difusion (6,9,16) * (9,16)", [&] { return seq * pe; });
+        compare("broadcast addition (6,9,16) + (9,16)", [&] { return seq + pe; });
+        compare("broadcast multiplication (6,9,16) * (9,16)", [&] { return seq * pe; });
     }
 
-    // --- activaciones ---
+    // --- activations ---
     {
         Tensor X = Tensor::randn({48, 33});
         compare("relu", [&] { return X.relu(); });
 
-        // cols no múltiplo del tamaño de bloque de la reducción, para que el
-        // bucle con paso de bloque tenga que dar más de una vuelta.
+        // cols not a multiple of the reduction's block size, so that the block-stride
+        // loop has to go round more than once.
         Tensor S = Tensor::randn({20, 300});
-        compare("softmax sobre el ultimo eje (20,300)", [&] { return S.softmax(); });
+        compare("softmax over the last axis (20,300)", [&] { return S.softmax(); });
 
         Tensor A4 = Tensor::randn({3, 4, 7, 19});
-        compare("softmax sobre (3,4,7,19)", [&] { return A4.softmax(); });
+        compare("softmax over (3,4,7,19)", [&] { return A4.softmax(); });
     }
 
-    // --- escalares, reordenacion de ejes y reducciones ---
+    // --- scalars, axis reordering and reductions ---
     //
-    // Las tres rompian la cadena de residencia. Entre dos matmul que si tienen
-    // kernel, un `* escala` o un permute sin el suyo bajaba el tensor entero a
-    // host y obligaba a resubirlo en la operacion siguiente: es exactamente lo
-    // que hace la atencion, dos veces por proyeccion.
+    // All three broke the residency chain. Between two matmuls that do have kernels,
+    // a `* scale` or a permute without one pulled the whole tensor down to host and
+    // forced the next operation to upload it again -- which is exactly what attention
+    // does, twice per projection.
     {
         Tensor A = Tensor::randn({64, 40});
-        compare("producto por escalar", [&] { return A * 2.5f; });
-        compare("suma de escalar", [&] { return A + 1.5f; });
-        compare("division por escalar", [&] { return A / 4.0f; });
+        compare("scalar multiplication", [&] { return A * 2.5f; });
+        compare("scalar addition", [&] { return A + 1.5f; });
+        compare("scalar division", [&] { return A / 4.0f; });
 
         compare("transpose (64,40)", [&] { return A.transpose(); });
 
-        // Por lotes transpone cada matriz del lote, que es lo que se le hace a
-        // key antes del producto de la atencion.
+        // Batched, it transposes each matrix in the batch, which is what is done to key
+        // before attention's product.
         Tensor B4 = Tensor::randn({3, 5, 7, 11});
-        compare("transpose por lotes (3,5,7,11)", [&] { return B4.transpose(); });
+        compare("batched transpose (3,5,7,11)", [&] { return B4.transpose(); });
 
-        // La permutacion de la atencion: (B, S, H, d) -> (B, H, S, d).
-        compare("permute (0,2,1,3) sobre (3,5,7,11)", [&] { return B4.permute({0, 2, 1, 3}); });
-        // Y una que lleva el primer eje al final, para que ningun stride se
-        // quede en su sitio: un kernel que confundiera el orden de los ejes
-        // seguiria acertando en la permutacion de la atencion, que deja dos.
-        compare("permute (3,1,2,0) sobre (3,5,7,11)", [&] { return B4.permute({3, 1, 2, 0}); });
-        // Ida y vuelta. El segundo permute lee lo que el primero dejo en el
-        // dispositivo, asi que ademas comprueba el encadenado.
-        compare("permute y su inversa sobre (3,5,7,11)",
+        // Attention's permutation: (B, S, H, d) -> (B, H, S, d).
+        compare("permute (0,2,1,3) over (3,5,7,11)", [&] { return B4.permute({0, 2, 1, 3}); });
+        // And one that moves the first axis to the end, so that no stride stays where it
+        // was: a kernel that confused the axis order would still get attention's
+        // permutation right, since that one leaves two in place.
+        compare("permute (3,1,2,0) over (3,5,7,11)", [&] { return B4.permute({3, 1, 2, 0}); });
+        // There and back. The second permute reads what the first left on the device, so
+        // it also checks the chaining.
+        compare("permute and its inverse over (3,5,7,11)",
                 [&] { return B4.permute({0, 2, 1, 3}).permute({0, 2, 1, 3}); });
 
         Tensor R = Tensor::randn({6, 9, 16});
-        compare("sum sobre el eje 0 de (6,9,16)", [&] { return R.sum(0); });
-        compare("sum sobre el eje 1 de (6,9,16)", [&] { return R.sum(1); });
-        // El ultimo eje deja inner == 1: el hilo recorre valores contiguos en
-        // vez de saltar, que es el caso de acceso opuesto al de los otros dos.
-        compare("sum sobre el eje 2 de (6,9,16)", [&] { return R.sum(2); });
-        compare("sum con keepdim sobre el eje 1", [&] { return R.sum(1, true); });
-        compare("mean sobre el eje 1 de (6,9,16)", [&] { return R.mean(1); });
+        compare("sum along axis 0 of (6,9,16)", [&] { return R.sum(0); });
+        compare("sum along axis 1 of (6,9,16)", [&] { return R.sum(1); });
+        // The last axis leaves inner == 1: the thread walks contiguous values rather than
+        // jumping, the opposite access pattern to the other two.
+        compare("sum along axis 2 of (6,9,16)", [&] { return R.sum(2); });
+        compare("sum with keepdim along axis 1", [&] { return R.sum(1, true); });
+        compare("mean along axis 1 of (6,9,16)", [&] { return R.mean(1); });
     }
 
-    // --- gradientes ---
+    // --- gradients ---
     {
         Tensor X = Tensor::randn({40, 24}, 0.0f, 1.0f, true);
-        compare("gradiente de relu", [&] {
+        compare("gradient of relu", [&] {
             X.zero_grad();
             Tensor y = X.relu();
             (y * y).sum().backward();
@@ -473,11 +473,11 @@ void run_cuda_parity_tests() {
         });
 
         Tensor S = Tensor::randn({16, 50}, 0.0f, 1.0f, true);
-        compare("gradiente de softmax", [&] {
+        compare("gradient of softmax", [&] {
             S.zero_grad();
             Tensor y = S.softmax();
-            // Un gradiente aguas arriba no uniforme: con todos los pesos
-            // iguales, un error de indexación se cancelaría solo.
+            // A non-uniform upstream gradient: with every weight equal, an indexing error
+            // would cancel itself out.
             Tensor w = Tensor::zeros({16, 50});
             for (size_t i = 0; i < w.size(); ++i) w.data()[i] = 0.1f * static_cast<float>(i % 7);
             (y * w).sum().backward();
@@ -486,7 +486,7 @@ void run_cuda_parity_tests() {
 
         Tensor A = Tensor::randn({30, 40}, 0.0f, 1.0f, true);
         Tensor B = Tensor::randn({40, 25}, 0.0f, 1.0f, true);
-        compare("gradiente de matmul respecto de A", [&] {
+        compare("gradient of matmul respecto de A", [&] {
             A.zero_grad();
             B.zero_grad();
             A.matmul(B).sum().backward();
@@ -494,21 +494,21 @@ void run_cuda_parity_tests() {
         });
     }
 
-    // --- una red entera ---
+    // --- a whole network ---
     //
-    // Las pruebas por operación pueden pasar y el modelo dar otra cosa: basta
-    // con que una operación deje un tensor en el lado equivocado y otra lo lea
-    // sin sincronizar. Este caso encadena atención, normalización, dos capas
-    // densas y su paso hacia atrás, que es donde saldría.
+    // The per-operation tests can all pass and the model still give something else:
+    // it takes one operation leaving a tensor on the wrong side and another reading
+    // it without synchronising. This case chains attention, normalisation, two dense
+    // layers and their backward pass, which is where it would show.
     {
         engine::manual_seed(7);
         nn::TransformerBlock block(32, 4, 64);
         Tensor tokens = Tensor::randn({4, 12, 32}, 0.0f, 1.0f, true);
 
-        compare("TransformerBlock: salida", [&] { return block(tokens); }, 1e-4f);
+        compare("TransformerBlock: output", [&] { return block(tokens); }, 1e-4f);
 
         compare(
-            "TransformerBlock: gradiente de la entrada",
+            "TransformerBlock: gradient of the input",
             [&] {
                 block.zero_grad();
                 tokens.zero_grad();
@@ -518,7 +518,7 @@ void run_cuda_parity_tests() {
             1e-4f);
 
         compare(
-            "TransformerBlock: gradiente del primer parametro",
+            "TransformerBlock: gradient of the first parameter",
             [&] {
                 block.zero_grad();
                 tokens.zero_grad();
@@ -528,10 +528,10 @@ void run_cuda_parity_tests() {
             1e-4f);
     }
 
-    // --- contabilidad de transferencias ---
+    // --- transfer accounting ---
     //
-    // No comprueba un número, comprueba el modelo de residencia: un tensor
-    // calculado en la GPU no baja a host hasta que alguien lee sus valores.
+    // It does not check a number, it checks the residency model: a tensor computed on
+    // the GPU does not come down to host until somebody reads its values.
     {
         cuda::set_enabled(true);
         Tensor A = Tensor::randn({64, 64});
@@ -543,41 +543,41 @@ void run_cuda_parity_tests() {
         Tensor C = A.matmul(B);
         const cuda::TransferStats after_kernel = cuda::transfer_stats();
         testing::check(after_kernel.to_device_count == 2,
-                       "matmul sube los dos operandos y nada mas");
+                       "matmul uploads both operands and nothing else");
         testing::check(after_kernel.to_host_count == 0,
-                       "el resultado se queda en el dispositivo hasta que se lee");
+                       "the result stays on the device until it is read");
 
         volatile float first = C.data()[0];
         (void)first;
         const cuda::TransferStats after_read = cuda::transfer_stats();
         testing::check(after_read.to_host_count == 1,
-                       "leer el resultado provoca exactamente una bajada");
+                       "reading the result triggers exactly one download");
 
-        // Y una cadena de operaciones no vuelve a subir lo que ya está arriba.
+        // And a chain of operations does not re-upload what is already up there.
         cuda::reset_transfer_stats();
         Tensor D = A.matmul(B).relu();
         (void)D.data()[0];
         const cuda::TransferStats chained = cuda::transfer_stats();
         testing::check(chained.to_device_count == 0,
-                       "una segunda operacion no resube operandos ya residentes");
+                       "a second operation does not re-upload already resident operands");
     }
 
-    // --- una convolucion entera ---
+    // --- a whole convolution ---
     //
-    // Conv2d es ahora im2col, un producto, la suma difundida del sesgo, una
-    // permutacion y dos reshape, y las seis tienen kernel: es la cadena mas
-    // larga que se comprueba aqui. Los indices de im2col y col2im son ademas los
-    // mas enrevesados del backend —relleno, paso y ventanas solapadas—, y un
-    // error ahi no da un fallo, da otro numero.
+    // Conv2d is now im2col, a product, the broadcast bias addition, a permutation and
+    // two reshapes, and all six have kernels: it is the longest chain checked here.
+    // im2col's and col2im's indices are also the most tangled in the backend --
+    // padding, stride and overlapping windows -- and an error there does not raise a
+    // fault, it returns a different number.
     {
         engine::manual_seed(99);
         nn::Conv2d conv(3, 5, nn::Window2d(3, 3, 1, 1));
         Tensor images = Tensor::randn({2, 3, 9, 9}, 0.0f, 1.0f, true);
 
-        compare("Conv2d 3->5 (k3, s1, p1): salida", [&] { return conv(images); }, 1e-4f);
+        compare("Conv2d 3->5 (k3, s1, p1): output", [&] { return conv(images); }, 1e-4f);
 
         compare(
-            "Conv2d: gradiente de la entrada",
+            "Conv2d: gradient of the input",
             [&] {
                 conv.zero_grad();
                 images.zero_grad();
@@ -587,7 +587,7 @@ void run_cuda_parity_tests() {
             1e-4f);
 
         compare(
-            "Conv2d: gradiente del kernel",
+            "Conv2d: gradient of the kernel",
             [&] {
                 conv.zero_grad();
                 images.zero_grad();
@@ -596,15 +596,16 @@ void run_cuda_parity_tests() {
             },
             1e-4f);
 
-        // Con paso 2 y sin relleno las ventanas dejan de solaparse y aparecen
-        // pixeles que no cubre ninguna. Es justo donde falla un col2im con el
-        // rango de ventanas mal despejado: el caso de paso 1 lo perdonaria.
+        // With stride 2 and no padding the windows stop overlapping and pixels appear
+        // that none of them covers. That is exactly where a col2im with the window range
+        // solved wrongly fails: the stride-1 case would forgive it.
         nn::Conv2d strided(2, 3, nn::Window2d(3, 3, 2, 0));
         Tensor small = Tensor::randn({2, 2, 8, 8}, 0.0f, 1.0f, true);
 
-        compare("Conv2d con paso 2 y sin relleno: salida", [&] { return strided(small); }, 1e-4f);
         compare(
-            "Conv2d con paso 2: gradiente de la entrada",
+            "Conv2d with stride 2 and no padding: output", [&] { return strided(small); }, 1e-4f);
+        compare(
+            "Conv2d with stride 2: gradient of the input",
             [&] {
                 strided.zero_grad();
                 small.zero_grad();
@@ -613,19 +614,19 @@ void run_cuda_parity_tests() {
             },
             1e-4f);
 
-        // MaxPool2d con ventanas **solapadas** (kernel 3, paso 2): dos ventanas
-        // pueden elegir el mismo pixel, y ese es el caso que obliga a acumular
-        // en el gradiente. Es tambien donde un backward escrito con atomicas
-        // dejaria de dar el mismo resultado dos veces seguidas.
+        // MaxPool2d with **overlapping** windows (kernel 3, stride 2): two windows can
+        // choose the same pixel, and that is the case that forces accumulation in the
+        // gradient. It is also where a backward written with atomics would stop giving
+        // the same result twice in a row.
         nn::MaxPool2d pool(nn::Window2d(3, 3, 2, 0));
         Tensor plane = Tensor::randn({2, 3, 9, 9}, 0.0f, 1.0f, true);
 
-        compare("MaxPool2d 3x3 paso 2 (solapado): salida", [&] { return pool(plane); });
-        compare("MaxPool2d solapado: gradiente de la entrada", [&] {
+        compare("MaxPool2d 3x3 step 2 (solapado): output", [&] { return pool(plane); });
+        compare("MaxPool2d overlapping: gradient of the input", [&] {
             plane.zero_grad();
             Tensor y = pool(plane);
-            // Gradiente aguas arriba no uniforme: con todos los pesos iguales,
-            // un reparto equivocado se cancelaria solo y la prueba pasaria.
+            // A non-uniform upstream gradient: with every weight equal, a wrong distribution
+            // would cancel itself out and the test would pass.
             Tensor w = Tensor::zeros(y.shape());
             for (size_t i = 0; i < w.size(); ++i) w.data()[i] = 0.1f * static_cast<float>(i % 7);
             (y * w).sum().backward();
@@ -633,12 +634,12 @@ void run_cuda_parity_tests() {
         });
     }
 
-    // --- reshape se queda en el dispositivo ---
+    // --- reshape stays on the device ---
     //
-    // reshape copia el bufer entero por definicion —no es una vista—, pero
-    // copiarlo **a traves de host** costaba una bajada y una subida por llamada.
-    // La atencion hace dos por proyeccion, y la entrada de esas dos viene de un
-    // matmul, o sea que estaba residente. Ahora la copia no sale de la tarjeta.
+    // reshape copies the whole buffer by definition -- it is not a view -- but
+    // copying it **through host** cost one download and one upload per call.
+    // Attention does two per projection, and the input to both comes from a matmul,
+    // so it was resident. Now the copy never leaves the card.
     {
         cuda::set_enabled(true);
         Tensor A = Tensor::randn({64, 64});
@@ -650,29 +651,29 @@ void run_cuda_parity_tests() {
         Tensor flat = A.matmul(B).reshape({16, 256});
         const cuda::TransferStats after = cuda::transfer_stats();
         testing::check(after.to_host_count == 0,
-                       "reshape de un tensor residente no lo baja a host");
+                       "reshape of a resident tensor does not pull it down to host");
         testing::check(flat.get_impl()->storage.resident_on_device(),
-                       "y el resultado del reshape sigue en el dispositivo");
+                       "and the reshape's result is still on the device");
 
-        // Los valores tienen que ser los mismos, claro: una copia D2D mal hecha
-        // daria un tensor residente y lleno de basura, que es peor que no
-        // acelerar nada.
+        // The values have to match, of course: a botched D2D copy would give a resident
+        // tensor full of garbage, which is worse than not accelerating anything.
+        //
         const std::vector<float> reshaped = flat.data();
         const std::vector<float> original = A.matmul(B).data();
         bool same = reshaped.size() == original.size();
         for (size_t i = 0; same && i < reshaped.size(); ++i) same = (reshaped[i] == original[i]);
-        testing::check(same, "y los valores sobreviven a la copia entre buferes del dispositivo");
+        testing::check(same, "and the values survive the device-to-device copy");
     }
 
-    // --- residencia del backward ---
+    // --- backward residency ---
     //
-    // La otra mitad del modelo de residencia, y la que faltaba: el gradiente
-    // acumulado tampoco baja a host. Antes bajaba siempre, porque add_grad
-    // construia el gradiente desde g.data(); eso obligaba al siguiente
-    // backward_fn a resubirlo y ningun nodo se quedaba en la GPU.
+    // The other half of the residency model, and the half that was missing: the
+    // accumulated gradient does not come down to host either. It always used to,
+    // because add_grad built the gradient from g.data(); that forced the next
+    // backward_fn to upload it again and no node stayed on the GPU.
     //
-    // Se comprueba la invariante directamente y no un contador, que es lo que
-    // de verdad se quiere garantizar.
+    // The invariant is checked directly rather than a counter, because the invariant
+    // is what is actually meant to hold.
     {
         cuda::set_enabled(true);
         Tensor A = Tensor::randn({64, 64}, 0.0f, 1.0f, true);
@@ -684,22 +685,22 @@ void run_cuda_parity_tests() {
         A.matmul(B).relu().sum().backward();
 
         testing::check(A.grad().get_impl()->storage.resident_on_device(),
-                       "el gradiente acumulado se queda en el dispositivo");
+                       "the accumulated gradient stays on the device");
         testing::check(B.grad().get_impl()->storage.resident_on_device(),
-                       "el gradiente del segundo operando tambien");
+                       "the second operand's gradient too");
     }
 
-    // --- exactitud de la rama de acumulacion ---
+    // --- exactness of the accumulation branch ---
     //
-    // Un tensor consumido por dos ramas hace que add_grad entre por el +=, que
-    // es el camino que el caso normal no ejercita: autograd libera el gradiente
-    // de los nodos intermedios en cuanto se consume, asi que casi siempre se
-    // pasa por la primera escritura.
+    // A tensor consumed by two branches makes add_grad take the += path, which the
+    // normal case never exercises: autograd frees intermediate nodes' gradients as
+    // soon as they are consumed, so almost everything goes through the first write.
     //
-    // Se compara con igualdad **exacta**, no con la tolerancia de compare(): una
-    // suma suelta no tiene multiplicacion que fundir en un FMA, asi que aqui la
-    // GPU y la CPU coinciden bit a bit. Si algun dia dejan de hacerlo, es que el
-    // kernel dejo de ser una suma y conviene enterarse.
+    //
+    // The comparison is for **exact** equality, not compare()'s tolerance: a bare
+    // addition has no multiply to fuse into an FMA, so here the GPU and the CPU agree
+    // bit for bit. If they ever stop, the kernel has stopped being an addition and
+    // that is worth knowing.
     {
         engine::manual_seed(4242);
         const Tensor X = Tensor::randn({128, 128});
@@ -710,9 +711,9 @@ void run_cuda_parity_tests() {
         std::vector<float> got;
         for (const bool on : {false, true}) {
             cuda::set_enabled(on);
-            // Un tensor nuevo cada vuelta, no `Tensor x = X`: Tensor es un asa
-            // sobre un TensorImpl compartido, asi que copiarlo compartiria el
-            // gradiente y la segunda vuelta acumularia sobre la primera.
+            // A new tensor each time round, not `Tensor x = X`: Tensor is a handle over a
+            // shared TensorImpl, so copying it would share the gradient and the second pass
+            // would accumulate on top of the first.
             Tensor x(X.shape(), X.data(), true);
             ((x.relu() * Wa) + (x.relu() * Wb)).sum().backward();
             (on ? got : want) = x.grad().data();
@@ -723,15 +724,15 @@ void run_cuda_parity_tests() {
         for (size_t i = 0; identical && i < want.size(); ++i) {
             identical = (want[i] == got[i]);
         }
-        testing::check(identical, "acumular dos gradientes da el mismo bit en CPU y en GPU");
+        testing::check(identical, "accumulating two gradients gives the same bit on CPU and GPU");
     }
 
-    // --- coste de un paso completo, en transferencias ---
+    // --- the cost of a full step, in transfers ---
     //
-    // No es una comprobacion, es la cifra que justifica el cambio: cuantas veces
-    // baja algo a host un paso de entrenamiento entero. Se informa en lugar de
-    // fijarla porque depende de cuantas operaciones tengan kernel, y esa lista
-    // crece; lo que no puede es subir.
+    // Not a check: the figure that justifies the change -- how many times a whole
+    // training step brings something down to host. It is reported rather than
+    // asserted because it depends on how many operations have kernels, and that list
+    // grows; what it must not do is rise.
     {
         cuda::set_enabled(true);
         engine::manual_seed(7);
@@ -744,16 +745,16 @@ void run_cuda_parity_tests() {
         cuda::reset_transfer_stats();
         block(tokens).sum().backward();
         const cuda::TransferStats step = cuda::transfer_stats();
-        std::cout << "  Un paso del TransformerBlock: " << step.to_host_count << " bajadas y "
-                  << step.to_device_count << " subidas\n";
+        std::cout << "  One TransformerBlock step: " << step.to_host_count << " downloads and "
+                  << step.to_device_count << " uploads\n";
     }
 
-    // Y el mismo recuento sobre una cadena que sólo usa operaciones con kernel.
+    // And the same count over a chain that only uses operations with kernels.
     //
-    // La comparación entre las dos cifras es el mapa de lo que queda por hacer:
-    // en el TransformerBlock la residencia del gradiente apenas se nota, porque
-    // permute, reshape, transpose, LayerNorm y GELU siguen en CPU y bajan el
-    // tensor de todas formas. Donde toda la cadena tiene kernel, se ve.
+    // Comparing the two figures maps what is left to do: in the TransformerBlock the
+    // gradient residency barely shows, because permute, reshape, transpose, LayerNorm
+    // and GELU are still on the CPU and bring the tensor down anyway. Where the whole
+    // chain has kernels, it shows.
     {
         cuda::set_enabled(true);
         engine::manual_seed(11);
@@ -767,15 +768,15 @@ void run_cuda_parity_tests() {
         for (int i = 0; i < 4; ++i) h = h.matmul(W).relu();
         h.sum().backward();
         const cuda::TransferStats chain = cuda::transfer_stats();
-        std::cout << "  Cuatro capas matmul+relu:    " << chain.to_host_count << " bajadas y "
-                  << chain.to_device_count << " subidas\n";
+        std::cout << "  Four matmul+relu layers:     " << chain.to_host_count << " downloads and "
+                  << chain.to_device_count << " uploads\n";
     }
 
-    // Un resumen al final: cuantos kernels se ejecutaron de verdad. Si esta
-    // linea dice cero, todo lo de arriba se calculo en CPU y no significa nada.
+    // A summary at the end: how many kernels actually ran. If this line says zero,
+    // everything above was computed on the CPU and means nothing.
     testing::check(cuda::kernels_failed() == 0,
-                   "ningun kernel fallo al lanzarse (" + std::to_string(cuda::kernels_launched()) +
-                       " ejecutados, " + std::to_string(cuda::kernels_failed()) + " fallidos)");
+                   "no kernel failed to launch (" + std::to_string(cuda::kernels_launched()) +
+                       " launched, " + std::to_string(cuda::kernels_failed()) + " failed)");
 
     cuda::set_thresholds(saved_flops, saved_elements);
     cuda::set_enabled(true);
@@ -784,8 +785,8 @@ void run_cuda_parity_tests() {
 #else  // !ENGINE_CUDA
 
 void run_cuda_parity_tests() {
-    testing::section("Paridad CPU / GPU (Fase 6)");
-    std::cout << "  (compilado sin CUDA: -DENGINE_CUDA=ON para incluir estas pruebas)\n";
+    testing::section("CPU / GPU parity (Phase 6)");
+    std::cout << "  (built without CUDA: -DENGINE_CUDA=ON to include these tests)\n";
 }
 
 #endif  // ENGINE_CUDA

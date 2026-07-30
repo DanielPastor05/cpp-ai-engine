@@ -5,7 +5,7 @@
 
 int main() {
     std::cout << "====================================================\n";
-    std::cout << "  Fase 2: Motor de Autograd y Backpropagation       \n";
+    std::cout << "  Phase 2: autograd engine and backpropagation       \n";
     std::cout << "====================================================\n\n";
 
     using engine::Tensor;
@@ -34,7 +34,7 @@ int main() {
     // ---------------------------------------------------------
     // 2. Autograd en Multiplicación Matricial (MatMul)
     // ---------------------------------------------------------
-    std::cout << "--- 2. Autograd con Matrices (MatMul) ---\n";
+    std::cout << "--- 2. Autograd over matrices (MatMul) ---\n";
     Tensor A({2, 3}, {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f}, true);
 
     Tensor B({3, 2}, {0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f}, true);
@@ -44,17 +44,17 @@ int main() {
 
     Loss.backward();
 
-    std::cout << "Loss (Suma total de C) = " << Loss.data()[0] << "\n";
-    std::cout << "Gradiente dLoss/dA (debe coincidir con ones(2,2) x B^T):\n";
+    std::cout << "Loss (total sum of C) = " << Loss.data()[0] << "\n";
+    std::cout << "Gradient dLoss/dA (should match ones(2,2) x B^T):\n";
     A.grad().print("dL/dA");
 
-    std::cout << "Gradiente dLoss/dB (debe coincidir con A^T x ones(2,2)):\n";
+    std::cout << "Gradient dLoss/dB (should match A^T x ones(2,2)):\n";
     B.grad().print("dL/dB");
 
     // ---------------------------------------------------------
     // 3. Entrenamiento de Regresión Lineal con Descenso de Gradiente
     // ---------------------------------------------------------
-    std::cout << "--- 3. Optimización por Descenso de Gradiente (Regresion Lineal) ---\n";
+    std::cout << "--- 3. Gradient-descent optimisation (linear regression) ---\n";
     std::cout << "Objetivo: Aprender y = W * x + b donde W_real = 2.5, b_real = 1.0\n\n";
 
     // Parámetros a optimizar. W es (1, 1) para poder usarse en matmul y bias es
@@ -68,7 +68,7 @@ int main() {
 
     float learning_rate = 0.05f;
 
-    std::cout << "Inicio del entrenamiento (100 iteraciones):\n";
+    std::cout << "Training starts (100 iterations):\n";
     for (int epoch = 1; epoch <= 100; ++epoch) {
         // 0. Limpiar los gradientes de la iteración anterior (se acumulan)
         W.zero_grad();
@@ -100,6 +100,6 @@ int main() {
     std::cout << "W aprendido: " << W.data()[0] << " (Objetivo: 2.5000)\n";
     std::cout << "b aprendido: " << bias.data()[0] << " (Objetivo: 1.0000)\n\n";
 
-    std::cout << "¡Fase 2 (Autograd Engine) completada exitosamente!\n";
+    std::cout << "Phase 2 (autograd engine) complete.\n";
     return 0;
 }

@@ -21,7 +21,8 @@ void test_autograd_scalar() {
     Tensor x({1}, std::vector<float>{5.0f}, true);
     Tensor y = (x + x).sum();
     y.backward();
-    check_close(x.grad().data()[0], 2.0f, "un nodo compartido acumula gradiente de ambas ramas");
+    check_close(x.grad().data()[0], 2.0f,
+                "a shared node accumulates the gradient of both branches");
 
     // Llamar backward dos veces acumula (igual que PyTorch)
     Tensor z({1}, std::vector<float>{3.0f}, true);
@@ -29,39 +30,39 @@ void test_autograd_scalar() {
     w.backward();
     Tensor w2 = (z * 2.0f).sum();
     w2.backward();
-    check_close(z.grad().data()[0], 4.0f, "backward acumula gradientes entre llamadas");
+    check_close(z.grad().data()[0], 4.0f, "backward accumulates gradients across calls");
 
     z.zero_grad();
-    check_close(z.grad().data()[0], 0.0f, "zero_grad limpia el gradiente");
+    check_close(z.grad().data()[0], 0.0f, "zero_grad clears the gradient");
 }
 
 void test_autograd_numeric() {
-    section("Autograd: verificacion numerica de gradientes");
+    section("Autograd: verificacion numerica de gradients");
 
     // Ningún valor debe caer exactamente en 0: ReLU no es derivable en ese
     // punto y la diferencia centrada daría 0.5 frente al 0 analítico.
     Tensor A({3, 4}, 0.0f);
     for (size_t i = 0; i < A.size(); ++i) A.data()[i] = 0.5f * static_cast<float>(i) - 2.25f;
 
-    check_gradient("gradiente de sum()", A, [](Tensor& t) { return t.sum(); });
-    check_gradient("gradiente de mean()", A, [](Tensor& t) { return t.mean(); });
-    check_gradient("gradiente de relu()", A, [](Tensor& t) { return t.relu().sum(); });
-    check_gradient("gradiente de transpose()", A, [](Tensor& t) { return t.transpose().sum(); });
-    check_gradient("gradiente de reshape()", A, [](Tensor& t) { return t.reshape({2, 6}).sum(); });
-    check_gradient("gradiente de x*x (Hadamard)", A, [](Tensor& t) { return (t * t).sum(); });
-    check_gradient("gradiente de softmax()", A, [](Tensor& t) {
+    check_gradient("gradient of sum()", A, [](Tensor& t) { return t.sum(); });
+    check_gradient("gradient of mean()", A, [](Tensor& t) { return t.mean(); });
+    check_gradient("gradient of relu()", A, [](Tensor& t) { return t.relu().sum(); });
+    check_gradient("gradient of transpose()", A, [](Tensor& t) { return t.transpose().sum(); });
+    check_gradient("gradient of reshape()", A, [](Tensor& t) { return t.reshape({2, 6}).sum(); });
+    check_gradient("gradient of x*x (Hadamard)", A, [](Tensor& t) { return (t * t).sum(); });
+    check_gradient("gradient of softmax()", A, [](Tensor& t) {
         Tensor w({3, 4}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 2, 3});
         return (t.softmax() * w).sum();
     });
-    check_gradient("gradiente de matmul()", A, [](Tensor& t) {
+    check_gradient("gradient of matmul()", A, [](Tensor& t) {
         Tensor B({4, 2}, {1, -2, 0.5f, 3, -1, 2, 0.25f, -0.5f});
         return t.matmul(B).sum();
     });
-    check_gradient("gradiente de la division", A, [](Tensor& t) {
+    check_gradient("gradient of division", A, [](Tensor& t) {
         Tensor d({3, 4}, 3.0f);
         return (t / d).sum();
     });
-    check_gradient("gradiente de una composicion profunda", A, [](Tensor& t) {
+    check_gradient("gradient of a deep composition", A, [](Tensor& t) {
         Tensor B({4, 3}, {1, -2, 0.5f, 3, -1, 2, 0.25f, -0.5f, 1, 2, -3, 0.75f});
         Tensor h = t.matmul(B).relu();
         return (h * h).mean();
@@ -70,12 +71,12 @@ void test_autograd_numeric() {
     Tensor logits({4, 3},
                   {0.4f, -1.2f, 2.0f, 1.1f, 0.3f, -0.7f, -2.0f, 0.9f, 0.2f, 0.6f, 0.6f, -1.5f});
     std::vector<size_t> targets = {2, 0, 1, 1};
-    check_gradient("gradiente de cross_entropy_loss()", logits,
+    check_gradient("gradient of cross_entropy_loss()", logits,
                    [&](Tensor& t) { return nn::cross_entropy_loss(t, targets); });
 }
 
 void test_repeated_backward() {
-    section("Autograd: backward repetido sobre el mismo grafo");
+    section("Autograd: repeated backward over the same graph");
 
     // Regresión: los nodos intermedios conservaban el gradiente de la llamada
     // anterior, así que el segundo recorrido propagaba la suma de ambos y
@@ -89,53 +90,52 @@ void test_repeated_backward() {
 
     x.zero_grad();
     L.backward();
-    check_close(x.grad().data()[0], 6.0f, "segundo backward sobre el mismo grafo: dL/dx == 6");
+    check_close(x.grad().data()[0], 6.0f, "a second backward over the same graph: dL/dx == 6");
 
     // Sin limpiar la hoja, el resultado debe ser exactamente el doble:
     // solo las hojas acumulan.
     L.backward();
-    check_close(x.grad().data()[0], 12.0f, "sin zero_grad las hojas acumulan (6 + 6)");
+    check_close(x.grad().data()[0], 12.0f, "without zero_grad the leaves accumulate (6 + 6)");
 }
 
 void test_row_indexing_and_batches() {
     section("Tensor: indexacion (fila, col) y mini-lotes");
 
     Tensor A({2, 3}, {1, 2, 3, 4, 5, 6});
-    check_close(A(1, 2), 6.0f, "A(1, 2) accede sin reservar memoria dinamica");
-    check_close(A(0, 0), 1.0f, "A(0, 0) es el primer elemento");
+    check_close(A(1, 2), 6.0f, "A(1, 2) accesses without a heap allocation");
+    check_close(A(0, 0), 1.0f, "A(0, 0) is the first element");
     A(0, 1) = 99.0f;
     check_close(A({0, 1}), 99.0f, "A(fila, col) permite escritura");
-    check_throws([&] { A(2, 0); }, "A(fila, col) fuera de rango lanza excepcion");
-    check_throws([&] { Tensor({4}, 1.0f)(0, 0); },
-                 "A(fila, col) sobre un tensor 1D lanza excepcion");
+    check_throws([&] { A(2, 0); }, "A(fila, col) out of range throws");
+    check_throws([&] { Tensor({4}, 1.0f)(0, 0); }, "A(fila, col) on a 1D tensor throws");
 
     // Escalar a la izquierda
     Tensor t({2}, {1.0f, 2.0f});
-    check_close((2.0f * t).data()[1], 4.0f, "2.0f * t multiplica por la izquierda");
-    check_close((1.0f + t).data()[0], 2.0f, "1.0f + t suma por la izquierda");
-    check_close((10.0f - t).data()[1], 8.0f, "10.0f - t resta por la izquierda");
+    check_close((2.0f * t).data()[1], 4.0f, "2.0f * t multiplies from the left");
+    check_close((1.0f + t).data()[0], 2.0f, "1.0f + t adds from the left");
+    check_close((10.0f - t).data()[1], 8.0f, "10.0f - t subtracts from the left");
 
     // select_rows
     Tensor X({4, 2}, {0, 0, 1, 1, 2, 2, 3, 3}, true);
     Tensor batch = X.select_rows({3, 1});
     check(batch.shape() == std::vector<size_t>({2, 2}), "select_rows da (n_indices, cols)");
-    check_close(batch(0, 0), 3.0f, "select_rows respeta el orden pedido");
-    check_close(batch(1, 0), 1.0f, "select_rows toma la fila correcta");
+    check_close(batch(0, 0), 3.0f, "select_rows respects the requested order");
+    check_close(batch(1, 0), 1.0f, "select_rows takes the right row");
 
     // Con índices repetidos el gradiente debe acumularse en la fila de origen
     X.zero_grad();
     Tensor loss = X.select_rows({0, 0, 2}).sum();
     loss.backward();
-    check_close(X.grad()(0, 0), 2.0f, "un indice repetido acumula gradiente");
-    check_close(X.grad()(1, 0), 0.0f, "una fila no seleccionada no recibe gradiente");
-    check_close(X.grad()(2, 0), 1.0f, "una fila seleccionada una vez recibe gradiente 1");
+    check_close(X.grad()(0, 0), 2.0f, "a repeated index accumulates gradient");
+    check_close(X.grad()(1, 0), 0.0f, "an unselected row receives no gradient");
+    check_close(X.grad()(2, 0), 1.0f, "a row selected once receives gradient 1");
 
-    check_throws([&] { X.select_rows({}); }, "select_rows sin indices lanza excepcion");
-    check_throws([&] { X.select_rows({9}); }, "select_rows con un indice invalido lanza excepcion");
+    check_throws([&] { X.select_rows({}); }, "select_rows with no indices throws");
+    check_throws([&] { X.select_rows({9}); }, "select_rows with an invalid index throws");
 
     Tensor G({3, 4}, 0.0f);
     for (size_t i = 0; i < G.size(); ++i) G.data()[i] = 0.5f * static_cast<float>(i) - 2.25f;
-    check_gradient("gradiente de select_rows()", G,
+    check_gradient("gradient of select_rows()", G,
                    [](Tensor& t) { return t.select_rows({2, 0, 2}).sum(); });
 }
 
@@ -146,27 +146,27 @@ void test_no_grad_and_errors() {
     {
         engine::autograd::NoGradGuard no_grad;
         Tensor b = (a * 2.0f).sum();
-        check(!b.requires_grad(), "NoGradGuard evita registrar el grafo");
-        check(b.get_impl()->parents.empty(), "el resultado no guarda padres bajo NoGradGuard");
+        check(!b.requires_grad(), "NoGradGuard prevents recording the graph");
+        check(b.get_impl()->parents.empty(), "the result records no parents under NoGradGuard");
     }
-    check(engine::autograd::grad_enabled(), "el modo autograd se restaura al salir del guard");
+    check(engine::autograd::grad_enabled(),
+          "autograd mode is restored when the guard goes out of scope");
 
     Tensor c({2, 2}, 1.0f, true);
     Tensor d = c * 2.0f;
-    check_throws([&] { d.backward(); }, "backward implicito sobre un no-escalar lanza excepcion");
+    check_throws([&] { d.backward(); }, "an implicit backward on a non-scalar throws");
 
     d.backward(Tensor({2, 2}, 1.0f));
     check_close(c.grad().data()[0], 2.0f, "backward(grad_output) explicito si funciona");
 
     Tensor e({2, 2}, 1.0f, true);
     check_throws([&] { e.add_grad(Tensor({3, 3}, 1.0f)); },
-                 "add_grad con forma incompatible lanza excepcion");
-    check_throws([&] { Tensor({2, 2}, 1.0f).grad(); },
-                 "acceder a un gradiente inexistente lanza excepcion");
+                 "add_grad with an incompatible shape throws");
+    check_throws([&] { Tensor({2, 2}, 1.0f).grad(); }, "accessing a nonexistent gradient throws");
 }
 
 void test_graph_is_released() {
-    section("Autograd: el grafo se libera (sin ciclos de shared_ptr)");
+    section("Autograd: the graph is freed (no shared_ptr cycles)");
 
     // Si backward_fn capturase su propio tensor de salida se formaría un ciclo
     // de shared_ptr y el nodo no se destruiría nunca al salir del ámbito.
@@ -177,9 +177,9 @@ void test_graph_is_released() {
         weak_node = intermediate.get_impl();
         Tensor loss = intermediate.sum();
         loss.backward();
-        check(!weak_node.expired(), "el nodo intermedio sigue vivo dentro del ambito");
+        check(!weak_node.expired(), "the intermediate node is still alive inside the scope");
     }
-    check(weak_node.expired(), "el nodo intermedio se libera al salir del ambito");
+    check(weak_node.expired(), "the intermediate node is freed when it goes out of scope");
 }
 
 }  // namespace

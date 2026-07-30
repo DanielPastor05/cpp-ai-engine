@@ -35,7 +35,7 @@ constexpr size_t kNumClasses = 10;
 const std::string kCheckpoint = "mnist_cnn.bin";
 
 void print_digit(const Tensor& images, size_t index, size_t label) {
-    std::cout << "  Etiqueta " << label << ":\n";
+    std::cout << "  Label " << label << ":\n";
     const float* img = images.data().data() + index * 28 * 28;
     for (size_t r = 0; r < 28; r += 2) {  // una fila de cada dos: las celdas son altas
         std::cout << "    ";
@@ -85,7 +85,7 @@ void print_confusion(nn::Sequential& model, const data::Dataset& set) {
     }
     model.train();
 
-    std::cout << "Matriz de confusion (filas = real, columnas = predicho):\n\n";
+    std::cout << "Confusion matrix (rows = actual, columns = predicted):\n\n";
     std::cout << "        ";
     for (size_t c = 0; c < kNumClasses; ++c) std::cout << std::setw(5) << c;
     std::cout << "\n";
@@ -106,7 +106,7 @@ void print_confusion(nn::Sequential& model, const data::Dataset& set) {
 
 int main() {
     std::cout << "====================================================\n";
-    std::cout << "  MNIST: la CNN del motor sobre datos reales        \n";
+    std::cout << "  MNIST: the engine's CNN on real data              \n";
     std::cout << "====================================================\n\n";
 
     // Conviene que quien lea el tiempo sepa qué se ejecutó y dónde. Las
@@ -115,10 +115,10 @@ int main() {
     // el optimizador siguen en CPU y la cortan una vez por paso.
     if (engine::cuda::available()) {
         const engine::cuda::DeviceInfo gpu = engine::cuda::device_info();
-        std::cout << "Backend: CUDA sobre " << gpu.name << " (cc " << gpu.compute_major << "."
+        std::cout << "Backend: CUDA on " << gpu.name << " (cc " << gpu.compute_major << "."
                   << gpu.compute_minor << "), convoluciones incluidas.\n";
     } else {
-        std::cout << "Backend: CPU, " << engine::parallel::num_threads() << " hilo(s).\n";
+        std::cout << "Backend: CPU, " << engine::parallel::num_threads() << " thread(s).\n";
     }
     std::cout << "\n";
 
@@ -138,12 +138,12 @@ int main() {
     data::Dataset train = data::load_mnist_train(paths);
     data::Dataset test = data::load_mnist_test(paths);
 
-    std::cout << "--- 1. Conjunto de datos ---\n";
-    std::cout << (paths.full ? "MNIST completo" : "Subconjunto del repositorio") << ": "
-              << train.size() << " imagenes de entrenamiento, " << test.size() << " de prueba, de "
-              << train.images.shape_str() << "\n";
+    std::cout << "--- 1. Dataset ---\n";
+    std::cout << (paths.full ? "full MNIST" : "Repository subset") << ": " << train.size()
+              << " training images, " << test.size() << " test, of " << train.images.shape_str()
+              << "\n";
     if (!paths.full) {
-        std::cout << "(ejecuta tools/download_mnist.sh para el conjunto completo)\n";
+        std::cout << "(run tools/download_mnist.sh for the full set)\n";
     }
     std::cout << "\n";
     print_digit(train.images, 0, train.labels[0]);
@@ -165,7 +165,7 @@ int main() {
         nn::make<nn::ReLU>(),
         nn::make<nn::Linear>(128, kNumClasses)};
 
-    std::cout << "--- 2. Arquitectura ---\n";
+    std::cout << "--- 2. Architecture ---\n";
     model.summary();
     std::cout << "\n";
 
@@ -181,8 +181,7 @@ int main() {
     std::vector<size_t> order(train.size());
     std::iota(order.begin(), order.end(), 0);
 
-    std::cout << "--- 3. Entrenamiento (" << epochs << " epocas, lotes de " << batch_size
-              << ") ---\n";
+    std::cout << "--- 3. Training (" << epochs << " epochs, batches of " << batch_size << ") ---\n";
 
     const auto started = std::chrono::steady_clock::now();
     for (int epoch = 1; epoch <= epochs; ++epoch) {
@@ -218,7 +217,7 @@ int main() {
 
         std::cout << "  Epoca " << std::setw(2) << epoch << " | Loss = " << std::fixed
                   << std::setprecision(4) << (epoch_loss / static_cast<float>(batches))
-                  << " | Prueba = " << std::setprecision(2) << (test_acc * 100.0f) << "%"
+                  << " | Test = " << std::setprecision(2) << (test_acc * 100.0f) << "%"
                   << " | lr = " << std::scientific << std::setprecision(1) << opt.learning_rate()
                   << std::defaultfloat << " | " << std::fixed << std::setprecision(1) << elapsed
                   << " s\n";
@@ -231,7 +230,7 @@ int main() {
     std::cout << "--- 4. Resultados ---\n";
     const float final_acc = evaluate(model, test);
     std::cout << std::fixed << std::setprecision(2)
-              << "Exactitud final sobre el conjunto de prueba: " << (final_acc * 100.0f) << "%\n\n";
+              << "Final accuracy on the test set: " << (final_acc * 100.0f) << "%\n\n";
     print_confusion(model, test);
 
     // ---------------------------------------------------------
@@ -255,13 +254,13 @@ int main() {
                             nn::make<nn::Linear>(32 * 7 * 7, 128),
                             nn::make<nn::ReLU>(),
                             nn::make<nn::Linear>(128, kNumClasses)};
-    std::cout << "Modelo nuevo sin entrenar: " << std::setprecision(2)
+    std::cout << "A fresh untrained model: " << std::setprecision(2)
               << (evaluate(restored, test) * 100.0f) << "%\n";
 
     engine::load_parameters(restored, kCheckpoint);
-    std::cout << "El mismo tras cargar los pesos: " << (evaluate(restored, test) * 100.0f)
+    std::cout << "The same one after loading the weights: " << (evaluate(restored, test) * 100.0f)
               << "%\n\n";
 
-    std::cout << "¡Entrenamiento con datos reales completado!\n";
+    std::cout << "Training on real data complete.\n";
     return 0;
 }

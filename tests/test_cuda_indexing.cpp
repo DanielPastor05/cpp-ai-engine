@@ -1,26 +1,26 @@
-// Simulación en CPU de la aritmética de índices del kernel con teselado de
-// registros.
+// A CPU simulation of the register-tiled kernel's index arithmetic.
 //
-// El problema que resuelve: los kernels de CUDA sólo se pueden ejecutar donde
-// hay una tarjeta, y CI no tiene ninguna. El job de CUDA compila, que detecta
-// errores de sintaxis, y nada más — un error de indexación pasa la compilación
-// sin inmutarse y aparece semanas después como resultados incorrectos.
 //
-// Así que esto reproduce la estructura del kernel con bucles: rejilla de
-// bloques, 256 hilos, memoria compartida, barreras, y **las mismas expresiones
-// de índice** que src/cuda/kernels.cu. Después compara contra un producto de
-// matrices de referencia. Corre en cualquier máquina, en las cuatro
-// plataformas, en cada push.
+// The problem it solves: CUDA kernels can only run where there is a card, and CI
+// has none. The CUDA job compiles, which catches syntax errors and nothing else
+// -- an indexing error compiles perfectly happily and shows up weeks later as
+// wrong results.
 //
-// El precio es que las expresiones están escritas dos veces y hay que
-// mantenerlas en paralelo. Se asume a conciencia: la alternativa era no tener
-// ninguna comprobación de los índices hasta llegar a una máquina con GPU, y
-// para eso el error ya está commiteado.
+// So this reproduces the kernel's structure with loops: block grid, 256 threads,
+// shared memory, barriers, and **the same index expressions** as
+// src/cuda/kernels.cu. It then compares against a reference matrix product. It
+// runs on any machine, on all four platforms, on every push.
 //
-// Lo que esto NO comprueba: nada que dependa del hardware. Las carreras entre
-// hilos, la coherencia de la memoria compartida real, la alineación de las
-// lecturas float4 o el propio rendimiento sólo se ven en el dispositivo, y de
-// eso se encarga tests/test_cuda_parity.cpp.
+//
+// The price is that the expressions are written twice and have to be maintained
+// in parallel. That is accepted knowingly: the alternative was having no check on
+// the indices at all until reaching a machine with a GPU, and by then the error
+// is already committed.
+//
+// What this does NOT check: anything that depends on the hardware. Races between
+// threads, real shared-memory coherence, float4 load alignment and performance
+// itself only show on the device, and tests/test_cuda_parity.cpp covers those.
+//
 
 #include "test_support.hpp"
 
@@ -29,11 +29,11 @@
 
 namespace {
 
-// Deben coincidir con las constantes de src/cuda/kernels.cu.
+// These must match the constants in src/cuda/kernels.cu.
 constexpr int kBM = 128, kBN = 128, kBK = 8, kTM = 8, kTN = 8;
 constexpr int kRegBlock = (kBM / kTM) * (kBN / kTN);
 
-// Reproduce un lanzamiento completo del kernel sobre una matriz 2D.
+// Reproduces a full kernel launch over a 2D matrix.
 void simulate_kernel(const float* A, const float* B, float* C, int M, int K, int N, bool use_vec4) {
     const int grid_x = (N + kBN - 1) / kBN;
     const int grid_y = (M + kBM - 1) / kBM;
@@ -48,8 +48,8 @@ void simulate_kernel(const float* A, const float* B, float* C, int M, int K, int
             float Bs[kBK][kBN];
 
             for (int k_base = 0; k_base < K; k_base += kBK) {
-                // Fase de carga. Se recorren los 256 hilos enteros antes de
-                // pasar al cálculo, que es lo que hace el __syncthreads().
+                // Load phase. All 256 threads are walked before moving on to the
+                // arithmetic, which is what the __syncthreads() does.
                 for (int tid = 0; tid < kRegBlock; ++tid) {
                     if (use_vec4) {
                         const int a_r = tid / (kBK / 4);
@@ -97,7 +97,7 @@ void simulate_kernel(const float* A, const float* B, float* C, int M, int K, int
                     }
                 }
 
-                // Fase de cálculo, tras la barrera.
+                // Compute phase, after the barrier.
                 for (int tid = 0; tid < kRegBlock; ++tid) {
                     const int t_row = tid / (kBN / kTN);
                     const int t_col = tid % (kBN / kTN);
@@ -134,13 +134,13 @@ void simulate_kernel(const float* A, const float* B, float* C, int M, int K, int
 void check_shape(int M, int K, int N, bool use_vec4) {
     std::vector<float> A(static_cast<size_t>(M) * K);
     std::vector<float> B(static_cast<size_t>(K) * N);
-    // Valores deterministas y variados: si el kernel leyera la posición
-    // equivocada, con datos constantes daría igual.
+    // Deterministic and varied values: if the kernel read the wrong position,
+    // constant data would make it look fine.
     for (size_t i = 0; i < A.size(); ++i) A[i] = static_cast<float>((i * 37 % 19)) * 0.1f - 0.9f;
     for (size_t i = 0; i < B.size(); ++i) B[i] = static_cast<float>((i * 53 % 23)) * 0.1f - 1.1f;
 
-    // La salida arranca con un centinela: si el kernel dejara alguna posición
-    // sin escribir, el error sería enorme en lugar de pasar desapercibido.
+    // The output starts with a sentinel: if the kernel left any position unwritten,
+    // the error would be enormous rather than slipping past unnoticed.
     std::vector<float> got(static_cast<size_t>(M) * N, -12345.0f);
     std::vector<float> want(static_cast<size_t>(M) * N, 0.0f);
     for (int i = 0; i < M; ++i) {
@@ -168,13 +168,13 @@ void check_shape(int M, int K, int N, bool use_vec4) {
 }  // namespace
 
 void run_cuda_indexing_tests() {
-    testing::section("Indices del kernel con teselado de registros (simulados en CPU)");
+    testing::section("Register-tiled kernel indices (simulated on the CPU)");
 
     struct Case {
         int M, K, N;
     };
-    // Los tamaños interesantes son los que no encajan: el bloque es de 128x128
-    // y el paso sobre K es de 8, así que los fallos viven justo en los restos.
+    // The interesting sizes are the ones that do not fit: the block is 128x128 and
+    // the step over K is 8, so the failures live precisely in the remainders.
     const Case cases[] = {
         {1, 1, 1},                       // degenerado
         {17, 23, 31},                    // mucho menor que un bloque
@@ -190,7 +190,7 @@ void run_cuda_indexing_tests() {
 
     for (const Case& c : cases) {
         check_shape(c.M, c.K, c.N, false);
-        // La variante vectorizada sólo se despacha con K y N múltiplos de 4.
+        // The vectorised variant is only dispatched with K and N multiples of 4.
         if (c.K % 4 == 0 && c.N % 4 == 0) check_shape(c.M, c.K, c.N, true);
     }
 }

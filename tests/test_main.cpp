@@ -2,7 +2,7 @@
 
 int main() {
     std::cout << "====================================================\n";
-    std::cout << "  Suite de pruebas de cpp-ai-engine                 \n";
+    std::cout << "  cpp-ai-engine test suite                          \n";
     std::cout << "====================================================\n";
 
     run_tensor_tests();
@@ -16,10 +16,10 @@ int main() {
 
     std::cout << "\n====================================================\n";
     if (testing::g_failures == 0) {
-        std::cout << "  TODAS LAS PRUEBAS PASARON (" << testing::g_checks << " comprobaciones)\n";
+        std::cout << "  ALL TESTS PASSED (" << testing::g_checks << " checks)\n";
     } else {
-        std::cout << "  " << testing::g_failures << " DE " << testing::g_checks
-                  << " COMPROBACIONES FALLARON\n";
+        std::cout << "  " << testing::g_failures << " OF " << testing::g_checks
+                  << " CHECKS FAILED\n";
     }
     std::cout << "====================================================\n";
 

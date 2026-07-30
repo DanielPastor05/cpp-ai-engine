@@ -3,7 +3,7 @@
 
 int main() {
     std::cout << "====================================================\n";
-    std::cout << "  Fase 1: Demostracion de la Libreria de Tensores  \n";
+    std::cout << "  Phase 1: the tensor library, demonstrated       \n";
     std::cout << "====================================================\n\n";
 
     using engine::Tensor;
@@ -29,7 +29,7 @@ int main() {
     // 3. Función de Activación ReLU
     std::cout << "--- 3. Funciones de Activacion (ReLU) ---\n";
     Tensor X({2, 3}, {-2.0f, 0.5f, -1.0f, 3.0f, -0.1f, 4.2f});
-    X.print("Tensor Entrada X (con valores negativos)");
+    X.print("Input tensor X (with negative values)");
 
     Tensor X_relu = X.relu();
     X_relu.print("X.relu()");
@@ -62,6 +62,6 @@ int main() {
     Tensor Reshaped = Flat.reshape({3, 4});
     Reshaped.print("Reshaped a Matriz (3x4)");
 
-    std::cout << "¡Fase 1 completada con exito!\n";
+    std::cout << "Phase 1 complete.\n";
     return 0;
 }

@@ -116,8 +116,8 @@ float train(const std::string& title, nn::Sequential& model, optim::Optimizer& o
         const float test_acc = nn::accuracy(model(X_test), y_test);
         std::cout << "  Epoch " << std::setw(2) << epoch << " | Loss = " << std::fixed
                   << std::setprecision(4) << (epoch_loss / static_cast<float>(batches))
-                  << " | Entrenamiento = " << std::setprecision(2) << (train_acc * 100.0f) << "%"
-                  << " | Prueba = " << (test_acc * 100.0f) << "%\n";
+                  << " | Train = " << std::setprecision(2) << (train_acc * 100.0f) << "%"
+                  << " | Test = " << (test_acc * 100.0f) << "%\n";
     }
 
     engine::autograd::NoGradGuard no_grad;
@@ -128,7 +128,7 @@ float train(const std::string& title, nn::Sequential& model, optim::Optimizer& o
 
 int main() {
     std::cout << "====================================================\n";
-    std::cout << "  Fase 4: Redes Convolucionales (CNN)               \n";
+    std::cout << "  Phase 4: convolutional networks (CNNs)               \n";
     std::cout << "====================================================\n\n";
 
     engine::manual_seed(7);
@@ -141,27 +141,27 @@ int main() {
 
     nn::Window2d w3(3, 3, 1, 0);
     Tensor cols = nn::im2col(small, w3);
-    std::cout << "Entrada " << small.shape_str() << " con kernel 3x3, paso 1, sin relleno\n";
+    std::cout << "Entrada " << small.shape_str() << " with a 3x3 kernel, stride 1, no padding\n";
     std::cout << "im2col -> " << cols.shape_str()
-              << ": 4 ventanas (2x2 posiciones) aplanadas en filas de 9 valores\n";
-    cols.print("columnas");
+              << ": 4 windows (2x2 positions) flattened into rows of 9 values\n";
+    cols.print("columns");
 
     Tensor restored = nn::col2im(cols, small.shape(), w3);
-    std::cout << "col2im devuelve la forma original " << restored.shape_str()
-              << ". No es la inversa exacta: suma los solapes, que es justo\n"
-              << "lo que necesita la propagacion hacia atras.\n\n";
+    std::cout << "col2im returns the original shape " << restored.shape_str()
+              << ". It is not the exact inverse: it sums the overlaps, which is\n"
+              << "exactly what the backward pass needs.\n\n";
 
     // ---------------------------------------------------------
-    // 2. Conjunto de datos
+    // 2. Dataset
     // ---------------------------------------------------------
-    std::cout << "--- 2. Conjunto de datos sintetico ---\n";
+    std::cout << "--- 2. Synthetic dataset ---\n";
     Tensor X, X_test;
     std::vector<size_t> y, y_test;
     make_dataset(120, X, y);           // 360 imágenes de entrenamiento
     make_dataset(40, X_test, y_test);  // 120 imágenes de prueba
 
-    std::cout << "Entrenamiento: " << X.shape_str() << "   Prueba: " << X_test.shape_str() << "\n";
-    std::cout << "Tres clases dibujadas en posiciones aleatorias, con ruido de fondo:\n\n";
+    std::cout << "Train: " << X.shape_str() << "   Test: " << X_test.shape_str() << "\n";
+    std::cout << "Three classes drawn at random positions, over background noise:\n\n";
     print_image(X, 0, y[0]);
     print_image(X, 200, y[200]);
     std::cout << "\n";
@@ -169,7 +169,7 @@ int main() {
     // ---------------------------------------------------------
     // 3. CNN frente a un MLP con un número de parámetros parecido
     // ---------------------------------------------------------
-    std::cout << "--- 3. Arquitecturas ---\n";
+    std::cout << "--- 3. Architectures ---\n";
 
     nn::Sequential cnn{
         nn::make<nn::Conv2d>(1, 8, nn::Window2d(3, 3, 1, 1)),  // (N,1,12,12) -> (N,8,12,12)
@@ -195,11 +195,11 @@ int main() {
     // ---------------------------------------------------------
     engine::manual_seed(7);
     optim::Adam cnn_opt(cnn.parameters(), 0.01f);
-    const float cnn_acc = train("CNN con Adam", cnn, cnn_opt, X, y, X_test, y_test, 8, 32);
+    const float cnn_acc = train("CNN with Adam", cnn, cnn_opt, X, y, X_test, y_test, 8, 32);
 
     engine::manual_seed(7);
     optim::Adam mlp_opt(mlp.parameters(), 0.01f);
-    const float mlp_acc = train("MLP con Adam", mlp, mlp_opt, X, y, X_test, y_test, 8, 32);
+    const float mlp_acc = train("MLP with Adam", mlp, mlp_opt, X, y, X_test, y_test, 8, 32);
 
     // ---------------------------------------------------------
     // 5. Resumen
@@ -207,10 +207,10 @@ int main() {
     std::cout << "--- 5. Resumen ---\n";
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "  CNN (" << cnn.num_parameters() << " parametros) : " << cnn_acc * 100.0f
-              << "% sobre el conjunto de prueba\n";
+              << "% on the test set\n";
     std::cout << "  MLP (" << mlp.num_parameters() << " parametros) : " << mlp_acc * 100.0f
-              << "% sobre el conjunto de prueba\n\n";
+              << "% on the test set\n\n";
 
-    std::cout << "¡Fase 4 (Redes Convolucionales) completada exitosamente!\n";
+    std::cout << "Phase 4 (convolutional networks) complete.\n";
     return 0;
 }

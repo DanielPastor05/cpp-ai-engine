@@ -17,26 +17,28 @@ void test_nn_layers() {
     engine::manual_seed(7);
 
     nn::Linear layer(4, 3);
-    check(layer.weight().shape() == std::vector<size_t>({4, 3}), "Linear crea pesos (in, out)");
-    check(layer.bias().shape() == std::vector<size_t>({1, 3}), "Linear crea un sesgo (1, out)");
-    check(layer.num_parameters() == 15, "Linear(4,3) tiene 4*3 + 3 = 15 parametros");
+    check(layer.weight().shape() == std::vector<size_t>({4, 3}),
+          "Linear creates (in, out) weights");
+    check(layer.bias().shape() == std::vector<size_t>({1, 3}), "Linear creates a (1, out) bias");
+    check(layer.num_parameters() == 15, "Linear(4,3) has 4*3 + 3 = 15 parameters");
 
     Tensor input({5, 4}, 1.0f);
     Tensor out = layer(input);
-    check(out.shape() == std::vector<size_t>({5, 3}), "Linear preserva el tamano del lote");
+    check(out.shape() == std::vector<size_t>({5, 3}), "Linear preserves the batch size");
 
     check_throws([&] { layer(Tensor({5, 7}, 1.0f)); },
-                 "una entrada con in_features erroneo lanza excepcion");
-    check_throws([&] { layer(Tensor({5}, 1.0f)); }, "una entrada 1D lanza excepcion");
+                 "an input with the wrong in_features throws");
+    check_throws([&] { layer(Tensor({5}, 1.0f)); }, "a 1D input throws");
 
     nn::Linear no_bias(4, 3, false);
-    check(no_bias.parameters().size() == 1, "Linear sin sesgo expone un solo parametro");
+    check(no_bias.parameters().size() == 1, "Linear without bias exposes a single parameter");
 
     nn::Sequential model{nn::make<nn::Linear>(4, 8), nn::make<nn::ReLU>(),
                          nn::make<nn::Linear>(8, 2)};
-    check(model.parameters().size() == 4, "Sequential agrega los parametros de sus capas");
-    check(model.num_parameters() == 4 * 8 + 8 + 8 * 2 + 2, "Sequential suma bien los parametros");
-    check(model(input).shape() == std::vector<size_t>({5, 2}), "Sequential encadena las capas");
+    check(model.parameters().size() == 4, "Sequential aggregates its layers' parameters");
+    check(model.num_parameters() == 4 * 8 + 8 + 8 * 2 + 2,
+          "Sequential sums the parameters correctly");
+    check(model(input).shape() == std::vector<size_t>({5, 2}), "Sequential chains the layers");
 
     check_throws(
         [&] {
@@ -47,48 +49,46 @@ void test_nn_layers() {
 }
 
 void test_softmax_and_losses() {
-    section("nn: softmax y funciones de perdida");
+    section("nn: softmax and loss functions");
 
     Tensor logits({2, 3}, {1.0f, 2.0f, 3.0f, 1.0f, 1.0f, 1.0f});
     Tensor probs = logits.softmax();
 
     float row0 = probs({0, 0}) + probs({0, 1}) + probs({0, 2});
     float row1 = probs({1, 0}) + probs({1, 1}) + probs({1, 2});
-    check_close(row0, 1.0f, "cada fila del softmax suma 1");
-    check_close(row1, 1.0f, "la fila uniforme tambien suma 1");
+    check_close(row0, 1.0f, "each softmax row sums to 1");
+    check_close(row1, 1.0f, "the uniform row also sums to 1");
     check_close(probs({1, 0}), 1.0f / 3.0f, "logits iguales dan probabilidades iguales");
-    check(probs({0, 2}) > probs({0, 1}), "el softmax conserva el orden de los logits");
+    check(probs({0, 2}) > probs({0, 1}), "softmax preserves the order of the logits");
 
     // Estabilidad numérica: sin restar el máximo, exp(1000) desbordaría
     Tensor huge({1, 3}, {1000.0f, 1000.0f, 1000.0f});
     Tensor huge_probs = huge.softmax();
-    check_close(huge_probs({0, 0}), 1.0f / 3.0f, "el softmax es estable con logits enormes");
+    check_close(huge_probs({0, 0}), 1.0f / 3.0f, "softmax is stable with enormous logits");
 
     // Entropía cruzada de una prediccion perfecta -> ~0
     Tensor confident({1, 3}, {50.0f, 0.0f, 0.0f});
     check_close(nn::cross_entropy_loss(confident, {0}).data()[0], 0.0f,
-                "la entropia cruzada de una prediccion perfecta es ~0");
+                "cross entropy of a perfect prediction is ~0");
 
     // Distribución uniforme sobre C clases -> log(C)
     Tensor uniform({1, 4}, 0.0f);
     check_close(nn::cross_entropy_loss(uniform, {0}).data()[0], std::log(4.0f),
-                "la entropia cruzada uniforme vale log(C)");
+                "uniform cross entropy equals log(C)");
 
-    check_throws([&] { nn::cross_entropy_loss(logits, {0}); },
-                 "un numero de etiquetas incorrecto lanza excepcion");
-    check_throws([&] { nn::cross_entropy_loss(logits, {0, 9}); },
-                 "una etiqueta fuera de rango lanza excepcion");
+    check_throws([&] { nn::cross_entropy_loss(logits, {0}); }, "a wrong number of labels throws");
+    check_throws([&] { nn::cross_entropy_loss(logits, {0, 9}); }, "a label out of range throws");
 
     // MSE
     Tensor pred({1, 3}, {1.0f, 2.0f, 3.0f});
     Tensor target({1, 3}, {1.0f, 4.0f, 3.0f});
-    check_close(nn::mse_loss(pred, target).data()[0], 4.0f / 3.0f, "mse_loss calcula la media");
+    check_close(nn::mse_loss(pred, target).data()[0], 4.0f / 3.0f, "mse_loss computes the mean");
 
     // Métricas
     check(nn::argmax_rows(logits) == std::vector<size_t>({2, 0}),
-          "argmax_rows toma el maximo por fila");
-    check_close(nn::accuracy(logits, {2, 0}), 1.0f, "accuracy con todo correcto es 1");
-    check_close(nn::accuracy(logits, {0, 0}), 0.5f, "accuracy con la mitad correcta es 0.5");
+          "argmax_rows takes the maximum per row");
+    check_close(nn::accuracy(logits, {2, 0}), 1.0f, "accuracy with everything correct is 1");
+    check_close(nn::accuracy(logits, {0, 0}), 0.5f, "accuracy with half correct is 0.5");
 }
 
 void test_optimizers() {
@@ -108,17 +108,17 @@ void test_optimizers() {
     Tensor w_sgd({1}, std::vector<float>{0.0f}, true);
     optim::SGD sgd({w_sgd}, 0.1f);
     minimize(sgd, w_sgd, 200);
-    check_close(w_sgd.data()[0], 3.0f, "SGD converge al minimo", 1e-3f);
+    check_close(w_sgd.data()[0], 3.0f, "SGD converges to the minimum", 1e-3f);
 
     Tensor w_mom({1}, std::vector<float>{0.0f}, true);
     optim::SGD sgd_mom({w_mom}, 0.05f, 0.9f);
     minimize(sgd_mom, w_mom, 200);
-    check_close(w_mom.data()[0], 3.0f, "SGD con momento converge al minimo", 1e-3f);
+    check_close(w_mom.data()[0], 3.0f, "SGD with momentum converges to the minimum", 1e-3f);
 
     Tensor w_adam({1}, std::vector<float>{0.0f}, true);
     optim::Adam adam({w_adam}, 0.1f);
     minimize(adam, w_adam, 300);
-    check_close(w_adam.data()[0], 3.0f, "Adam converge al minimo", 1e-3f);
+    check_close(w_adam.data()[0], 3.0f, "Adam converges to the minimum", 1e-3f);
 
     // La corrección de sesgo hace que el primer paso de Adam valga ~lr
     Tensor w_first({1}, std::vector<float>{0.0f}, true);
@@ -127,22 +127,22 @@ void test_optimizers() {
     Tensor l = (w_first * 2.0f).sum();
     l.backward();
     adam_first.step();
-    check_close(w_first.data()[0], -0.1f,
-                "el primer paso de Adam vale ~lr gracias a la correccion de sesgo", 1e-3f);
-    check(adam_first.steps() == 1, "Adam cuenta los pasos aplicados");
+    check_close(w_first.data()[0], -0.1f, "Adam's first step is ~lr thanks to the bias correction",
+                1e-3f);
+    check(adam_first.steps() == 1, "Adam counts the steps applied");
 
     // Un parámetro sin gradiente no debe moverse
     Tensor untouched({2}, {1.0f, 2.0f}, true);
     optim::SGD idle({untouched}, 0.5f);
     idle.step();
-    check_close(untouched.data()[0], 1.0f, "un parametro sin gradiente no se modifica");
+    check_close(untouched.data()[0], 1.0f, "a parameter with no gradient is not modified");
 
-    check_throws([&] { optim::SGD({w_sgd}, -1.0f); }, "un learning rate negativo lanza excepcion");
-    check_throws([&] { optim::Adam({w_sgd}, 0.1f, 1.5f); }, "un beta1 invalido lanza excepcion");
+    check_throws([&] { optim::SGD({w_sgd}, -1.0f); }, "a negative learning rate throws");
+    check_throws([&] { optim::Adam({w_sgd}, 0.1f, 1.5f); }, "an invalid beta1 throws");
 }
 
 void test_end_to_end_training() {
-    section("Entrenamiento de extremo a extremo");
+    section("end-to-end training");
 
     engine::manual_seed(123);
 
@@ -167,9 +167,9 @@ void test_end_to_end_training() {
         last_loss = loss.data()[0];
     }
 
-    check(last_loss < first_loss, "la perdida disminuye durante el entrenamiento");
-    check(last_loss < 0.05f, "el MLP ajusta el XOR (perdida < 0.05)");
-    check_close(nn::accuracy(model(X), y), 1.0f, "el MLP clasifica el XOR con 100% de exactitud");
+    check(last_loss < first_loss, "the loss decreases during training");
+    check(last_loss < 0.05f, "the MLP fits XOR (loss < 0.05)");
+    check_close(nn::accuracy(model(X), y), 1.0f, "the MLP classifies XOR at 100% accuracy");
 
     // El mismo problema con un modelo lineal no puede resolverse
     engine::manual_seed(123);
@@ -181,7 +181,7 @@ void test_end_to_end_training() {
         loss.backward();
         linear_opt.step();
     }
-    check(nn::accuracy(linear(X), y) < 1.0f, "un modelo lineal no resuelve el XOR (control)");
+    check(nn::accuracy(linear(X), y) < 1.0f, "a linear model does not solve XOR (control)");
 }
 
 void test_activations() {
@@ -192,8 +192,8 @@ void test_activations() {
     nn::Sigmoid sig;
     Tensor s = sig(x);
     check_close(s.data()[2], 0.5f, "sigmoid(0) == 0.5");
-    check(s.data()[0] > 0.0f && s.data()[0] < 0.5f, "sigmoid de un negativo cae en (0, 0.5)");
-    check(s.data()[4] > 0.5f && s.data()[4] < 1.0f, "sigmoid de un positivo cae en (0.5, 1)");
+    check(s.data()[0] > 0.0f && s.data()[0] < 0.5f, "sigmoid of a negative falls in (0, 0.5)");
+    check(s.data()[4] > 0.5f && s.data()[4] < 1.0f, "sigmoid of a positive falls in (0.5, 1)");
     // Estabilidad en los extremos: sin el calculo por ramas, exp() desbordaria
     Tensor extreme({2}, {-100.0f, 100.0f});
     check_close(sig(extreme).data()[0], 0.0f, "sigmoid es estable en -100");
@@ -201,21 +201,21 @@ void test_activations() {
 
     nn::Tanh th;
     check_close(th(x).data()[2], 0.0f, "tanh(0) == 0");
-    check_close(th(x).data()[4], std::tanh(2.0f), "tanh(2) coincide con la libreria");
+    check_close(th(x).data()[4], std::tanh(2.0f), "tanh(2) agrees with the library");
 
     nn::GELU gelu;
     Tensor g = gelu(x);
     check_close(g.data()[2], 0.0f, "gelu(0) == 0");
     check(g.data()[0] < 0.0f, "gelu deja pasar algo de senal negativa");
     check(g.data()[0] > -0.2f, "pero muy atenuada");
-    check(g.data()[4] > 1.9f, "gelu es casi la identidad para positivos grandes");
+    check(g.data()[4] > 1.9f, "gelu is nearly the identity for large positives");
 
     // Gradientes
     Tensor G({4}, {-1.5f, -0.3f, 0.7f, 2.1f});
     Tensor w = Tensor::randn({4});
-    check_gradient("gradiente de Sigmoid", G, [&](Tensor& t) { return (sig(t) * w).sum(); });
-    check_gradient("gradiente de Tanh", G, [&](Tensor& t) { return (th(t) * w).sum(); });
-    check_gradient("gradiente de GELU", G, [&](Tensor& t) { return (gelu(t) * w).sum(); });
+    check_gradient("gradient of Sigmoid", G, [&](Tensor& t) { return (sig(t) * w).sum(); });
+    check_gradient("gradient of Tanh", G, [&](Tensor& t) { return (th(t) * w).sum(); });
+    check_gradient("gradient of GELU", G, [&](Tensor& t) { return (gelu(t) * w).sum(); });
 }
 
 void test_train_eval_and_dropout() {
@@ -224,32 +224,32 @@ void test_train_eval_and_dropout() {
     engine::manual_seed(77);
 
     nn::Dropout drop(0.5f);
-    check(drop.is_training(), "los modulos arrancan en modo entrenamiento");
+    check(drop.is_training(), "modules start in training mode");
 
     Tensor x({1000}, 1.0f, false);
     Tensor trained = drop(x);
     size_t zeros = 0;
     for (float v : trained.data())
         if (v == 0.0f) ++zeros;
-    check(zeros > 400 && zeros < 600, "en entrenamiento anula alrededor de la mitad");
+    check(zeros > 400 && zeros < 600, "in training it zeroes about half");
 
     // La media se conserva gracias al escalado 1/(1-p)
     float mean = 0.0f;
     for (float v : trained.data()) mean += v;
     mean /= 1000.0f;
-    check(std::fabs(mean - 1.0f) < 0.1f, "el escalado conserva la media");
+    check(std::fabs(mean - 1.0f) < 0.1f, "the scaling preserves the mean");
 
     drop.eval();
-    check(!drop.is_training(), "eval() apaga el modo entrenamiento");
+    check(!drop.is_training(), "eval() turns training mode off");
     Tensor evaluated = drop(x);
     bool identical = true;
     for (size_t i = 0; i < evaluated.size(); ++i) {
         if (evaluated.data()[i] != 1.0f) identical = false;
     }
-    check(identical, "en evaluacion Dropout es la identidad");
+    check(identical, "at evaluation Dropout is the identity");
 
-    check_throws([&] { nn::Dropout(1.0f); }, "una probabilidad de 1 lanza excepcion");
-    check_throws([&] { nn::Dropout(-0.1f); }, "una probabilidad negativa lanza excepcion");
+    check_throws([&] { nn::Dropout(1.0f); }, "a probability of 1 throws");
+    check_throws([&] { nn::Dropout(-0.1f); }, "a negative probability throws");
 
     // El interruptor se propaga por el contenedor
     nn::Sequential model{nn::make<nn::Linear>(4, 4), nn::make<nn::Dropout>(0.5f),
@@ -270,51 +270,51 @@ void test_train_eval_and_dropout() {
         const bool alive = out.data()[i] != 0.0f;
         if (alive != (gx.grad().data()[i] != 0.0f)) coherent = false;
     }
-    check(coherent, "el gradiente pasa exactamente por donde paso la activacion");
+    check(coherent, "the gradient passes exactly where the activation did");
 }
 
 void test_named_parameters() {
-    section("nn: parametros con nombre");
+    section("nn: named parameters");
 
     nn::Sequential model{nn::make<nn::Linear>(3, 4), nn::make<nn::ReLU>(),
                          nn::make<nn::Linear>(4, 2)};
 
     auto named = model.named_parameters();
-    check(named.size() == model.parameters().size(), "hay un nombre por cada parametro");
+    check(named.size() == model.parameters().size(), "there is one name per parameter");
 
     std::set<std::string> unique;
     for (const auto& entry : named) unique.insert(entry.first);
-    check(unique.size() == named.size(), "los nombres no se repiten");
+    check(unique.size() == named.size(), "the names do not repeat");
 
     // El indice de la capa entra en el nombre, asi que dos capas iguales
     // no colisionan
-    check(named[0].first != named[2].first, "dos capas Linear iguales tienen nombres distintos");
+    check(named[0].first != named[2].first, "two identical Linear layers get different names");
 
     // Comparten implementacion con los pesos reales
     named[0].second.data()[0] = 42.0f;
     check_close(model.parameters()[0].data()[0], 42.0f,
-                "los tensores con nombre comparten datos con la capa");
+                "the named tensors share data with the layer");
 }
 
 void test_clip_and_schedulers() {
-    section("optim: recorte de gradiente y planificadores");
+    section("optim: recorte de gradient y planificadores");
 
     // Recorte
     Tensor a({2}, {3.0f, 4.0f}, true);  // norma 5
     (a * 1.0f).sum().backward();        // gradiente (1, 1) -> norma sqrt(2)
     float norm = optim::clip_grad_norm({a}, 10.0f);
-    check_close(norm, std::sqrt(2.0f), "clip devuelve la norma previa");
-    check_close(a.grad().data()[0], 1.0f, "por debajo del limite no recorta");
+    check_close(norm, std::sqrt(2.0f), "clip returns the prior norm");
+    check_close(a.grad().data()[0], 1.0f, "below the limit it does not clip");
 
     Tensor b({2}, {1.0f, 1.0f}, true);
     b.add_grad(Tensor({2}, {3.0f, 4.0f}));  // norma 5
     float n2 = optim::clip_grad_norm({b}, 1.0f);
-    check_close(n2, 5.0f, "clip mide la norma global");
+    check_close(n2, 5.0f, "clip measures the global norm");
     float after = std::sqrt(b.grad().data()[0] * b.grad().data()[0] +
                             b.grad().data()[1] * b.grad().data()[1]);
-    check_close(after, 1.0f, "tras recortar la norma es el maximo", 1e-3f);
+    check_close(after, 1.0f, "after clipping the norm is the maximum", 1e-3f);
     check_close(b.grad().data()[0] / b.grad().data()[1], 3.0f / 4.0f,
-                "el recorte conserva la direccion", 1e-3f);
+                "clipping preserves the direction", 1e-3f);
 
     // La norma es global, no por parametro
     Tensor p1({1}, std::vector<float>{0.0f}, true);
@@ -322,49 +322,49 @@ void test_clip_and_schedulers() {
     p1.add_grad(Tensor({1}, std::vector<float>{3.0f}));
     p2.add_grad(Tensor({1}, std::vector<float>{4.0f}));
     check_close(optim::clip_grad_norm({p1, p2}, 100.0f), 5.0f,
-                "la norma junta de dos parametros es 5");
+                "the joint norm of two parameters is 5");
 
-    check_throws([&] { optim::clip_grad_norm({a}, 0.0f); },
-                 "un max_norm no positivo lanza excepcion");
+    check_throws([&] { optim::clip_grad_norm({a}, 0.0f); }, "a non-positive max_norm throws");
 
     // Planificadores
     Tensor w({1}, std::vector<float>{0.0f}, true);
     optim::SGD opt({w}, 1.0f);
 
     optim::StepLR step(opt, 2, 0.5f);
-    check_close(opt.learning_rate(), 1.0f, "el learning rate arranca en el base");
+    check_close(opt.learning_rate(), 1.0f, "the learning rate starts at the base");
     step.step();
-    check_close(opt.learning_rate(), 1.0f, "StepLR mantiene el lr dentro del escalon");
+    check_close(opt.learning_rate(), 1.0f, "StepLR holds the lr within a step");
     step.step();
-    check_close(opt.learning_rate(), 0.5f, "StepLR lo multiplica por gamma al cambiar de escalon");
+    check_close(opt.learning_rate(), 0.5f, "StepLR multiplies it by gamma at a step change");
     step.step();
     step.step();
-    check_close(opt.learning_rate(), 0.25f, "StepLR acumula los escalones");
+    check_close(opt.learning_rate(), 0.25f, "StepLR accumulates the steps");
 
     optim::SGD opt2({w}, 1.0f);
     optim::CosineAnnealingLR cos(opt2, 10, 0.0f);
     for (int i = 0; i < 5; ++i) cos.step();
-    check_close(opt2.learning_rate(), 0.5f, "a mitad del coseno el lr es la mitad", 1e-3f);
+    check_close(opt2.learning_rate(), 0.5f, "halfway down the cosine the lr is halved", 1e-3f);
     for (int i = 0; i < 5; ++i) cos.step();
-    check_close(opt2.learning_rate(), 0.0f, "al final del coseno llega al minimo", 1e-3f);
+    check_close(opt2.learning_rate(), 0.0f, "at the end of the cosine it reaches the minimum",
+                1e-3f);
 
     optim::SGD opt3({w}, 1.0f);
     optim::WarmupCosineLR warm(opt3, 3, 10, 0.0f);
     warm.step();
-    check(opt3.learning_rate() < 0.5f, "durante el calentamiento el lr es bajo");
+    check(opt3.learning_rate() < 0.5f, "during warm-up the lr is low");
     warm.step();
     warm.step();
-    check_close(opt3.learning_rate(), 1.0f, "al terminar el calentamiento llega al base", 1e-3f);
+    check_close(opt3.learning_rate(), 1.0f, "when the warm-up ends it reaches the base", 1e-3f);
     for (int i = 0; i < 7; ++i) warm.step();
     check(opt3.learning_rate() < 0.01f, "despues desciende en coseno");
 
-    check_throws([&] { optim::StepLR(opt, 0); }, "un escalon nulo lanza excepcion");
+    check_throws([&] { optim::StepLR(opt, 0); }, "a zero step throws");
     check_throws([&] { optim::WarmupCosineLR(opt, 10, 5); },
-                 "un calentamiento mas largo que el total lanza excepcion");
+                 "a warm-up longer than the total throws");
 }
 
 void test_serialization() {
-    section("serialize: guardar y cargar pesos");
+    section("serialize: saving and loading weights");
 
     const std::string path = "test_weights.bin";
     engine::manual_seed(99);
@@ -385,33 +385,33 @@ void test_serialization() {
     for (size_t i = 0; i < before.size(); ++i) {
         if (std::fabs(before.data()[i] - different.data()[i]) > 1e-5f) differs = true;
     }
-    check(differs, "antes de cargar, los dos modelos dan salidas distintas");
+    check(differs, "before loading, the two models give different outputs");
 
     const size_t n = engine::load_parameters(loaded, path);
-    check(n == model.parameters().size(), "se cargan todos los parametros");
+    check(n == model.parameters().size(), "every parameter is loaded");
 
     Tensor after = loaded(x);
     float max_diff = 0.0f;
     for (size_t i = 0; i < before.size(); ++i) {
         max_diff = std::max(max_diff, std::fabs(before.data()[i] - after.data()[i]));
     }
-    check_close(max_diff, 0.0f, "tras cargar, el modelo reproduce la salida exacta");
+    check_close(max_diff, 0.0f, "after loading, the model reproduces the exact output");
 
     // Inspeccionar sin cargar
     auto summary = engine::inspect_parameters(path);
-    check(summary.size() == model.parameters().size(), "inspect enumera todos los tensores");
-    check(summary[0].second == std::vector<size_t>({4, 6}), "inspect devuelve las formas");
+    check(summary.size() == model.parameters().size(), "inspect lists every tensor");
+    check(summary[0].second == std::vector<size_t>({4, 6}), "inspect returns the shapes");
 
     // Una arquitectura distinta se rechaza en vez de cargarse mal
     nn::Sequential wrong{nn::make<nn::Linear>(4, 8)};
     check_throws([&] { engine::load_parameters(wrong, path); },
-                 "cargar en una arquitectura distinta lanza excepcion");
+                 "loading into a different architecture throws");
 
     // Con strict=false se cargan solo los que casan por nombre. Como el nombre
     // por defecto incluye las dimensiones de la capa, una arquitectura distinta
     // simplemente no casa con nada.
     check(engine::load_parameters(wrong, path, false) == 0,
-          "sin strict, una arquitectura distinta no carga nada");
+          "without strict, a different architecture loads nothing");
 
     // La comprobacion de forma salta cuando el nombre SI coincide pero la
     // forma no: es el caso que dejaria un modelo roto en silencio.
@@ -423,7 +423,7 @@ void test_serialization() {
         Tensor mismatched({3, 3}, 0.0f, true);
         std::vector<std::pair<std::string, Tensor>> target = {{"peso", mismatched}};
         check_throws([&] { engine::load_parameters(target, "shape_test.bin"); },
-                     "el mismo nombre con otra forma se rechaza");
+                     "the same name with another shape is rejected");
         std::remove("shape_test.bin");
     }
 
@@ -433,20 +433,20 @@ void test_serialization() {
         Tensor t2({1}, std::vector<float>{2.0f}, true);
         std::vector<std::pair<std::string, Tensor>> dup = {{"a", t1}, {"a", t2}};
         check_throws([&] { engine::save_parameters(dup, "dup.bin"); },
-                     "nombres duplicados se rechazan al guardar");
+                     "duplicate names are rejected on save");
         std::remove("dup.bin");
     }
 
     check_throws([&] { engine::load_parameters(model, "no_existe.bin"); },
-                 "cargar un fichero inexistente lanza excepcion");
+                 "loading a nonexistent file throws");
 
     // Un fichero que no es nuestro
     {
         std::ofstream bad("not_weights.bin", std::ios::binary);
-        bad << "esto no son pesos en absoluto";
+        bad << "these are not weights at all";
     }
     check_throws([&] { engine::load_parameters(model, "not_weights.bin"); },
-                 "un fichero con firma incorrecta se rechaza");
+                 "a file with a wrong signature is rejected");
 
     // Un transformer completo tambien va y vuelve
     engine::manual_seed(3);
@@ -464,14 +464,14 @@ void test_serialization() {
         block_diff =
             std::max(block_diff, std::fabs(block_before.data()[i] - block_after.data()[i]));
     }
-    check_close(block_diff, 0.0f, "un TransformerBlock completo se guarda y se restaura");
+    check_close(block_diff, 0.0f, "a whole TransformerBlock is saved and restored");
 
     std::remove(path.c_str());
     std::remove("not_weights.bin");
 }
 
 void test_idx_reader() {
-    section("data: lector del formato IDX");
+    section("data: IDX format reader");
 
     // El subconjunto que viene en el repositorio
     engine::data::MnistPaths paths;
@@ -481,13 +481,13 @@ void test_idx_reader() {
     } catch (const std::exception&) {
         found = false;
     }
-    check(found, "find_mnist localiza el conjunto del repositorio");
+    check(found, "find_mnist locates the repository's set");
     if (!found) return;
 
     engine::data::Dataset train = engine::data::load_mnist_train(paths, 64);
     check(train.images.shape() == std::vector<size_t>({64, 1, 28, 28}),
-          "las imagenes salen como (N, 1, 28, 28), listas para Conv2d");
-    check(train.labels.size() == 64, "se leen tantas etiquetas como imagenes");
+          "the images come out as (N, 1, 28, 28), ready for Conv2d");
+    check(train.labels.size() == 64, "as many labels as images are read");
 
     // Normalizacion a [0, 1]: con 0-255 los gradientes de la primera capa
     // serian dos ordenes de magnitud mayores
@@ -496,31 +496,31 @@ void test_idx_reader() {
         min_v = std::min(min_v, v);
         max_v = std::max(max_v, v);
     }
-    check(min_v >= 0.0f && max_v <= 1.0f, "los pixeles quedan normalizados en [0, 1]");
-    check(max_v > 0.9f, "y llegan hasta el maximo (hay pixeles saturados)");
+    check(min_v >= 0.0f && max_v <= 1.0f, "the pixels end up normalised to [0, 1]");
+    check(max_v > 0.9f, "and they reach the maximum (there are saturated pixels)");
 
     for (size_t label : train.labels) {
         if (label > 9) {
-            check(false, "las etiquetas caen fuera de 0-9");
+            check(false, "the labels fall outside 0-9");
             return;
         }
     }
-    check(true, "todas las etiquetas estan en el rango 0-9");
+    check(true, "every label is in the range 0-9");
 
     // El primer digito de MNIST es un 5: si el orden de bytes big-endian
     // estuviera mal, ni las dimensiones ni las etiquetas cuadrarian
-    check(train.labels[0] == 5, "la primera etiqueta de MNIST es un 5");
+    check(train.labels[0] == 5, "MNIST's first label is a 5");
 
     // max_samples recorta
     engine::data::Dataset small = engine::data::load_mnist_test(paths, 10);
-    check(small.size() == 10, "max_samples limita cuantas muestras se leen");
+    check(small.size() == 10, "max_samples limits how many samples are read");
 
     check_throws([&] { engine::data::load_idx_images("no_existe.idx"); },
-                 "un fichero inexistente lanza excepcion");
+                 "a nonexistent file throws");
     check_throws([&] { engine::data::load_idx_images(paths.train_labels); },
-                 "leer etiquetas como imagenes lanza excepcion (magic distinto)");
+                 "reading labels as images throws (different magic)");
     check_throws([&] { engine::data::find_mnist("directorio_inexistente"); },
-                 "un directorio sin datos lanza excepcion");
+                 "a directory with no data throws");
 }
 
 }  // namespace

@@ -7,60 +7,59 @@ using namespace testing;
 namespace {
 
 void test_tensor_basics() {
-    section("Tensor: forma, strides e indexacion");
+    section("Tensor: shape, strides and indexing");
 
     Tensor A({2, 3}, {1, 2, 3, 4, 5, 6});
-    check(A.shape() == std::vector<size_t>({2, 3}), "la forma es (2, 3)");
-    check(A.strides() == std::vector<size_t>({3, 1}), "los strides row-major son (3, 1)");
-    check(A.size() == 6, "el tensor tiene 6 elementos");
+    check(A.shape() == std::vector<size_t>({2, 3}), "the shape is (2, 3)");
+    check(A.strides() == std::vector<size_t>({3, 1}), "the row-major strides are (3, 1)");
+    check(A.size() == 6, "the tensor has 6 elements");
     check_close(A({1, 2}), 6.0f, "A[1, 2] == 6");
 
-    check_throws([&] { A({2, 0}); }, "indexar fuera de rango lanza excepcion");
-    check_throws([&] { Tensor({2, 3}, {1.0f, 2.0f}); },
-                 "datos de tamano incorrecto lanzan excepcion");
-    check_throws([&] { A.reshape({4, 2}); }, "reshape incompatible lanza excepcion");
+    check_throws([&] { A({2, 0}); }, "indexing out of range throws");
+    check_throws([&] { Tensor({2, 3}, {1.0f, 2.0f}); }, "data of the wrong size throws");
+    check_throws([&] { A.reshape({4, 2}); }, "an incompatible reshape throws");
 
     Tensor R = A.reshape({3, 2});
-    check(R.shape() == std::vector<size_t>({3, 2}), "reshape a (3, 2) conserva los datos");
-    check_close(R({2, 1}), 6.0f, "reshape mantiene el orden de memoria");
+    check(R.shape() == std::vector<size_t>({3, 2}), "reshape to (3, 2) preserves the data");
+    check_close(R({2, 1}), 6.0f, "reshape keeps the memory order");
 }
 
 void test_matmul() {
-    section("Tensor: multiplicacion matricial");
+    section("Tensor: matrix multiplication");
 
     Tensor M1({2, 3}, {1, 2, 3, 4, 5, 6});
     Tensor M2({3, 2}, {7, 8, 9, 1, 2, 3});
     Tensor R = M1.matmul(M2);
 
-    check(R.shape() == std::vector<size_t>({2, 2}), "(2,3) x (3,2) da (2,2)");
+    check(R.shape() == std::vector<size_t>({2, 2}), "(2,3) x (3,2) gives (2,2)");
     check_close(R({0, 0}), 31.0f, "R[0,0] == 31");
     check_close(R({0, 1}), 19.0f, "R[0,1] == 19");
     check_close(R({1, 0}), 85.0f, "R[1,0] == 85");
     check_close(R({1, 1}), 55.0f, "R[1,1] == 55");
 
-    check_throws([&] { M1.matmul(M1); }, "dimensiones internas incompatibles lanzan excepcion");
+    check_throws([&] { M1.matmul(M1); }, "incompatible inner dimensions throw");
 
     Tensor T = M1.transpose();
-    check(T.shape() == std::vector<size_t>({3, 2}), "transpose invierte la forma");
-    check_close(T({2, 1}), 6.0f, "transpose intercambia los indices");
+    check(T.shape() == std::vector<size_t>({3, 2}), "transpose flips the shape");
+    check_close(T({2, 1}), 6.0f, "transpose swaps the indices");
 }
 
 void test_broadcast_add() {
-    section("Tensor: difusion del vector fila en la suma");
+    section("Tensor: row-vector broadcasting in addition");
 
     Tensor X({2, 3}, {1, 2, 3, 4, 5, 6});
     Tensor b({1, 3}, {10, 20, 30}, true);
     Tensor R = X + b;
 
-    check_close(R({0, 0}), 11.0f, "la primera fila recibe el sesgo");
-    check_close(R({1, 2}), 36.0f, "la segunda fila recibe el mismo sesgo");
+    check_close(R({0, 0}), 11.0f, "the first row receives the bias");
+    check_close(R({1, 2}), 36.0f, "the second row receives the same bias");
 
     Tensor loss = R.sum();
     loss.backward();
-    check_close(b.grad().data()[0], 2.0f, "el gradiente del sesgo suma por columnas (2 filas)");
+    check_close(b.grad().data()[0], 2.0f, "the bias gradient sums by column (2 rows)");
 
     Tensor bad({1, 4}, 0.0f);
-    check_throws([&] { X + bad; }, "una difusion con anchura distinta lanza excepcion");
+    check_throws([&] { X + bad; }, "a broadcast with a different width throws");
 
     // Regresión: con más ejes que la base pero unos iniciales, el número de
     // repeticiones se calculaba con un producto sobre un rango vacío que se
@@ -69,114 +68,113 @@ void test_broadcast_add() {
     Tensor leading_one({1, 3, 4}, 2.0f, true);
     Tensor bc = same_rank + leading_one;
     check(bc.shape() == std::vector<size_t>({3, 4}),
-          "difundir (1,3,4) sobre (3,4) conserva la forma");
-    check_close(bc.data()[0], 3.0f, "difundir con un eje inicial de tamano 1 suma bien");
+          "broadcasting (1,3,4) over (3,4) preserves the shape");
+    check_close(bc.data()[0], 3.0f, "broadcasting with a leading axis of size 1 adds correctly");
     bc.sum().backward();
     check_close(leading_one.grad().data()[0], 1.0f,
-                "su gradiente es 1, no la suma de repeticiones inexistentes");
+                "its gradient is 1, not the sum of repetitions that do not exist");
 
     // Un escalar tambien se difunde sobre cualquier forma
     Tensor scalar({1}, std::vector<float>{5.0f}, true);
     Tensor plus_scalar = X + scalar;
-    check_close(plus_scalar.data()[0], 6.0f, "un tensor de un elemento se difunde como escalar");
+    check_close(plus_scalar.data()[0], 6.0f, "a one-element tensor broadcasts as a scalar");
     plus_scalar.sum().backward();
     check_close(scalar.grad().data()[0], 6.0f,
-                "el escalar acumula el gradiente de los 6 elementos");
+                "the scalar accumulates the gradient of all 6 elements");
 }
 
 void test_nd_tensor_ops() {
-    section("Tensor: operaciones N-dimensionales");
+    section("Tensor: N-dimensional operations");
 
     // transpose intercambia los dos ultimos ejes en cualquier rango
     Tensor T3({2, 2, 3}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12});
     Tensor Tt = T3.transpose();
-    check(Tt.shape() == std::vector<size_t>({2, 3, 2}),
-          "transpose 3D intercambia los dos ultimos ejes");
-    check_close(Tt.data()[0], 1.0f, "transpose 3D: primer elemento del primer lote");
-    check_close(Tt.data()[1], 4.0f, "transpose 3D: transpone cada matriz del lote");
-    check_close(Tt.data()[6], 7.0f, "transpose 3D: el segundo lote es independiente");
+    check(Tt.shape() == std::vector<size_t>({2, 3, 2}), "3D transpose swaps the last two axes");
+    check_close(Tt.data()[0], 1.0f, "3D transpose: first element of the first batch");
+    check_close(Tt.data()[1], 4.0f, "3D transpose: transposes each matrix in the batch");
+    check_close(Tt.data()[6], 7.0f, "3D transpose: the second batch is independent");
 
     // permute
     Tensor P({2, 3, 4}, 0.0f);
     for (size_t i = 0; i < P.size(); ++i) P.data()[i] = static_cast<float>(i);
     Tensor Pp = P.permute({2, 0, 1});
-    check(Pp.shape() == std::vector<size_t>({4, 2, 3}), "permute reordena la forma");
+    check(Pp.shape() == std::vector<size_t>({4, 2, 3}), "permute reorders the shape");
     // El elemento (i, j, k) de P debe estar en (k, i, j) de Pp
     check_close(Pp.data()[(2 * 2 + 1) * 3 + 0], P.data()[(1 * 3 + 0) * 4 + 2],
-                "permute reubica los elementos correctamente");
-    check(P.permute({0, 1, 2}).shape() == P.shape(), "la permutacion identidad no cambia nada");
-    check_throws([&] { P.permute({0, 1}); }, "permute con menos ejes lanza excepcion");
-    check_throws([&] { P.permute({0, 1, 1}); }, "permute con un eje repetido lanza excepcion");
-    check_throws([&] { P.permute({0, 1, 5}); }, "permute con un eje inexistente lanza excepcion");
+                "permute relocates the elements correctly");
+    check(P.permute({0, 1, 2}).shape() == P.shape(), "the identity permutation changes nothing");
+    check_throws([&] { P.permute({0, 1}); }, "permute with too few axes throws");
+    check_throws([&] { P.permute({0, 1, 1}); }, "permute with a repeated axis throws");
+    check_throws([&] { P.permute({0, 1, 5}); }, "permute with a nonexistent axis throws");
 
     // matmul por lotes: cada matriz del lote se multiplica por separado
     Tensor A({2, 2, 3}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12});
     Tensor B({2, 3, 2}, {1, 0, 0, 1, 1, 1, 2, 0, 0, 2, 1, 1});
     Tensor C = A.matmul(B);
-    check(C.shape() == std::vector<size_t>({2, 2, 2}), "matmul por lotes da (B, M, N)");
-    check_close(C.data()[0], 4.0f, "lote 0: 1*1 + 2*0 + 3*1 == 4");
-    check_close(C.data()[1], 5.0f, "lote 0: 1*0 + 2*1 + 3*1 == 5");
-    check_close(C.data()[4], 23.0f, "lote 1: 7*2 + 8*0 + 9*1 == 23");
+    check(C.shape() == std::vector<size_t>({2, 2, 2}), "batched matmul gives (B, M, N)");
+    check_close(C.data()[0], 4.0f, "batch 0: 1*1 + 2*0 + 3*1 == 4");
+    check_close(C.data()[1], 5.0f, "batch 0: 1*0 + 2*1 + 3*1 == 5");
+    check_close(C.data()[4], 23.0f, "batch 1: 7*2 + 8*0 + 9*1 == 23");
 
     // Un operando 2D se comparte con todo el lote
     Tensor shared({3, 2}, {1, 0, 0, 1, 1, 1});
     Tensor Cs = A.matmul(shared);
     check(Cs.shape() == std::vector<size_t>({2, 2, 2}),
-          "matmul con matriz 2D compartida da (B, M, N)");
-    check_close(Cs.data()[0], 4.0f, "la matriz compartida se aplica al primer lote");
-    check_close(Cs.data()[4], 16.0f, "y la misma matriz al segundo (7 + 9)");
+          "matmul with a shared 2D matrix gives (B, M, N)");
+    check_close(Cs.data()[0], 4.0f, "the shared matrix applies to the first batch");
+    check_close(Cs.data()[4], 16.0f, "and the same matrix to the second (7 + 9)");
 
     check_throws([&] { Tensor({2, 2, 3}, 1.0f).matmul(Tensor({3, 3, 2}, 1.0f)); },
-                 "matmul con lotes distintos lanza excepcion");
+                 "matmul with mismatched batches throws");
     check_throws([&] { Tensor({4}, 1.0f).matmul(Tensor({4}, 1.0f)); },
-                 "matmul de vectores 1D lanza excepcion");
+                 "matmul of 1D vectors throws");
 
     // softmax sobre el ultimo eje de un tensor 3D
     Tensor S3 = Tensor::randn({2, 3, 4}).softmax();
-    check(S3.shape() == std::vector<size_t>({2, 3, 4}), "softmax 3D conserva la forma");
+    check(S3.shape() == std::vector<size_t>({2, 3, 4}), "3D softmax preserves the shape");
     bool all_rows_sum_one = true;
     for (size_t r = 0; r < 6; ++r) {
         float total = 0.0f;
         for (size_t j = 0; j < 4; ++j) total += S3.data()[r * 4 + j];
         if (std::fabs(total - 1.0f) > 1e-4f) all_rows_sum_one = false;
     }
-    check(all_rows_sum_one, "cada vector del ultimo eje suma 1 tras el softmax");
+    check(all_rows_sum_one, "each vector along the last axis sums to 1 after softmax");
 
     // Difusion por sufijo
     Tensor base({2, 3, 4}, 1.0f);
     Tensor row({3, 4}, 2.0f, true);
     Tensor sum_bc = base + row;
     check(sum_bc.shape() == std::vector<size_t>({2, 3, 4}),
-          "la difusion (3,4) sobre (2,3,4) funciona");
-    check_close(sum_bc.data()[0], 3.0f, "la difusion suma el bloque repetido");
+          "broadcasting (3,4) over (2,3,4) works");
+    check_close(sum_bc.data()[0], 3.0f, "broadcasting adds the repeated block");
     sum_bc.sum().backward();
     check_close(row.grad().data()[0], 2.0f,
-                "el gradiente del operando difundido suma las 2 repeticiones");
+                "the broadcast operand's gradient sums both repetitions");
 
     check_throws([&] { base + Tensor({5, 4}, 1.0f); },
-                 "una difusion con un sufijo incompatible lanza excepcion");
+                 "a broadcast with an incompatible suffix throws");
 
     // Gradientes numericos de las operaciones nuevas
     Tensor G({2, 3, 4}, 0.0f);
     for (size_t i = 0; i < G.size(); ++i) G.data()[i] = 0.3f * static_cast<float>(i) - 3.1f;
 
-    check_gradient("gradiente de permute()", G, [](Tensor& t) {
+    check_gradient("gradient of permute()", G, [](Tensor& t) {
         Tensor w = Tensor({4, 2, 3}, 0.0f);
         for (size_t i = 0; i < w.size(); ++i) w.data()[i] = 0.1f * static_cast<float>(i) - 1.0f;
         return (t.permute({2, 0, 1}) * w).sum();
     });
-    check_gradient("gradiente de transpose() 3D", G, [](Tensor& t) { return t.transpose().sum(); });
+    check_gradient("gradient of 3D transpose()", G, [](Tensor& t) { return t.transpose().sum(); });
     // El tensor de ponderación se crea FUERA del closure: si se generase
     // dentro, cada evaluación numérica usaría pesos distintos y la
     // comprobación no compararía la misma función consigo misma.
     Tensor w_soft = Tensor::randn({2, 3, 4});
-    check_gradient("gradiente de softmax() 3D", G,
+    check_gradient("gradient of 3D softmax()", G,
                    [&](Tensor& t) { return (t.softmax() * w_soft).sum(); });
-    check_gradient("gradiente de matmul por lotes", G, [](Tensor& t) {
+    check_gradient("gradient of batched matmul", G, [](Tensor& t) {
         Tensor B2({2, 4, 2}, {1, -2, 0.5f, 3, -1, 2, 0.25f, -0.5f, 2, 1, -1, 0.5f, 3, -2, 1, 1});
         return t.matmul(B2).sum();
     });
-    check_gradient("gradiente de matmul con matriz compartida", G, [](Tensor& t) {
+    check_gradient("gradient of matmul with a shared matrix", G, [](Tensor& t) {
         Tensor shared2({4, 2}, {1, -2, 0.5f, 3, -1, 2, 0.25f, -0.5f});
         return t.matmul(shared2).sum();
     });
@@ -184,7 +182,7 @@ void test_nd_tensor_ops() {
         // La matriz compartida recibe la suma de las contribuciones del lote
         Tensor shared3({4, 2}, {1, -2, 0.5f, 3, -1, 2, 0.25f, -0.5f});
         Tensor batched = Tensor::randn({3, 2, 4});
-        check_gradient("gradiente de la matriz compartida en el matmul", shared3,
+        check_gradient("gradient of the shared matrix in matmul", shared3,
                        [&](Tensor& t) { return batched.matmul(t).sum(); });
     }
 
@@ -193,181 +191,180 @@ void test_nd_tensor_ops() {
     nn::Linear proj(4, 5);
     Tensor seq_input = Tensor::randn({2, 3, 4});
     check(proj(seq_input).shape() == std::vector<size_t>({2, 3, 5}),
-          "Linear aplica la proyeccion al ultimo eje de un tensor 3D");
+          "Linear applies the projection to the last axis of a 3D tensor");
     Tensor w_proj = Tensor::randn({2, 3, 5});
-    check_gradient("gradiente de Linear sobre una entrada 3D", seq_input,
+    check_gradient("gradient of Linear over a 3D input", seq_input,
                    [&](Tensor& t) { return (proj(t) * w_proj).sum(); });
 }
 
 void test_reductions() {
-    section("Tensor: reducciones por eje");
+    section("Tensor: reductions along an axis");
 
     Tensor A({2, 3}, {1, 2, 3, 4, 5, 6});
 
     Tensor s0 = A.sum(0);
-    check(s0.shape() == std::vector<size_t>({3}), "sum(0) elimina el primer eje");
-    check_close(s0.data()[0], 5.0f, "sum(0) suma por columnas: 1 + 4");
-    check_close(s0.data()[2], 9.0f, "sum(0) tercera columna: 3 + 6");
+    check(s0.shape() == std::vector<size_t>({3}), "sum(0) drops the first axis");
+    check_close(s0.data()[0], 5.0f, "sum(0) sums by column: 1 + 4");
+    check_close(s0.data()[2], 9.0f, "sum(0) third column: 3 + 6");
 
     Tensor s1 = A.sum(1);
-    check(s1.shape() == std::vector<size_t>({2}), "sum(1) elimina el segundo eje");
-    check_close(s1.data()[0], 6.0f, "sum(1) suma por filas: 1+2+3");
+    check(s1.shape() == std::vector<size_t>({2}), "sum(1) drops the second axis");
+    check_close(s1.data()[0], 6.0f, "sum(1) sums by row: 1+2+3");
 
     Tensor sk = A.sum(1, true);
-    check(sk.shape() == std::vector<size_t>({2, 1}), "keepdim deja el eje reducido a 1");
+    check(sk.shape() == std::vector<size_t>({2, 1}), "keepdim leaves the reduced axis at 1");
 
     Tensor m = A.mean(0);
-    check_close(m.data()[0], 2.5f, "mean(0) promedia por columnas");
+    check_close(m.data()[0], 2.5f, "mean(0) averages by column");
 
     Tensor mx = A.max(0);
-    check(mx.shape() == std::vector<size_t>({3}), "max(0) elimina el primer eje");
-    check_close(mx.data()[1], 5.0f, "max(0) toma el mayor de cada columna");
+    check(mx.shape() == std::vector<size_t>({3}), "max(0) drops the first axis");
+    check_close(mx.data()[1], 5.0f, "max(0) takes the largest in each column");
 
     // Reducir un tensor 1D deja un escalar
     Tensor v({4}, {1, 7, 3, 2});
-    check(v.sum(0).shape() == std::vector<size_t>({1}), "reducir un 1D da un escalar {1}");
-    check_close(v.max(0).data()[0], 7.0f, "max de un vector");
+    check(v.sum(0).shape() == std::vector<size_t>({1}), "reducing a 1D tensor gives a {1} scalar");
+    check_close(v.max(0).data()[0], 7.0f, "max of a vector");
 
-    check_throws([&] { A.sum(5); }, "reducir un eje inexistente lanza excepcion");
-    check_throws([&] { A.max(2); }, "max sobre un eje inexistente lanza excepcion");
+    check_throws([&] { A.sum(5); }, "reducing a nonexistent axis throws");
+    check_throws([&] { A.max(2); }, "max over a nonexistent axis throws");
 
     // Gradientes
     Tensor G({2, 3, 4}, 0.0f);
     for (size_t i = 0; i < G.size(); ++i) G.data()[i] = 0.37f * static_cast<float>(i) - 4.1f;
     Tensor w_sum = Tensor::randn({2, 4});
-    check_gradient("gradiente de sum(axis)", G,
-                   [&](Tensor& t) { return (t.sum(1) * w_sum).sum(); });
-    check_gradient("gradiente de mean(axis)", G,
+    check_gradient("gradient of sum(axis)", G, [&](Tensor& t) { return (t.sum(1) * w_sum).sum(); });
+    check_gradient("gradient of mean(axis)", G,
                    [&](Tensor& t) { return (t.mean(1) * w_sum).sum(); });
     // Valores bien separados: el maximo no es derivable en un empate
     Tensor Gm({2, 3, 4}, 0.0f);
     for (size_t i = 0; i < Gm.size(); ++i) Gm.data()[i] = static_cast<float>((i * 37) % 24) * 0.5f;
-    check_gradient("gradiente de max(axis)", Gm,
+    check_gradient("gradient of max(axis)", Gm,
                    [&](Tensor& t) { return (t.max(1) * w_sum).sum(); });
 
     // El gradiente del maximo va solo al ganador
     Tensor mg({1, 3}, {1.0f, 9.0f, 2.0f}, true);
     mg.max(1).sum().backward();
-    check_close(mg.grad().data()[1], 1.0f, "el maximo recibe todo el gradiente");
-    check_close(mg.grad().data()[0], 0.0f, "los demas no reciben nada");
+    check_close(mg.grad().data()[1], 1.0f, "the maximum receives the whole gradient");
+    check_close(mg.grad().data()[0], 0.0f, "the rest receive nothing");
 }
 
 void test_slice_concat_stack() {
-    section("Tensor: slice, concat y stack");
+    section("Tensor: slice, concat and stack");
 
     Tensor A({3, 4}, 0.0f);
     for (size_t i = 0; i < A.size(); ++i) A.data()[i] = static_cast<float>(i);
 
     Tensor r = A.slice(0, 1, 2);
-    check(r.shape() == std::vector<size_t>({2, 4}), "slice sobre el primer eje");
-    check_close(r(0, 0), 4.0f, "slice empieza en la fila pedida");
+    check(r.shape() == std::vector<size_t>({2, 4}), "slice along the first axis");
+    check_close(r(0, 0), 4.0f, "slice starts at the requested row");
 
     Tensor c = A.slice(1, 1, 2);
-    check(c.shape() == std::vector<size_t>({3, 2}), "slice sobre el segundo eje");
-    check_close(c(0, 0), 1.0f, "slice de columnas toma la columna correcta");
-    check_close(c(1, 1), 6.0f, "slice de columnas respeta las filas");
+    check(c.shape() == std::vector<size_t>({3, 2}), "slice along the second axis");
+    check_close(c(0, 0), 1.0f, "a column slice takes the right column");
+    check_close(c(1, 1), 6.0f, "a column slice respects the rows");
 
-    check_throws([&] { A.slice(0, 2, 5); }, "un slice que se sale lanza excepcion");
-    check_throws([&] { A.slice(0, 0, 0); }, "un slice vacio lanza excepcion");
-    check_throws([&] { A.slice(7, 0, 1); }, "un slice sobre un eje inexistente lanza excepcion");
+    check_throws([&] { A.slice(0, 2, 5); }, "a slice that runs off the end throws");
+    check_throws([&] { A.slice(0, 0, 0); }, "an empty slice throws");
+    check_throws([&] { A.slice(7, 0, 1); }, "a slice along a nonexistent axis throws");
 
     // concat
     Tensor P({2, 2}, {1, 2, 3, 4});
     Tensor Q({1, 2}, {5, 6});
     Tensor cc = Tensor::concat({P, Q}, 0);
-    check(cc.shape() == std::vector<size_t>({3, 2}), "concat sobre el primer eje suma las filas");
-    check_close(cc(2, 0), 5.0f, "concat coloca la segunda parte detras");
+    check(cc.shape() == std::vector<size_t>({3, 2}), "concat along the first axis adds the rows");
+    check_close(cc(2, 0), 5.0f, "concat places the second part after");
 
     Tensor R({2, 3}, {7, 8, 9, 10, 11, 12});
     Tensor cc2 = Tensor::concat({P, R}, 1);
     check(cc2.shape() == std::vector<size_t>({2, 5}),
-          "concat sobre el segundo eje suma las columnas");
-    check_close(cc2(0, 2), 7.0f, "concat por columnas intercala correctamente");
-    check_close(cc2(1, 0), 3.0f, "concat por columnas conserva las filas");
+          "concat along the second axis adds the columns");
+    check_close(cc2(0, 2), 7.0f, "column-wise concat interleaves correctly");
+    check_close(cc2(1, 0), 3.0f, "column-wise concat preserves the rows");
 
-    check_throws([&] { Tensor::concat({}, 0); }, "concat sin partes lanza excepcion");
+    check_throws([&] { Tensor::concat({}, 0); }, "concat with no parts throws");
     check_throws([&] { Tensor::concat({P, Tensor({3, 3}, 1.0f)}, 0); },
-                 "concat con dimensiones incompatibles lanza excepcion");
+                 "concat with incompatible dimensions throws");
 
     // stack
     Tensor st = Tensor::stack({P, P}, 0);
-    check(st.shape() == std::vector<size_t>({2, 2, 2}), "stack crea un eje nuevo");
+    check(st.shape() == std::vector<size_t>({2, 2, 2}), "stack creates a new axis");
     Tensor st1 = Tensor::stack({P, P}, 1);
-    check(st1.shape() == std::vector<size_t>({2, 2, 2}), "stack admite el eje intermedio");
-    check_throws([&] { Tensor::stack({P, Q}, 0); }, "stack con formas distintas lanza excepcion");
+    check(st1.shape() == std::vector<size_t>({2, 2, 2}), "stack accepts a middle axis");
+    check_throws([&] { Tensor::stack({P, Q}, 0); }, "stack with mismatched shapes throws");
 
     // Gradientes
     Tensor G({3, 4}, 0.0f);
     for (size_t i = 0; i < G.size(); ++i) G.data()[i] = 0.31f * static_cast<float>(i) - 2.0f;
     Tensor w_sl = Tensor::randn({2, 4});
-    check_gradient("gradiente de slice()", G,
+    check_gradient("gradient of slice()", G,
                    [&](Tensor& t) { return (t.slice(0, 1, 2) * w_sl).sum(); });
 
     Tensor other({2, 4}, 1.5f);
     Tensor w_cc = Tensor::randn({5, 4});
-    check_gradient("gradiente de concat() (primera parte)", G,
+    check_gradient("gradient of concat() (first part)", G,
                    [&](Tensor& t) { return (Tensor::concat({t, other}, 0) * w_cc).sum(); });
-    check_gradient("gradiente de concat() (segunda parte)", other,
+    check_gradient("gradient of concat() (second part)", other,
                    [&](Tensor& t) { return (Tensor::concat({G, t}, 0) * w_cc).sum(); });
 
     // Concatenar un tensor consigo mismo acumula en ambas franjas
     Tensor twice({1, 2}, {1.0f, 2.0f}, true);
     Tensor::concat({twice, twice}, 0).sum().backward();
-    check_close(twice.grad().data()[0], 2.0f, "concatenar un tensor consigo mismo acumula");
+    check_close(twice.grad().data()[0], 2.0f, "concatenating a tensor with itself accumulates");
 }
 
 void test_broadcast_all_operators() {
-    section("Tensor: difusion en los cuatro operadores");
+    section("Tensor: broadcasting in all four operators");
 
     Tensor X({2, 3}, {1, 2, 3, 4, 5, 6});
     Tensor row({3}, {1.0f, 2.0f, 4.0f}, true);
 
-    check_close((X - row).data()[0], 0.0f, "la resta difunde: 1 - 1");
-    check_close((X - row).data()[4], 3.0f, "la resta difunde en la segunda fila: 5 - 2");
-    check_close((X * row).data()[2], 12.0f, "el producto difunde: 3 * 4");
-    check_close((X / row).data()[1], 1.0f, "la division difunde: 2 / 2");
+    check_close((X - row).data()[0], 0.0f, "subtraction broadcasts: 1 - 1");
+    check_close((X - row).data()[4], 3.0f, "subtraction broadcasts on the second row: 5 - 2");
+    check_close((X * row).data()[2], 12.0f, "multiplication broadcasts: 3 * 4");
+    check_close((X / row).data()[1], 1.0f, "division broadcasts: 2 / 2");
 
     // Un tensor de un elemento actua como escalar
     Tensor k({1}, std::vector<float>{10.0f}, true);
-    check_close((X * k).data()[3], 40.0f, "un tensor {1} se difunde como escalar");
+    check_close((X * k).data()[3], 40.0f, "a {1} tensor broadcasts as a scalar");
 
     check_throws([&] { X - Tensor({4}, 1.0f); },
-                 "una resta con sufijo incompatible lanza excepcion");
-    check_throws([&] { X* Tensor({5, 3}, 1.0f); }, "un producto incompatible lanza excepcion");
+                 "a subtraction with an incompatible suffix throws");
+    check_throws([&] { X* Tensor({5, 3}, 1.0f); }, "an incompatible product throws");
 
     // Gradientes del operando difundido
     Tensor base({2, 3}, {1, 2, 3, 4, 5, 6}, false);
     Tensor b1({3}, {1.0f, 2.0f, 4.0f}, true);
     (base * b1).sum().backward();
     check_close(b1.grad().data()[0], 5.0f,
-                "producto difundido: el gradiente suma la columna (1+4)");
+                "broadcast multiplication: the gradient sums the column (1+4)");
 
     Tensor b2({3}, {1.0f, 2.0f, 4.0f}, true);
     (base - b2).sum().backward();
-    check_close(b2.grad().data()[0], -2.0f, "resta difundida: el gradiente es -1 por fila");
+    check_close(b2.grad().data()[0], -2.0f, "broadcast subtraction: the gradient is -1 per row");
 
     Tensor G({2, 3}, 0.0f);
     for (size_t i = 0; i < G.size(); ++i) G.data()[i] = 0.5f * static_cast<float>(i) + 1.0f;
     Tensor d({3}, {2.0f, 3.0f, 4.0f});
     Tensor w = Tensor::randn({2, 3});
-    check_gradient("gradiente de la resta difundida", G,
+    check_gradient("gradient of broadcast subtraction", G,
                    [&](Tensor& t) { return ((t - d) * w).sum(); });
-    check_gradient("gradiente del producto difundido", G,
+    check_gradient("gradient of broadcast multiplication", G,
                    [&](Tensor& t) { return ((t * d) * w).sum(); });
-    check_gradient("gradiente de la division difundida", G,
+    check_gradient("gradient of broadcast division", G,
                    [&](Tensor& t) { return ((t / d) * w).sum(); });
-    check_gradient("gradiente del divisor difundido", d,
+    check_gradient("gradient of the broadcast divisor", d,
                    [&](Tensor& t) { return ((G / t) * w).sum(); });
 }
 
 void test_parallelism() {
-    section("parallel: reparto de trabajo");
+    section("parallel: work splitting");
 
     namespace par = engine::parallel;
     const size_t original = par::num_threads();
 
-    check(par::num_threads() >= 1, "el pool arranca con al menos un hilo");
-    check(!par::inside_parallel_region(), "el hilo principal no esta dentro de una region");
+    check(par::num_threads() >= 1, "the pool starts with at least one thread");
+    check(!par::inside_parallel_region(), "the main thread is not inside a region");
 
     // Cobertura: cada indice se visita exactamente una vez
     for (size_t threads : {size_t(1), size_t(2), size_t(4)}) {
@@ -380,8 +377,8 @@ void test_parallelism() {
         bool exactly_once = true;
         for (int v : visits)
             if (v != 1) exactly_once = false;
-        check(exactly_once, "con " + std::to_string(threads) +
-                                " hilos cada indice se visita exactamente una vez");
+        check(exactly_once,
+              "with " + std::to_string(threads) + " threads each index is visited exactly once");
     }
 
     // Determinismo: el reparto por filas no altera el orden de acumulacion,
@@ -404,13 +401,13 @@ void test_parallelism() {
     for (size_t i = 0; i < mm_serial.size(); ++i) {
         if (mm_serial.data()[i] != mm_par.data()[i]) identical = false;
     }
-    check(identical, "matmul da un resultado identico bit a bit con 1 y con 4 hilos");
+    check(identical, "matmul is identical bit for bit with 1 and with 4 threads");
 
     identical = true;
     for (size_t i = 0; i < add_serial.size(); ++i) {
         if (add_serial.data()[i] != add_par.data()[i]) identical = false;
     }
-    check(identical, "la suma da un resultado identico bit a bit con 1 y con 4 hilos");
+    check(identical, "addition is identical bit for bit with 1 and with 4 threads");
 
     // Las regiones anidadas se ejecutan en linea: multiplicar hilos dentro de
     // un hilo solo anade contencion
@@ -422,27 +419,27 @@ void test_parallelism() {
         par::parallel_for(10000, 100, [&](size_t, size_t) { ++calls; });
         if (calls != 1) nested_inline = false;  // un solo trozo = ejecutado en linea
     });
-    check(nested_inline, "una region anidada se ejecuta en linea");
+    check(nested_inline, "a nested region runs inline");
 
     // Una excepcion en un trabajador llega al hilo que reparte
     check_throws(
         [&] {
             par::parallel_for(100000, 1000, [](size_t from, size_t) {
-                if (from > 0) throw std::runtime_error("fallo en un trabajador");
+                if (from > 0) throw std::runtime_error("failure in a worker");
             });
         },
-        "una excepcion en un trabajador se propaga al que reparte");
+        "an exception in a worker propagates to the splitter");
 
     // Un rango vacio no hace nada
     size_t calls = 0;
     par::parallel_for(0, 10, [&](size_t, size_t) { ++calls; });
-    check(calls == 0, "un rango vacio no ejecuta el cuerpo");
+    check(calls == 0, "an empty range does not run the body");
 
     par::set_num_threads(1);
-    check(par::num_threads() == 1, "set_num_threads(1) deja solo el hilo llamante");
+    check(par::num_threads() == 1, "set_num_threads(1) leaves only the calling thread");
     calls = 0;
     par::parallel_for(1000000, 1, [&](size_t, size_t) { ++calls; });
-    check(calls == 1, "con un hilo el cuerpo se ejecuta una sola vez, en linea");
+    check(calls == 1, "with one thread the body runs exactly once, inline");
 
     par::set_num_threads(original);
 }

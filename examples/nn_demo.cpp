@@ -73,7 +73,7 @@ float train(const std::string& title, optim::Optimizer& opt, nn::Sequential& mod
 }
 
 // Entrenamiento por mini-lotes: en cada época se baraja el conjunto y se
-// recorren trozos de `batch_size` filas. Es lo que hace "estocástico" al
+// recorren trozos de `batch_size` filas. Es lo que hace "stochastic" al
 // descenso de gradiente estocástico: cada paso usa una muestra distinta.
 float train_minibatch(const std::string& title, optim::Optimizer& opt, nn::Sequential& model,
                       const Tensor& X, const std::vector<size_t>& y, int epochs,
@@ -111,7 +111,7 @@ float train_minibatch(const std::string& title, optim::Optimizer& opt, nn::Seque
         if (epoch == 1 || epoch % 20 == 0) {
             // La exactitud se mide sobre todo el conjunto, sin construir grafo
             engine::autograd::NoGradGuard no_grad;
-            std::cout << "  Epoch " << std::setw(4) << epoch << " | Loss media = " << std::fixed
+            std::cout << "  Epoch " << std::setw(4) << epoch << " | Mean loss = " << std::fixed
                       << std::setprecision(4) << (epoch_loss / static_cast<float>(num_batches))
                       << " | Exactitud = " << std::setprecision(2)
                       << (nn::accuracy(model(X), y) * 100.0f) << "%\n";
@@ -126,7 +126,7 @@ float train_minibatch(const std::string& title, optim::Optimizer& opt, nn::Seque
 
 int main() {
     std::cout << "====================================================\n";
-    std::cout << "  Fase 3: Capas (nn::Module) y Optimizadores        \n";
+    std::cout << "  Phase 3: layers (nn::Module) and optimisers        \n";
     std::cout << "====================================================\n\n";
 
     // Semilla fija para que el entrenamiento sea reproducible
@@ -145,7 +145,7 @@ int main() {
     Tensor dense_out = dense(batch);
     std::cout << dense.name() << " -> " << dense.num_parameters() << " parametros\n";
     std::cout << "Entrada " << batch.shape_str() << " -> Salida " << dense_out.shape_str()
-              << " (el sesgo se difunde sobre las 4 filas del lote)\n\n";
+              << " (the bias broadcasts over the batch's 4 rows)\n\n";
 
     // ---------------------------------------------------------
     // 2. Softmax y entropía cruzada
@@ -153,25 +153,25 @@ int main() {
     std::cout << "--- 2. Softmax y Entropia Cruzada ---\n";
     Tensor logits({2, 3}, {2.0f, 1.0f, 0.1f, 0.5f, 2.5f, 0.3f}, true);
     Tensor probs = logits.softmax();
-    probs.print("softmax(logits) (cada fila suma 1)");
+    probs.print("softmax(logits) (each row sums to 1)");
 
     std::vector<size_t> labels = {0, 1};  // ambas predicciones son correctas
     Tensor ce = nn::cross_entropy_loss(logits, labels);
     std::cout << "Entropia cruzada = " << std::fixed << std::setprecision(4) << ce.data()[0]
-              << " (baja: el argmax coincide con la etiqueta)\n";
+              << " (low: the argmax matches the label)\n";
     std::cout << "Exactitud = " << nn::accuracy(logits, labels) * 100.0f << "%\n\n";
 
     // ---------------------------------------------------------
     // 3. Clasificación no lineal: espiral de 3 clases
     // ---------------------------------------------------------
-    std::cout << "--- 3. Clasificacion de la espiral de 3 clases ---\n";
+    std::cout << "--- 3. Classifying the 3-class spiral ---\n";
     const size_t num_classes = 3;
     const size_t points_per_class = 100;
 
     Tensor X;
     std::vector<size_t> y;
     make_spiral(points_per_class, num_classes, X, y);
-    std::cout << "Conjunto de datos: " << X.shape_str() << ", " << num_classes
+    std::cout << "Dataset: " << X.shape_str() << ", " << num_classes
               << " clases entrelazadas (no separables linealmente)\n\n";
 
     // Referencia: un clasificador lineal (una sola capa densa, sin activación)
@@ -188,7 +188,7 @@ int main() {
     std::cout << "\n";
 
     optim::Adam adam(mlp.parameters(), 0.02f);
-    float mlp_acc = train("MLP 2-64-32-3 con Adam", adam, mlp, X, y, 500);
+    float mlp_acc = train("MLP 2-64-32-3 with Adam", adam, mlp, X, y, 500);
 
     // El mismo modelo con SGD + momento, entrenado por mini-lotes: 50 épocas
     // de 10 pasos bastan donde el lote completo necesitaba 500 iteraciones.
@@ -198,7 +198,7 @@ int main() {
                            nn::make<nn::Linear>(32, num_classes)};
     optim::SGD sgd(mlp_sgd.parameters(), 0.1f, 0.9f);
     float sgd_acc =
-        train_minibatch("MLP 2-64-32-3 con SGD por mini-lotes (lr=0.1, momento=0.9, lote=32)", sgd,
+        train_minibatch("MLP 2-64-32-3 with mini-batch SGD (lr=0.1, momentum=0.9, batch=32)", sgd,
                         mlp_sgd, X, y, 60, 32);
 
     // ---------------------------------------------------------
@@ -206,12 +206,12 @@ int main() {
     // ---------------------------------------------------------
     std::cout << "--- 4. Resumen ---\n";
     std::cout << std::fixed << std::setprecision(2);
-    std::cout << "  Clasificador lineal : " << linear_acc * 100.0f << "% de exactitud\n";
-    std::cout << "  MLP + Adam          : " << mlp_acc * 100.0f << "% de exactitud\n";
-    std::cout << "  MLP + SGD mini-lotes: " << sgd_acc * 100.0f << "% de exactitud\n";
-    std::cout << "\nEl modelo lineal se estanca porque la espiral no es separable\n"
-              << "linealmente; las capas ocultas con ReLU si logran separarla.\n\n";
+    std::cout << "  Linear classifier  : " << linear_acc * 100.0f << "% accuracy\n";
+    std::cout << "  MLP + Adam          : " << mlp_acc * 100.0f << "% accuracy\n";
+    std::cout << "  MLP + SGD mini-batch: " << sgd_acc * 100.0f << "% accuracy\n";
+    std::cout << "\nThe linear model stalls because the spiral is not linearly\n"
+              << "separable; the hidden ReLU layers do manage to separate it.\n\n";
 
-    std::cout << "¡Fase 3 (Capas y Optimizadores) completada exitosamente!\n";
+    std::cout << "Phase 3 (layers and optimisers) complete.\n";
     return 0;
 }

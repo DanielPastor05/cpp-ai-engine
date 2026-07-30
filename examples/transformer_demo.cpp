@@ -16,7 +16,7 @@ namespace nn = engine::nn;
 namespace optim = engine::optim;
 
 // ---------------------------------------------------------
-// Tarea: "¿qué token viene después de la marca?"
+// Tarea: "which token comes after the marker?"
 //
 // Cada secuencia es [CLS] seguido de una permutación de los seis valores, con
 // una MARCA insertada en una posición aleatoria. La etiqueta es el valor que
@@ -68,7 +68,7 @@ void make_dataset(size_t num_samples, Tensor& ids, std::vector<size_t>& labels,
 // Modelo con atención
 // ---------------------------------------------------------
 // Dos bloques, no uno: la tarea es de dos saltos. Un bloque tiene que marcar
-// cada posición con "mi anterior es la MARCA" y el otro recoger esa posición
+// cada posición con "the one before me is the MARKER" y el otro recoger esa posición
 // desde el [CLS]. Con un solo bloque la consulta del [CLS] no puede depender
 // de dónde está la marca, y el modelo se queda muy por debajo.
 struct TransformerClassifier {
@@ -206,9 +206,9 @@ float train(const std::string& title, Model& model, optim::Optimizer& opt, const
             engine::autograd::NoGradGuard no_grad;
             std::cout << "  Epoch " << std::setw(2) << epoch << " | Loss = " << std::fixed
                       << std::setprecision(4) << (epoch_loss / static_cast<float>(batches))
-                      << " | Entrenamiento = " << std::setprecision(2)
+                      << " | Train = " << std::setprecision(2)
                       << (nn::accuracy(model.forward(X), y) * 100.0f) << "%"
-                      << " | Prueba = " << (nn::accuracy(model.forward(X_test), y_test) * 100.0f)
+                      << " | Test = " << (nn::accuracy(model.forward(X_test), y_test) * 100.0f)
                       << "%\n";
         }
     }
@@ -221,7 +221,7 @@ float train(const std::string& title, Model& model, optim::Optimizer& opt, const
 
 int main() {
     std::cout << "====================================================\n";
-    std::cout << "  Fase 5: Arquitectura Transformer                  \n";
+    std::cout << "  Phase 5: the Transformer architecture                  \n";
     std::cout << "====================================================\n\n";
 
     engine::manual_seed(2024);
@@ -238,8 +238,8 @@ int main() {
 
     Tensor weights;
     Tensor attended = nn::scaled_dot_product_attention(Q, K, V, nullptr, &weights);
-    weights.print("pesos de atencion (cada fila suma 1)");
-    attended.print("salida = pesos x V");
+    weights.print("attention weights (each row sums to 1)");
+    attended.print("output = weights x V");
 
     // ---------------------------------------------------------
     // 2. Máscara causal
@@ -249,7 +249,7 @@ int main() {
     Tensor masked_weights;
     Tensor q4 = Tensor::randn({4, 3});
     nn::scaled_dot_product_attention(q4, q4, q4, &mask, &masked_weights);
-    masked_weights.print("pesos con mascara (triangular: nadie ve el futuro)");
+    masked_weights.print("masked weights (triangular: nobody sees the future)");
 
     // ---------------------------------------------------------
     // 3. Codificación posicional
@@ -257,23 +257,22 @@ int main() {
     std::cout << "--- 3. Codificacion posicional sinusoidal ---\n";
     Tensor pe = nn::positional_encoding(6, 8);
     std::cout << "positional_encoding(6, 8) -> " << pe.shape_str() << "\n";
-    std::cout << "Cada fila codifica una posicion con senos y cosenos de\n"
-              << "frecuencias distintas, asi que posiciones cercanas tienen\n"
+    std::cout << "Each row encodes a position with sines and cosines of\n"
+              << "different frequencies, so nearby positions have\n"
               << "codificaciones parecidas:\n";
     pe.print("PE");
 
     // ---------------------------------------------------------
-    // 4. Conjunto de datos
+    // 4. Dataset
     // ---------------------------------------------------------
-    std::cout << "--- 4. Tarea: el token que sigue a la marca ---\n";
+    std::cout << "--- 4. Task: the token that follows the marker ---\n";
     Tensor X, X_test;
     std::vector<size_t> y, y_test, markers;
     make_dataset(1500, X, y, &markers);
     make_dataset(400, X_test, y_test);
 
     std::cout << "Vocabulario: valores 0-5, MARCA=" << kMarker << ", [CLS]=" << kCls << "\n";
-    std::cout << "Entrenamiento: " << X.shape_str() << "   Prueba: " << X_test.shape_str()
-              << "\n\n";
+    std::cout << "Train: " << X.shape_str() << "   Test: " << X_test.shape_str() << "\n\n";
     for (size_t n = 0; n < 3; ++n) {
         std::cout << "  Secuencia " << n << ": [";
         for (size_t s = 0; s < kSeqLen; ++s) {
@@ -302,7 +301,7 @@ int main() {
 
     engine::manual_seed(2024);
     MeanPoolClassifier baseline(32, 64);
-    std::cout << "Referencia sin atencion: " << baseline.num_parameters() << " parametros\n";
+    std::cout << "Reference with no attention: " << baseline.num_parameters() << " parametros\n";
     optim::Adam b_opt(baseline.parameters(), 0.003f);
     const float b_acc =
         train("Referencia: promedio de embeddings", baseline, b_opt, X, y, X_test, y_test, 60, 32);
@@ -317,9 +316,9 @@ int main() {
         transformer.forward(one);
         const Tensor& attn = transformer.block2.attention().last_attention();
 
-        std::cout << "Secuencia 0, marca en la posicion " << markers[0] << ", respuesta en la "
+        std::cout << "Sequence 0, marker at position " << markers[0] << ", answer at "
                   << markers[0] + 1 << ".\n";
-        std::cout << "Atencion del [CLS] en el segundo bloque, sobre cada posicion:\n";
+        std::cout << "[CLS] attention in the second block, over each position:\n";
 
         const size_t heads = attn.shape()[1];
         for (size_t h = 0; h < heads; ++h) {
@@ -332,7 +331,7 @@ int main() {
             }
             std::cout << "\n";
         }
-        std::cout << "  (* marca la posicion que contiene la respuesta)\n\n";
+        std::cout << "  (* marks the position holding the answer)\n\n";
     }
 
     // ---------------------------------------------------------
@@ -340,15 +339,15 @@ int main() {
     // ---------------------------------------------------------
     std::cout << "--- 7. Resumen ---\n";
     std::cout << std::fixed << std::setprecision(2);
-    std::cout << "  Transformer                : " << t_acc * 100.0f << "% sobre prueba\n";
-    std::cout << "  Promedio de embeddings     : " << b_acc * 100.0f << "% sobre prueba\n";
+    std::cout << "  Transformer                : " << t_acc * 100.0f << "% on test\n";
+    std::cout << "  Promedio de embeddings     : " << b_acc * 100.0f << "% on test\n";
     std::cout << "  Azar (1 de " << kNumValues
               << " valores)        : " << 100.0f / static_cast<float>(kNumValues) << "%\n\n";
-    std::cout << "Todas las secuencias contienen exactamente los mismos tokens, asi que\n"
-              << "promediarlos no deja ninguna informacion: la referencia se queda en el\n"
-              << "azar por construccion. La atencion, en cambio, relaciona la posicion de\n"
-              << "la marca con la siguiente y resuelve la tarea.\n\n";
+    std::cout << "Every sequence contains exactly the same tokens, so\n"
+              << "averaging them leaves no information at all: the baseline stays at\n"
+              << "chance by construction. Attention, on the other hand, relates the\n"
+              << "marker's position to the next one and solves the task.\n\n";
 
-    std::cout << "¡Fase 5 (Arquitectura Transformer) completada exitosamente!\n";
+    std::cout << "Phase 5 (Transformer architecture) complete.\n";
     return 0;
 }
