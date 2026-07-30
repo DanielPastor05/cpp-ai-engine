@@ -97,8 +97,31 @@ enum class MatmulKernel {
     Naive,          // no shared memory; the honest lower bound
     Tiled,          // 32x32 tiles in shared memory, one result per thread
     RegisterTiled,  // 8x8 results per thread, held in registers
-    Vectorized      // the same, with float4 loads
+    Vectorized,     // the same, with float4 loads
+    TensorCore      // tf32 on the tensor cores; see the precision note below
 };
+
+// Whether this build can run MatmulKernel::TensorCore: compiled for sm_80 or
+// later, and running on a card of that generation. Asking for it anywhere else
+// falls back to the CPU rather than launching something the hardware cannot do.
+bool tensor_cores_available();
+
+// ---------------------------------------------------------
+// A precision note, because TensorCore is not a free speed-up.
+//
+// The tensor-core path multiplies in **tf32**: the same 8-bit exponent as fp32
+// with the mantissa cut from 23 bits to 10, accumulating in fp32. Nothing about
+// the engine's memory layout changes — tensors stay fp32 and the conversion
+// happens in registers — but the product is not the fp32 product. Measured
+// against the fp32 kernels it lands around 1e-3 relative error rather than the
+// 1e-7 the other four hold.
+//
+// That is why `Auto` never selects it and why it is not the default. An engine
+// that silently traded three digits of precision for speed would invalidate its
+// own PyTorch reference tests, and the interesting part of this project is that
+// those tests agree to ~1e-7. Opting in is a decision the caller makes with the
+// error budget in front of them.
+// ---------------------------------------------------------
 
 MatmulKernel matmul_kernel();
 void set_matmul_kernel(MatmulKernel kernel);

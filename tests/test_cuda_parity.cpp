@@ -240,6 +240,150 @@ void run_cuda_parity_tests() {
         cuda::set_matmul_kernel(cuda::MatmulKernel::Auto);
     }
 
+    // --- the tensor-core kernel, at a tolerance that says what it costs ---
+    //
+    // tf32 keeps fp32's exponent and cuts the mantissa from 23 bits to 10, so a
+    // single product carries about 2^-11 of relative error where the fp32 kernels
+    // carry 2^-24. Comparing it at the 1e-5 the other four are held to would fail
+    // for the right reason and tell nobody anything; comparing it at a tolerance
+    // chosen to pass would be worse.
+    //
+    // The bound grows with K, because the error does: tf32's unit roundoff is
+    // 2^-11, and a dot product of K terms with independent roundings accumulates
+    // about sqrt(K) of them. 4 * sqrt(K) * 2^-11 leaves a factor of two of margin
+    // over what is actually observed, and it is a formula rather than a constant
+    // so that a change of shape cannot quietly move inside it.
+    //
+    // The first version of this used a flat 5e-3 and failed on four of six cases,
+    // which was the bound being wrong rather than the kernel: compare() reported
+    // "a scattered minority differs" every time -- 1 element of 256, 171 of 16384
+    // -- and always on outputs whose true value sits near zero, where the
+    // max(1, |want|) scale floor leaves the absolute error undivided. An indexing
+    // error looks nothing like that; it differs everywhere.
+    //
+    // A loosened tolerance is still a weaker test, so the exact case below carries
+    // the real weight.
+    if (cuda::tensor_cores_available()) {
+        cuda::set_matmul_kernel(cuda::MatmulKernel::TensorCore);
+
+        auto tf32_tolerance = [](size_t k) {
+            return 4.0f * std::sqrt(static_cast<float>(k)) / 2048.0f;
+        };
+
+        struct Case {
+            size_t M, K, N;
+        };
+        const Case cases[] = {
+            {16, 16, 16},     // exactly one wmma fragment
+            {64, 32, 64},     // exactly one block tile
+            {65, 33, 67},     // remainders on all three axes: the zero padding
+            {128, 128, 128},  // several block tiles
+            {129, 96, 130},   // several, with remainders
+        };
+        for (const Case& c : cases) {
+            Tensor A = Tensor::randn({c.M, c.K});
+            Tensor B = Tensor::randn({c.K, c.N});
+            compare(
+                "[tensorcore] tf32 matmul " + std::to_string(c.M) + "x" + std::to_string(c.K) +
+                    "x" + std::to_string(c.N),
+                [&] { return A.matmul(B); }, tf32_tolerance(c.K));
+        }
+
+        Tensor QB = Tensor::randn({3, 2, 40, 24});
+        Tensor KB = Tensor::randn({3, 2, 24, 40});
+        compare(
+            "[tensorcore] batched (3,2,40,24) x (3,2,24,40)", [&] { return QB.matmul(KB); },
+            tf32_tolerance(24));
+
+        // --- and now the test that actually pins the indices down ---
+        //
+        // Every case above is a tolerance, and a tolerance can be widened until
+        // anything passes. This one cannot be.
+        //
+        // tf32 has 10 explicit mantissa bits, so it represents integers up to
+        // 2048 **exactly**. Feed the kernel small integers, keep every partial sum
+        // under that, and the mantissa cut costs nothing: the tf32 product is then
+        // required to equal the fp32 product bit for bit. Any error in the
+        // fragment indices, the shared-memory staging, the zero padding at the
+        // edges or the warp quadrant mapping survives no tolerance at all here.
+        {
+            struct Exact {
+                size_t M, K, N;
+            };
+            const Exact shapes[] = {{16, 16, 16}, {64, 32, 64}, {65, 33, 67}, {129, 96, 130}};
+            bool all_exact = true;
+            size_t worst_shape = 0;
+
+            for (size_t s = 0; s < sizeof(shapes) / sizeof(shapes[0]); ++s) {
+                const Exact& e = shapes[s];
+                Tensor A(std::vector<size_t>{e.M, e.K}, 0.0f, false);
+                Tensor B(std::vector<size_t>{e.K, e.N}, 0.0f, false);
+                // Integers in [-4, 4]: products fit in 4 bits, and K terms of them
+                // stay far inside both tf32's exact-integer range and fp32's.
+                for (size_t i = 0; i < A.size(); ++i) {
+                    A.data()[i] = static_cast<float>((int)(i % 9) - 4);
+                }
+                for (size_t i = 0; i < B.size(); ++i) {
+                    B.data()[i] = static_cast<float>((int)(i % 7) - 3);
+                }
+
+                cuda::set_enabled(false);
+                const std::vector<float> want = A.matmul(B).data();
+                cuda::set_enabled(true);
+                cuda::set_matmul_kernel(cuda::MatmulKernel::TensorCore);
+                const std::vector<float> got = A.matmul(B).data();
+
+                for (size_t i = 0; i < want.size(); ++i) {
+                    if (want[i] != got[i]) {
+                        all_exact = false;
+                        worst_shape = s;
+                        break;
+                    }
+                }
+                if (!all_exact) break;
+            }
+            testing::check(all_exact, all_exact
+                                          ? "tf32 matches fp32 exactly on integer inputs, so the "
+                                            "fragment indices are right"
+                                          : "tf32 disagrees with fp32 on integer inputs at shape " +
+                                                std::to_string(worst_shape) +
+                                                ": the tolerance cases above were hiding an "
+                                                "indexing error");
+        }
+
+        // And the point of the whole exercise: tf32 is genuinely less precise, so
+        // the same product under the fp32 kernels must be *visibly* tighter. A
+        // kernel that quietly fell back to fp32 would pass every case above.
+        Tensor A = Tensor::randn({256, 256});
+        Tensor B = Tensor::randn({256, 256});
+        cuda::set_enabled(false);
+        const std::vector<float> want = A.matmul(B).data();
+
+        cuda::set_enabled(true);
+        cuda::set_matmul_kernel(cuda::MatmulKernel::TensorCore);
+        const std::vector<float> tf32 = A.matmul(B).data();
+        cuda::set_matmul_kernel(cuda::MatmulKernel::Vectorized);
+        const std::vector<float> fp32 = A.matmul(B).data();
+
+        auto worst_against_cpu = [&want](const std::vector<float>& got) {
+            double worst = 0.0;
+            for (size_t i = 0; i < want.size(); ++i) {
+                const double scale = std::max(1.0, std::fabs((double)want[i]));
+                worst = std::max(worst, std::fabs((double)got[i] - want[i]) / scale);
+            }
+            return worst;
+        };
+        const double tf32_err = worst_against_cpu(tf32);
+        const double fp32_err = worst_against_cpu(fp32);
+
+        std::cout << "  tf32 error " << std::scientific << std::setprecision(2) << tf32_err
+                  << " against fp32 error " << fp32_err << std::defaultfloat << " on 256x256\n";
+        testing::check(tf32_err > fp32_err * 10.0,
+                       "the tensor-core kernel really is running in tf32, not fp32");
+
+        cuda::set_matmul_kernel(cuda::MatmulKernel::Auto);
+    }
+
     // --- operaciones elemento a elemento ---
     {
         Tensor A = Tensor::randn({64, 40});

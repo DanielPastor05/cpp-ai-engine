@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 using engine::Tensor;
@@ -38,7 +39,8 @@ namespace {
 
 struct Options {
     cuda::MatmulKernel kernel = cuda::MatmulKernel::Auto;
-    bool sweep = true;  // with no arguments, sweep everything
+    bool sweep = true;    // with no arguments, sweep everything
+    bool cublas = false;  // --kernel=cublas: the reference row, on its own
     size_t size = 2048;
     size_t iters = 0;  // 0 = by time, not by repetition count
 };
@@ -64,13 +66,20 @@ bool parse_kernel(const std::string& value, cuda::MatmulKernel& out) {
         out = cuda::MatmulKernel::Vectorized;
         return true;
     }
+    if (value == "tensorcore") {
+        out = cuda::MatmulKernel::TensorCore;
+        return true;
+    }
     return false;
 }
 
 bool parse_args(int argc, char** argv, Options& opts) {
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg.rfind("--kernel=", 0) == 0) {
+        if (arg == "--kernel=cublas") {
+            opts.cublas = true;
+            opts.sweep = false;
+        } else if (arg.rfind("--kernel=", 0) == 0) {
             if (!parse_kernel(arg.substr(9), opts.kernel)) {
                 printf("Unknown kernel: %s\n", arg.substr(9).c_str());
                 return false;
@@ -83,20 +92,36 @@ bool parse_args(int argc, char** argv, Options& opts) {
             opts.iters = static_cast<size_t>(std::stoul(arg.substr(8)));
         } else {
             printf(
-                "Usage: bench_matmul [--kernel=auto|naive|tiled|register|vectorized]\n"
-                "                    [--size=N] [--iters=N]\n");
+                "Usage: bench_matmul\n"
+                "  [--kernel=auto|naive|tiled|register|vectorized|tensorcore]\n"
+                "  [--size=N] [--iters=N]\n");
             return false;
         }
     }
     return true;
 }
 
-// Returns the mean time per product, in seconds.
+// How many timing windows each measurement takes, keeping the best.
+//
+// This is not caution, it is a bug fix. The first version of the sweep ran one
+// window per kernel, back to back, and the numbers it produced were wrong in a
+// way that mattered: `vectorized` measured 5259 GFLOP/s at 4096^3 inside the
+// sweep and 7903 on its own. The card had simply heated up and dropped its
+// clocks by the time the later rows ran, so every row was slower than the one
+// above it partly *because* it was below it -- and the ordering of the table was
+// deciding its own conclusion.
+//
+// Taking the best of several windows removes most of it, since thermal noise only
+// ever adds time. What it cannot fix is the ordering bias, so the sweep also
+// pauses between kernels to let clocks recover.
+constexpr int kTimingWindows = 3;
+
+// Returns the shortest observed time per product, in seconds.
 //
 // The operands are left resident on the device before starting: what is measured
 // here is the kernel, not PCIe. The transfer cost is measured in bench.cpp, and
 // separately on purpose.
-double time_matmul(const Tensor& A, const Tensor& B, size_t iters, double min_seconds) {
+double time_matmul_once(const Tensor& A, const Tensor& B, size_t iters, double min_seconds) {
     { Tensor warm = A.matmul(B); }  // uploads the operands and warms the path
     cuda::synchronize();
 
@@ -115,6 +140,21 @@ double time_matmul(const Tensor& A, const Tensor& B, size_t iters, double min_se
     cuda::synchronize();
     elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     return elapsed / static_cast<double>(done);
+}
+
+double time_matmul(const Tensor& A, const Tensor& B, size_t iters, double min_seconds) {
+    double best = 0.0;
+    for (int w = 0; w < kTimingWindows; ++w) {
+        const double t = time_matmul_once(A, B, iters, min_seconds);
+        if (best == 0.0 || t < best) best = t;
+    }
+    return best;
+}
+
+// Between kernels, so a row is not penalised for the rows above it.
+void let_clocks_settle() {
+    cuda::synchronize();
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
 }
 
 void report(const char* label, double seconds, size_t n, double peak) {
@@ -146,7 +186,8 @@ void run_one(cuda::MatmulKernel kernel, size_t n, size_t iters, double peak) {
 // B_col x A_col with B_col = B_row^T and A_col = A_row^T yields C_col = C_row^T,
 // which read back as row-major is exactly C_row. The alternative -- two explicit
 // transposes -- would measure the transposes.
-double time_cublas(const Tensor& A, const Tensor& B, size_t n, size_t iters, double min_seconds) {
+double time_cublas_once(const Tensor& A, const Tensor& B, size_t n, size_t iters,
+                        double min_seconds) {
     cublasHandle_t handle = nullptr;
     if (cublasCreate(&handle) != CUBLAS_STATUS_SUCCESS) return 0.0;
 
@@ -189,6 +230,16 @@ double time_cublas(const Tensor& A, const Tensor& B, size_t n, size_t iters, dou
     return elapsed / static_cast<double>(done);
 }
 
+double time_cublas(const Tensor& A, const Tensor& B, size_t n, size_t iters, double min_seconds) {
+    double best = 0.0;
+    for (int w = 0; w < kTimingWindows; ++w) {
+        const double t = time_cublas_once(A, B, n, iters, min_seconds);
+        if (t == 0.0) return 0.0;
+        if (best == 0.0 || t < best) best = t;
+    }
+    return best;
+}
+
 // Not just timed: checked. A reference row that computed something else would
 // make the whole comparison meaningless, and the row/column-major swap above is
 // exactly the kind of thing that is easy to get subtly wrong.
@@ -200,7 +251,7 @@ bool cublas_agrees(size_t n) {
     const Tensor want = A.matmul(B);
     const std::vector<float> expected = want.data();
 
-    const double seconds = time_cublas(A, B, n, 1, 0.0);
+    const double seconds = time_cublas_once(A, B, n, 1, 0.0);
     if (seconds == 0.0) return false;
 
     cublasHandle_t handle = nullptr;
@@ -282,7 +333,15 @@ int main(int argc, char** argv) {
                opts.size, opts.size, intensity,
                intensity > ridge ? "compute bound" : "memory bound");
         printf("  %-14s %10s %12s %11s\n", "kernel", "time", "GFLOP/s", "% of peak");
-        run_one(opts.kernel, opts.size, opts.iters, peak);
+        if (opts.cublas) {
+#ifdef ENGINE_BENCH_CUBLAS
+            run_cublas(opts.size, opts.iters, peak);
+#else
+            printf("  built without cuBLAS\n");
+#endif
+        } else {
+            run_one(opts.kernel, opts.size, opts.iters, peak);
+        }
         printf("\n");
         return 0;
     }
@@ -298,12 +357,24 @@ int main(int argc, char** argv) {
     }
 #endif
 
-    const cuda::MatmulKernel variants[] = {
+    // TensorCore only when the hardware has it. It is listed after the fp32
+    // kernels rather than among them because it is not measuring the same thing:
+    // see the tf32 note below the table.
+    std::vector<cuda::MatmulKernel> variants = {
         cuda::MatmulKernel::Naive,
         cuda::MatmulKernel::Tiled,
         cuda::MatmulKernel::RegisterTiled,
         cuda::MatmulKernel::Vectorized,
     };
+    if (cuda::tensor_cores_available()) variants.push_back(cuda::MatmulKernel::TensorCore);
+
+    printf(
+        "NOTE: rows within one sweep are NOT comparable to each other. A consumer\n"
+        "card throttles under sustained load, so a kernel measured after four\n"
+        "others runs at lower clocks and the table's own ordering biases it --\n"
+        "measured here at up to 1.6x between a kernel run inside the sweep and the\n"
+        "same kernel run alone. For numbers that can be compared, run one process\n"
+        "per kernel: tools/bench_matmul_isolated.sh (or .ps1).\n\n");
 
     for (size_t n : {size_t{512}, size_t{1024}, size_t{2048}, size_t{4096}}) {
         printf("=== %zux%zux%zu (%.0f FLOP/byte) ===\n", n, n, n, (double)n / 6.0);
@@ -311,10 +382,14 @@ int main(int argc, char** argv) {
         for (cuda::MatmulKernel v : variants) {
             // The naive kernel on 4096^3 takes too long for what it adds.
             if (v == cuda::MatmulKernel::Naive && n > 2048) continue;
+            let_clocks_settle();
             run_one(v, n, opts.iters, peak);
         }
 #ifdef ENGINE_BENCH_CUBLAS
-        if (cublas_ok) run_cublas(n, opts.iters, peak);
+        if (cublas_ok) {
+            let_clocks_settle();
+            run_cublas(n, opts.iters, peak);
+        }
 #endif
         printf("\n");
     }

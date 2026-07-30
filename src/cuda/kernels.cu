@@ -16,6 +16,7 @@
 #include "engine/detail/cuda_ops.hpp"
 
 #include <cuda_runtime.h>
+#include <mma.h>
 
 #include <cmath>
 #include <cstdio>
@@ -721,6 +722,233 @@ __global__ void matmul_register_tiled(const float* __restrict__ A, const float* 
 }
 
 // ---------------------------------------------------------
+// Matrix product on the tensor cores, in tf32
+// ---------------------------------------------------------
+//
+// The four kernels above are all the same instruction set: FMA on the ordinary
+// fp32 pipes. This one is a different machine. An Ampere SM has four tensor
+// cores that each retire a 16x8x8 matrix multiply-accumulate as one instruction,
+// and the peak they reach in tf32 is roughly double the fp32 pipes'.
+//
+// **It buys that with mantissa bits.** tf32 keeps fp32's 8-bit exponent and cuts
+// the mantissa from 23 bits to 10; the accumulation stays fp32. Range is
+// unchanged, so nothing overflows that would not have overflowed before, but the
+// product is not the fp32 product. That is a decision, not a detail, and it is
+// why `Auto` never picks this kernel: silently spending three digits of
+// precision would invalidate the reference tests that agree with PyTorch to
+// ~1e-7, which are the most valuable thing this engine has.
+//
+// **The geometry is the whole point, and the first version of this kernel proved
+// it the hard way.** A block of 4 warps computing a 64x64 tile measured 4227
+// GFLOP/s at 4096^3 -- *slower* than the fp32 register-tiled kernel's 4786,
+// despite running on hardware with twice the peak. Reaching for the tensor cores
+// bought nothing, because the bottleneck was never the multiply.
+//
+// The reason is data reuse. That version staged 64*32 + 32*64 = 4096 values to
+// produce a 64x64 tile: each staged value fed 32 outputs. The fp32 kernel it lost
+// to stages 2048 values to produce 128x128: 64 outputs each, twice the reuse. The
+// tensor cores were sitting idle waiting on shared memory, and a faster multiplier
+// does not help a kernel that is not multiply-bound.
+//
+// So the tile doubled in both directions: 8 warps, a 128x128 output tile, each
+// warp owning 32x64 as a 2x4 grid of 16x16 accumulator fragments. Same reuse as
+// the fp32 kernel, and now the extra arithmetic throughput has somewhere to go.
+//
+// The fragments are declared with wmma::precision::tf32, which means
+// load_matrix_sync reads fp32 and the caller is responsible for rounding each
+// element with __float_to_tf32. Skipping that step compiles and returns numbers
+// that are close but wrong, which is the worst failure mode available.
+
+constexpr int kWmmaM = 16;
+constexpr int kWmmaN = 16;
+constexpr int kWmmaK = 8;  // tf32 fragments step 8 along K, not 16
+
+constexpr int kTcBM = 128;  // output rows per block
+constexpr int kTcBN = 128;  // output columns per block
+constexpr int kTcBK = 32;   // K staged per iteration: four wmma steps
+constexpr int kTcWarps = 8;
+constexpr int kTcBlock = kTcWarps * 32;  // 256 threads
+
+// Each warp owns a 32x64 slab of the output: 2 fragments down, 4 across.
+constexpr int kTcWarpM = 2;
+constexpr int kTcWarpN = 4;
+static_assert(kTcBM / (kTcWarpM * kWmmaM) * (kTcBN / (kTcWarpN * kWmmaN)) == kTcWarps,
+              "the warp grid must tile the block exactly");
+
+// 128*32 + 32*128 = 8192 floats = 32 KB, inside the 48 KB a block gets without
+// opting in. C does **not** get staged wholesale -- at 128x128 that would be
+// another 64 KB -- so fragments go straight to global memory when they are fully
+// inside the matrix, and only edge fragments detour through this same buffer.
+constexpr int kTcSmem = kTcBM * kTcBK + kTcBK * kTcBN;
+static_assert(kTcSmem >= kTcWarps * kWmmaM * kWmmaN, "edge staging must fit in the A/B buffer");
+
+__global__ void matmul_tensor_core(const float* __restrict__ A, const float* __restrict__ B,
+                                   float* __restrict__ C, int M, int K, int N, long long a_stride,
+                                   long long b_stride) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    using namespace nvcuda;
+
+    __shared__ float smem[kTcSmem];
+    float* As = smem;                  // [kTcBM][kTcBK]
+    float* Bs = smem + kTcBM * kTcBK;  // [kTcBK][kTcBN]
+
+    const long long batch = blockIdx.z;
+    A += batch * a_stride;
+    B += batch * b_stride;
+    C += batch * (long long)M * N;
+
+    const int block_row = blockIdx.y * kTcBM;
+    const int block_col = blockIdx.x * kTcBN;
+
+    // Warps tile the block 4 down by 2 across: each owns 32 rows and 64 columns.
+    const int warp = threadIdx.x / 32;
+    const int warp_row = (warp / 2) * (kTcWarpM * kWmmaM);
+    const int warp_col = (warp % 2) * (kTcWarpN * kWmmaN);
+
+    wmma::fragment<wmma::accumulator, kWmmaM, kWmmaN, kWmmaK, float> acc[kTcWarpM][kTcWarpN];
+#pragma unroll
+    for (int i = 0; i < kTcWarpM; ++i) {
+#pragma unroll
+        for (int j = 0; j < kTcWarpN; ++j) wmma::fill_fragment(acc[i][j], 0.0f);
+    }
+
+    for (int k_base = 0; k_base < K; k_base += kTcBK) {
+        // 256 threads stage 4096 values each for A and B: 16 apiece. Out-of-range
+        // positions are written as zero rather than skipped -- the fragments read
+        // the whole tile, so a hole would be whatever the previous iteration left.
+#pragma unroll
+        for (int t = 0; t < (kTcBM * kTcBK) / kTcBlock; ++t) {
+            const int idx = t * kTcBlock + threadIdx.x;
+            const int r = idx / kTcBK;
+            const int c = idx % kTcBK;
+            const int g_row = block_row + r;
+            const int g_col = k_base + c;
+            // Rounded to tf32 **here**, once per staged value, rather than after
+            // every fragment load. See the note below the b-staging loop.
+            As[idx] = (g_row < M && g_col < K)
+                          ? wmma::__float_to_tf32(A[(long long)g_row * K + g_col])
+                          : 0.0f;
+        }
+#pragma unroll
+        for (int t = 0; t < (kTcBK * kTcBN) / kTcBlock; ++t) {
+            const int idx = t * kTcBlock + threadIdx.x;
+            const int r = idx / kTcBN;
+            const int c = idx % kTcBN;
+            const int g_row = k_base + r;
+            const int g_col = block_col + c;
+            Bs[idx] = (g_row < K && g_col < N)
+                          ? wmma::__float_to_tf32(B[(long long)g_row * N + g_col])
+                          : 0.0f;
+        }
+
+        // Why the rounding moved up here, which was worth 8% and is the third
+        // thing this kernel got wrong before it got it right.
+        //
+        // wmma::precision::tf32 fragments hold fp32 bits and it is the caller's
+        // job to round them; the obvious place is right after load_matrix_sync.
+        // That costs 24 conversions per lane per K-step -- 4 elements in each of
+        // 2 A-fragments and 4 B-fragments -- against only 8 mma_sync instructions.
+        // The conversion was outnumbering the arithmetic three to one.
+        //
+        // Staging does it once per value instead of once per load, and every warp
+        // that reads a staged value gets it already rounded. Correctness is
+        // unchanged: a value rounded to tf32 is exactly representable as fp32, so
+        // storing it in shared memory and letting the hardware read it as tf32
+        // rounds nothing twice. It is in fact slightly *more* accurate than
+        // leaving it to the hardware, which truncates where __float_to_tf32
+        // rounds to nearest.
+        __syncthreads();
+
+#pragma unroll
+        for (int kk = 0; kk < kTcBK; kk += kWmmaK) {
+            wmma::fragment<wmma::matrix_a, kWmmaM, kWmmaN, kWmmaK, wmma::precision::tf32,
+                           wmma::row_major>
+                a_frag[kTcWarpM];
+            wmma::fragment<wmma::matrix_b, kWmmaM, kWmmaN, kWmmaK, wmma::precision::tf32,
+                           wmma::row_major>
+                b_frag[kTcWarpN];
+
+            // No conversion loop here: shared memory already holds tf32-rounded
+            // values, done once at staging time.
+#pragma unroll
+            for (int i = 0; i < kTcWarpM; ++i) {
+                wmma::load_matrix_sync(a_frag[i], As + (warp_row + i * kWmmaM) * kTcBK + kk, kTcBK);
+            }
+#pragma unroll
+            for (int j = 0; j < kTcWarpN; ++j) {
+                wmma::load_matrix_sync(b_frag[j], Bs + kk * kTcBN + warp_col + j * kWmmaN, kTcBN);
+            }
+
+            // 8 fragments of output against 6 fragments loaded: the ratio the
+            // 64x64 version got wrong.
+#pragma unroll
+            for (int i = 0; i < kTcWarpM; ++i) {
+#pragma unroll
+                for (int j = 0; j < kTcWarpN; ++j) {
+                    wmma::mma_sync(acc[i][j], a_frag[i], b_frag[j], acc[i][j]);
+                }
+            }
+        }
+
+        __syncthreads();
+    }
+
+    // store_matrix_sync cannot bounds-check. Staging the whole 128x128 tile would
+    // cost another 64 KB of shared memory, so a fragment entirely inside the
+    // matrix goes straight to global, and only the ones straddling an edge detour
+    // through the (now dead) A/B buffer.
+    //
+    // The direct store carries one more condition than "fully in bounds", and it
+    // is the sort that does not announce itself: **store_matrix_sync requires the
+    // leading dimension to be a multiple of 4 floats.** Passing it an N of 67 is
+    // undefined behaviour, not a slow path -- it writes plausible numbers in the
+    // wrong places. The first version of this kernel omitted the check and the
+    // exact-integer parity case caught it on 65x33x67 while every tolerance case
+    // around it still passed, which is the entire argument for having that test.
+    const bool direct_store_ok = (N % 4 == 0);
+    __syncthreads();
+    float* edge = smem + warp * (kWmmaM * kWmmaN);
+
+#pragma unroll
+    for (int i = 0; i < kTcWarpM; ++i) {
+#pragma unroll
+        for (int j = 0; j < kTcWarpN; ++j) {
+            const int row = block_row + warp_row + i * kWmmaM;
+            const int col = block_col + warp_col + j * kWmmaN;
+
+            if (direct_store_ok && row + kWmmaM <= M && col + kWmmaN <= N) {
+                wmma::store_matrix_sync(C + (long long)row * N + col, acc[i][j], N,
+                                        wmma::mem_row_major);
+                continue;
+            }
+            if (row >= M || col >= N) continue;
+
+            wmma::store_matrix_sync(edge, acc[i][j], kWmmaN, wmma::mem_row_major);
+            __syncwarp();
+            for (int idx = (int)(threadIdx.x % 32); idx < kWmmaM * kWmmaN; idx += 32) {
+                const int r = row + idx / kWmmaN;
+                const int c = col + idx % kWmmaN;
+                if (r < M && c < N) C[(long long)r * N + c] = edge[idx];
+            }
+            __syncwarp();
+        }
+    }
+#else
+    // Compiled for a card without tf32 tensor cores. The host side refuses to
+    // dispatch here, so this is unreachable; silencing the parameters keeps the
+    // build clean rather than leaving a warning per architecture.
+    (void)A;
+    (void)B;
+    (void)C;
+    (void)M;
+    (void)K;
+    (void)N;
+    (void)a_stride;
+    (void)b_stride;
+#endif
+}
+
+// ---------------------------------------------------------
 // Softmax over the last axis
 // ---------------------------------------------------------
 //
@@ -904,6 +1132,24 @@ bool matmul(const Storage& a, const Storage& b, Storage& out, size_t batch, size
     // returns a different value, which is considerably worse.
     if (choice == MatmulKernel::Vectorized && (K % 4 != 0 || N % 4 != 0)) {
         choice = MatmulKernel::RegisterTiled;
+    }
+
+    // Asked for by hand on a build or a card without tf32 tensor cores. It does
+    // NOT degrade to another kernel the way Vectorized does, and the difference
+    // matters: the alignment fallback substitutes a kernel that computes the same
+    // numbers, while substituting fp32 for a tf32 request would quietly hand back
+    // three more digits of precision than the caller asked for. Silently better
+    // is still silently different. Refusing sends the work to the CPU, which the
+    // caller can see in the launch counters.
+    if (choice == MatmulKernel::TensorCore && !tensor_cores_available()) return false;
+
+    if (choice == MatmulKernel::TensorCore) {
+        if ((rows + kTcBM - 1) / kTcBM > kMaxGridYZ) return false;
+        const dim3 grid((unsigned)((cols + kTcBN - 1) / kTcBN),
+                        (unsigned)((rows + kTcBM - 1) / kTcBM), (unsigned)batch);
+        matmul_tensor_core<<<grid, kTcBlock>>>(a.device(), b.device(), out.device_write(), M, K, N,
+                                               a_stride, b_stride);
+        return launched_ok("matmul_tensor_core", out);
     }
 
     if (choice == MatmulKernel::RegisterTiled || choice == MatmulKernel::Vectorized) {

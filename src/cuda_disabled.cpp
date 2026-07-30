@@ -60,6 +60,9 @@ void set_matmul_kernel(MatmulKernel) {}
 MatmulKernel resolve_matmul_kernel(size_t, size_t, size_t) {
     return MatmulKernel::Auto;
 }
+bool tensor_cores_available() {
+    return false;
+}
 
 // This one does return something useful without CUDA: the benchmark and the
 // tests print the variant's name even with no device.
@@ -75,6 +78,8 @@ const char* matmul_kernel_name(MatmulKernel kernel) {
             return "register";
         case MatmulKernel::Vectorized:
             return "vectorized";
+        case MatmulKernel::TensorCore:
+            return "tensorcore";
     }
     return "unknown";
 }

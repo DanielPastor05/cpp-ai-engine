@@ -217,8 +217,33 @@ const char* matmul_kernel_name(MatmulKernel kernel) {
             return "register";
         case MatmulKernel::Vectorized:
             return "vectorized";
+        case MatmulKernel::TensorCore:
+            return "tensorcore";
     }
     return "unknown";
+}
+
+// tf32 WMMA needs Ampere or later, both at compile time -- the kernel body is
+// guarded on __CUDA_ARCH__ >= 800 -- and at run time. CUDART_VERSION covers the
+// toolkit; the compute capability covers the card. A build for sm_75 running on
+// an Ampere card would still have no tensor-core code in the binary, which is why
+// the compiled architecture is not something this can infer and the kernel guard
+// has to agree with it: both are >= 800 or the dispatch is refused.
+bool tensor_cores_available() {
+    const Context& ctx = context();
+    if (!ctx.usable) return false;
+#if defined(__CUDA_ARCH_LIST__)
+    // Available since CUDA 11.5: the architectures this binary actually carries.
+    // Without at least one >= 800 there is no tf32 kernel to launch, whatever
+    // card is plugged in.
+    constexpr int arch_list[] = {__CUDA_ARCH_LIST__};
+    bool built_for_ampere = false;
+    for (int a : arch_list) {
+        if (a >= 800) built_for_ampere = true;
+    }
+    if (!built_for_ampere) return false;
+#endif
+    return ctx.info.compute_major >= 8;
 }
 
 // The resolution of `Auto`, in one place so the benchmark can ask what will run

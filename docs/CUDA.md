@@ -231,40 +231,94 @@ the hot path.
 
 ### Measured, against cuBLAS
 
-The progression is only worth something if there is a ruler beside it. Measured on
-an RTX 3060 Ti (16 489 GFLOP/s fp32 peak), square products, operands already
-resident on the device so no transfer is inside the timed region:
+The progression is only worth something if there is a ruler beside it. RTX 3060
+Ti, 16 489 GFLOP/s of fp32 peak, 4096³, operands already resident so no transfer
+is inside the timed region:
 
-| Shape | `naive` | `tiled` | `register` | `vectorized` | **cuBLAS** |
-|---|---|---|---|---|---|
-| 512³ | 462 | 443 | 552 | 663 | **3 301** |
-| 1024³ | 499 | 701 | 1 463 | 1 637 | **7 304** |
-| 2048³ | 721 | 910 | 2 712 | 2 862 | **8 844** |
-| 4096³ | — | 1 078 | 4 582 | **4 663** | **9 043** |
+| kernel | GFLOP/s | % of peak | vs cuBLAS |
+|---|---|---|---|
+| `naive` | 898 | 5.4% | 10.3× behind |
+| `tiled` | 1 178 | 7.1% | 7.9× |
+| `register` | 6 871 | 41.7% | 1.35× |
+| **`vectorized`** | **7 660** | **46.5%** | **1.21×** |
+| `tensorcore` (tf32) | 5 200 | 31.5% | 1.78× |
+| **cuBLAS** | **9 258** | **56.1%** | — |
 
-GFLOP/s. At 4096³ that is 28.3% of peak for the engine's best kernel against
-54.8% for cuBLAS: **1.94x behind, or 52% of cuBLAS's throughput.**
+**46.5% of peak, 1.21× behind cuBLAS** for the best hand-written kernel. The
+register tiling is where the jump lives: 1 178 → 6 871 GFLOP/s, a factor of
+**5.8**, for a change that touches no memory hierarchy at all — only how many
+results each thread keeps in registers.
 
-Two things are worth reading off that table rather than the headline. The
-register tiling is where the jump happens — 910 to 4 582 GFLOP/s at 4096³, a
-factor of five for a change that touches no memory hierarchy, only how many
-results each thread keeps in registers. And the gap to cuBLAS *narrows* with
-size: 5x at 512³, 1.9x at 4096³, because the small shapes are dominated by launch
-overhead and tile quantisation that cuBLAS's shape-specialised kernels handle and
-a single 128x128 geometry does not.
+cuBLAS is linked into `bench_matmul` and **nowhere else**; the engine never calls
+it. Its row is checked against the engine before any timing is believed, because
+a reference computing something else is worse than no reference: it agrees to
+1.8e-05, which is FMA rounding. (The first version of that check divided by
+`|expected|` and reported 7.2e-03, which looked like a broken reference and was
+catastrophic cancellation in the divisor.)
 
-`bench_matmul` prints this table, and it prints cuBLAS's agreement with the
-engine before any of the timings, because a reference row that computed something
-else would make the whole comparison worse than no comparison. The first version
-of that check divided by `|expected|` and reported 7.2e-03, which looked like a
-broken reference and was really catastrophic cancellation in the divisor; with
-the parity test's `max(1, |expected|)` scale it reports 1.8e-05, which is FMA
-rounding and nothing else.
+### The measurement was lying, and the fix is the interesting part
 
-cuBLAS is linked into `bench_matmul` and **nowhere else**. The engine never calls
-it. Not measuring against it, which is what this project did until now, reads as
-avoiding the comparison — and losing by 1.9x with the reason visible is a much
-better answer than declining to look.
+The numbers above come from `tools/bench_matmul_isolated.sh`, **not** from
+`bench_matmul`'s built-in sweep, and the difference is not cosmetic.
+
+The sweep runs every kernel back to back in one process. On a consumer card that
+measures temperature as much as code: by the fifth row the clocks have dropped,
+so a kernel is slower partly *because of where it sits in the table*. Measured
+here, `vectorized` at 4096³ came out at **4 888 GFLOP/s inside the sweep and
+7 660 on its own** — a factor of 1.6, larger than most of the differences the
+table exists to show. Taking the best of three windows inside the sweep did not
+fix it; it made it worse, because three windows generate three times the heat.
+
+An earlier draft of this document reported 4 663 GFLOP/s and "1.94× behind
+cuBLAS" from exactly that broken sweep. Both numbers were wrong, and the
+direction of the error was systematic rather than random: every row was
+pessimistic, and the later ones more so.
+
+So the honest measurement is one process per kernel with a pause between, keeping
+the fastest observation — microbenchmark noise only ever adds time. The sweep is
+still there as an overview and now prints a warning saying its rows are not
+comparable to each other.
+
+### tf32 on the tensor cores: implemented, measured, and it loses
+
+`tensorcore` is a full WMMA implementation — 128×128 block tile, 8 warps, each
+owning a 32×64 slab as a 2×4 grid of 16×16×8 tf32 fragments, staged through
+shared memory. It reaches 31.5% of peak. `vectorized`, on the ordinary fp32
+pipes, reaches 46.5%. **The tensor cores lose by 1.5×, and no amount of tuning
+the kernel was going to change that.**
+
+The reason is the hardware, and it is worth knowing before reaching for WMMA at
+all: on GA10x — consumer Ampere — **dense tf32 tensor throughput is the same
+16.2 TFLOP/s as fp32**. The 2× that tensor cores are famous for applies to fp16,
+or to tf32 with structured sparsity, or to the data-centre A100 whose tensor
+cores run at full rate. On a 3060 Ti there is simply no arithmetic headroom for
+a tf32 kernel to exploit, so it pays WMMA's fragment-staging overhead for nothing.
+
+Getting there took three wrong turns, each of which is a real lesson:
+
+1. **A 64×64 block tile, 4 warps.** 4 227 GFLOP/s — slower than the fp32 kernel
+   it was meant to beat. Each staged value fed 32 outputs where the fp32 kernel's
+   fed 64: half the data reuse. A faster multiplier does not help a kernel that
+   is not multiply-bound. Doubling the tile to 128×128 fixed the reuse.
+2. **Rounding after every fragment load.** `wmma::precision::tf32` fragments hold
+   fp32 bits and the caller must round them, and the obvious place is right after
+   `load_matrix_sync`. That is 24 conversions per lane per K-step against 8
+   `mma_sync` instructions — the conversion outnumbered the arithmetic three to
+   one. Moving it to staging time, once per value instead of once per load, was
+   worth 20%.
+3. **A leading dimension of 67.** `store_matrix_sync` requires the leading
+   dimension to be a multiple of 4 floats. Storing fragments straight to global
+   memory with `ld = N` is undefined behaviour when `N % 4 != 0` — and undefined
+   here means plausible numbers in the wrong places, not a crash. The
+   exact-integer parity case caught it on 65×33×67 while every tolerance case
+   around it still passed.
+
+That third one is why the parity suite has a case that compares tf32 against fp32
+with **no tolerance at all**. tf32 represents integers up to 2048 exactly, so on
+small-integer inputs the tf32 product must equal the fp32 product bit for bit.
+Any error in the fragment indices, the staging, the edge padding or the warp
+mapping survives no tolerance — and the tolerance cases, whose bounds are
+`4·sqrt(K)·2⁻¹¹`, were demonstrably hiding one.
 
 ### The roofline says where to attack
 
