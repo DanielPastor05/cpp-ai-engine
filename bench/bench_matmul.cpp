@@ -1,22 +1,31 @@
-// Banco de pruebas del producto de matrices en GPU.
+// GPU matrix-product benchmark.
 //
-// Existe aparte de bench.cpp por una razón práctica: para perfilar con Nsight
-// Compute hace falta un ejecutable que lance **un** kernel sobre **una** forma.
-// Pasarle el banco completo a ncu significa esperar a que perfile decenas de
-// lanzamientos distintos para leer uno.
+// It exists separately from bench.cpp for a practical reason: profiling with
+// Nsight Compute needs an executable that launches **one** kernel on **one**
+// shape. Handing the whole benchmark to ncu means waiting for it to profile
+// dozens of unrelated launches to read one.
 //
-//   bench_matmul                                    # barre todo y saca la tabla
-//   bench_matmul --kernel=register --size=2048      # una variante, una forma
-//   ncu --set full -o perfil bench_matmul --kernel=register --size=2048 --iters=10
+//   bench_matmul                                    # sweep everything, print the table
+//   bench_matmul --kernel=register --size=2048      # one variant, one shape
+//   ncu --set full -o profile bench_matmul --kernel=register --size=2048 --iters=10
 //
-// Las cifras que imprime son las que van a docs/CUDA.md. No hay ninguna
-// escrita a mano en la documentación.
+// The figures it prints are the ones that go into docs/CUDA.md. None of them is
+// written by hand in the documentation.
 
-#include "engine/tensor.hpp"
-#include "engine/random.hpp"
 #include "engine/cuda.hpp"
+#include "engine/random.hpp"
+#include "engine/tensor.hpp"
 
+#ifdef ENGINE_BENCH_CUBLAS
+#include <cublas_v2.h>
+
+#include "engine/detail/storage.hpp"
+#include "engine/detail/tensor_impl.hpp"
+#endif
+
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -29,9 +38,9 @@ namespace {
 
 struct Options {
     cuda::MatmulKernel kernel = cuda::MatmulKernel::Auto;
-    bool sweep = true;  // sin argumentos, se barre todo
+    bool sweep = true;  // with no arguments, sweep everything
     size_t size = 2048;
-    size_t iters = 0;  // 0 = por tiempo, no por repeticiones
+    size_t iters = 0;  // 0 = by time, not by repetition count
 };
 
 bool parse_kernel(const std::string& value, cuda::MatmulKernel& out) {
@@ -63,7 +72,7 @@ bool parse_args(int argc, char** argv, Options& opts) {
         const std::string arg = argv[i];
         if (arg.rfind("--kernel=", 0) == 0) {
             if (!parse_kernel(arg.substr(9), opts.kernel)) {
-                printf("Kernel desconocido: %s\n", arg.substr(9).c_str());
+                printf("Unknown kernel: %s\n", arg.substr(9).c_str());
                 return false;
             }
             opts.sweep = false;
@@ -74,21 +83,21 @@ bool parse_args(int argc, char** argv, Options& opts) {
             opts.iters = static_cast<size_t>(std::stoul(arg.substr(8)));
         } else {
             printf(
-                "Uso: bench_matmul [--kernel=auto|naive|tiled|register|vectorized]\n"
-                "                  [--size=N] [--iters=N]\n");
+                "Usage: bench_matmul [--kernel=auto|naive|tiled|register|vectorized]\n"
+                "                    [--size=N] [--iters=N]\n");
             return false;
         }
     }
     return true;
 }
 
-// Devuelve el tiempo medio por producto, en segundos.
+// Returns the mean time per product, in seconds.
 //
-// Los operandos se dejan residentes en el dispositivo antes de empezar: aquí
-// se mide el kernel, no el PCIe. El coste de las transferencias se mide en
-// bench.cpp, y por separado a propósito.
+// The operands are left resident on the device before starting: what is measured
+// here is the kernel, not PCIe. The transfer cost is measured in bench.cpp, and
+// separately on purpose.
 double time_matmul(const Tensor& A, const Tensor& B, size_t iters, double min_seconds) {
-    { Tensor warm = A.matmul(B); }  // sube los operandos y compila el camino
+    { Tensor warm = A.matmul(B); }  // uploads the operands and warms the path
     cuda::synchronize();
 
     const auto start = std::chrono::steady_clock::now();
@@ -108,19 +117,129 @@ double time_matmul(const Tensor& A, const Tensor& B, size_t iters, double min_se
     return elapsed / static_cast<double>(done);
 }
 
+void report(const char* label, double seconds, size_t n, double peak) {
+    const double gflops = 2.0 * (double)n * n * n / seconds / 1e9;
+    const double share = (peak > 0.0) ? (gflops / peak * 100.0) : 0.0;
+    printf("  %-14s %10.3f ms %12.1f %11.1f%%\n", label, seconds * 1000.0, gflops, share);
+}
+
 void run_one(cuda::MatmulKernel kernel, size_t n, size_t iters, double peak) {
     cuda::set_matmul_kernel(kernel);
 
     Tensor A = Tensor::randn({n, n});
     Tensor B = Tensor::randn({n, n});
 
-    const double seconds = time_matmul(A, B, iters, 0.4);
-    const double gflops = 2.0 * (double)n * n * n / seconds / 1e9;
-    const double share = (peak > 0.0) ? (gflops / peak * 100.0) : 0.0;
-
-    printf("  %-14s %10.3f ms %12.1f %11.1f%%\n", cuda::matmul_kernel_name(kernel),
-           seconds * 1000.0, gflops, share);
+    report(cuda::matmul_kernel_name(kernel), time_matmul(A, B, iters, 0.4), n, peak);
 }
+
+#ifdef ENGINE_BENCH_CUBLAS
+
+// The reference row.
+//
+// cuBLAS is called here and **nowhere else in the project**. The engine's own
+// kernels are the point of the exercise; this is the ruler they are held against.
+// Leaving it out was worse than losing to it: a table whose only reference is the
+// card's theoretical peak invites the reader to assume the gap is small.
+//
+// cuBLAS is column-major and the engine is row-major. Rather than transpose
+// anything, the operands are swapped: in column-major terms, computing
+// B_col x A_col with B_col = B_row^T and A_col = A_row^T yields C_col = C_row^T,
+// which read back as row-major is exactly C_row. The alternative -- two explicit
+// transposes -- would measure the transposes.
+double time_cublas(const Tensor& A, const Tensor& B, size_t n, size_t iters, double min_seconds) {
+    cublasHandle_t handle = nullptr;
+    if (cublasCreate(&handle) != CUBLAS_STATUS_SUCCESS) return 0.0;
+
+    // Force both operands onto the device through the engine's own Storage, so
+    // this row measures the same thing the others do: a kernel over resident
+    // data, with no transfer inside the timed region.
+    const float* dA = A.get_impl()->storage.device();
+    const float* dB = B.get_impl()->storage.device();
+
+    Tensor C({n, n}, 0.0f, false);
+    float* dC = C.get_impl()->storage.device_write();
+
+    const int m = static_cast<int>(n);
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+
+    auto gemm = [&] {
+        cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, m, m, m, &alpha, dB, m, dA, m, &beta, dC, m);
+    };
+
+    gemm();  // warm-up: the first call picks a kernel and allocates workspace
+    cuda::synchronize();
+
+    const auto start = std::chrono::steady_clock::now();
+    size_t done = 0;
+    double elapsed = 0.0;
+    while (iters > 0 ? (done < iters) : (elapsed < min_seconds)) {
+        gemm();
+        ++done;
+        if (iters == 0) {
+            cuda::synchronize();
+            elapsed =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        }
+    }
+    cuda::synchronize();
+    elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+
+    cublasDestroy(handle);
+    return elapsed / static_cast<double>(done);
+}
+
+// Not just timed: checked. A reference row that computed something else would
+// make the whole comparison meaningless, and the row/column-major swap above is
+// exactly the kind of thing that is easy to get subtly wrong.
+bool cublas_agrees(size_t n) {
+    Tensor A = Tensor::randn({n, n});
+    Tensor B = Tensor::randn({n, n});
+
+    cuda::set_matmul_kernel(cuda::MatmulKernel::Auto);
+    const Tensor want = A.matmul(B);
+    const std::vector<float> expected = want.data();
+
+    const double seconds = time_cublas(A, B, n, 1, 0.0);
+    if (seconds == 0.0) return false;
+
+    cublasHandle_t handle = nullptr;
+    if (cublasCreate(&handle) != CUBLAS_STATUS_SUCCESS) return false;
+    Tensor C({n, n}, 0.0f, false);
+    const int m = static_cast<int>(n);
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, m, m, m, &alpha, B.get_impl()->storage.device(),
+                m, A.get_impl()->storage.device(), m, &beta, C.get_impl()->storage.device_write(),
+                m);
+    cuda::synchronize();
+    cublasDestroy(handle);
+
+    const std::vector<float> got = C.data();
+
+    // The scale is max(1, |expected|), the same one the parity test uses, and the
+    // reason matters. Dividing by |expected| alone reports a huge relative error
+    // for any element whose true value happens to sit near zero -- and in a sum
+    // of n products of N(0,1) values, plenty do. The first version of this check
+    // did exactly that and reported 7.2e-03, which looked like a broken
+    // reference row and was really just catastrophic cancellation in the divisor.
+    double worst = 0.0;
+    for (size_t i = 0; i < got.size(); ++i) {
+        const double scale = std::max(1.0, std::abs((double)expected[i]));
+        worst = std::max(worst, std::abs((double)got[i] - expected[i]) / scale);
+    }
+    printf("cuBLAS agrees with the engine to %.1e relative error on %zux%zu\n\n", worst, n, n);
+    return worst < 1e-4;
+}
+
+void run_cublas(size_t n, size_t iters, double peak) {
+    Tensor A = Tensor::randn({n, n});
+    Tensor B = Tensor::randn({n, n});
+    const double seconds = time_cublas(A, B, n, iters, 0.4);
+    if (seconds > 0.0) report("cuBLAS", seconds, n, peak);
+}
+
+#endif  // ENGINE_BENCH_CUBLAS
 
 }  // namespace
 
@@ -132,7 +251,7 @@ int main(int argc, char** argv) {
 
     if (!cuda::available()) {
         printf(
-            "Compilado sin CUDA o sin dispositivo utilizable.\n"
+            "Built without CUDA, or no usable device.\n"
             "  cmake -B build-cuda -S . -DENGINE_CUDA=ON\n");
         return 0;
     }
@@ -140,33 +259,44 @@ int main(int argc, char** argv) {
     const cuda::DeviceInfo info = cuda::device_info();
     const double peak = cuda::peak_fp32_gflops();
 
-    printf("Dispositivo: %s (cc %d.%d, %d SM, %zu MiB)\n", info.name.c_str(), info.compute_major,
+    printf("Device: %s (cc %d.%d, %d SM, %zu MiB)\n", info.name.c_str(), info.compute_major,
            info.compute_minor, info.multiprocessors, info.total_memory >> 20);
-    printf("Pico teorico: %.0f GFLOP/s en fp32, %.0f GB/s de ancho de banda\n", peak,
+    printf("Theoretical peak: %.0f GFLOP/s fp32, %.0f GB/s of bandwidth\n", peak,
            cuda::peak_bandwidth_gbs());
 
-    // El punto de inflexion del modelo roofline: por debajo de esta intensidad
-    // aritmetica manda la memoria, por encima manda el calculo. Un matmul de
-    // NxNxN mueve 3*N^2 valores para hacer 2*N^3 operaciones, o sea N/6
-    // FLOP/byte: cualquier N por encima de unos pocos cientos esta de lleno en
-    // la region limitada por calculo, y por eso el trabajo va en la intensidad
-    // aritmetica del kernel y no en las transferencias.
+    // The roofline model's ridge point: below this arithmetic intensity memory
+    // rules, above it the arithmetic does. An NxNxN matmul moves 3*N^2 values to
+    // do 2*N^3 operations, that is N/6 FLOP/byte: any N above a few hundred is
+    // squarely in the compute-bound region, which is why the work goes into the
+    // kernel's arithmetic intensity and not into the transfers.
     const double ridge = peak / cuda::peak_bandwidth_gbs();
-    printf("Punto de inflexion del roofline: %.1f FLOP/byte\n\n", ridge);
+    printf("Roofline ridge point: %.1f FLOP/byte\n\n", ridge);
 
-    // Sin umbral: aqui se mide siempre en GPU, incluso donde no compensaria.
+    // No threshold: everything is measured on the GPU here, even where it would
+    // not be worth dispatching.
     cuda::set_thresholds(0, 0);
 
     if (!opts.sweep) {
         const double intensity = (double)opts.size / 6.0;
-        printf("Forma %zux%zux%zu, intensidad aritmetica %.0f FLOP/byte (%s)\n", opts.size,
+        printf("Shape %zux%zux%zu, arithmetic intensity %.0f FLOP/byte (%s)\n", opts.size,
                opts.size, opts.size, intensity,
-               intensity > ridge ? "limitado por calculo" : "limitado por memoria");
-        printf("  %-14s %10s %12s %11s\n", "kernel", "tiempo", "GFLOP/s", "% del pico");
+               intensity > ridge ? "compute bound" : "memory bound");
+        printf("  %-14s %10s %12s %11s\n", "kernel", "time", "GFLOP/s", "% of peak");
         run_one(opts.kernel, opts.size, opts.iters, peak);
         printf("\n");
         return 0;
     }
+
+#ifdef ENGINE_BENCH_CUBLAS
+    // Checked once, on a small shape, before any of the timings are believed. A
+    // reference row known to compute something else is worse than none at all,
+    // so a disagreement removes the row rather than printing a warning above it
+    // and carrying on.
+    const bool cublas_ok = cublas_agrees(256);
+    if (!cublas_ok) {
+        printf("cuBLAS disagrees with the engine: the reference row is suppressed.\n\n");
+    }
+#endif
 
     const cuda::MatmulKernel variants[] = {
         cuda::MatmulKernel::Naive,
@@ -177,19 +307,28 @@ int main(int argc, char** argv) {
 
     for (size_t n : {size_t{512}, size_t{1024}, size_t{2048}, size_t{4096}}) {
         printf("=== %zux%zux%zu (%.0f FLOP/byte) ===\n", n, n, n, (double)n / 6.0);
-        printf("  %-14s %10s %12s %11s\n", "kernel", "tiempo", "GFLOP/s", "% del pico");
+        printf("  %-14s %10s %12s %11s\n", "kernel", "time", "GFLOP/s", "% of peak");
         for (cuda::MatmulKernel v : variants) {
-            // El kernel ingenuo sobre 4096^3 tarda demasiado para lo que aporta.
+            // The naive kernel on 4096^3 takes too long for what it adds.
             if (v == cuda::MatmulKernel::Naive && n > 2048) continue;
             run_one(v, n, opts.iters, peak);
         }
+#ifdef ENGINE_BENCH_CUBLAS
+        if (cublas_ok) run_cublas(n, opts.iters, peak);
+#endif
         printf("\n");
     }
 
+#ifdef ENGINE_BENCH_CUBLAS
     printf(
-        "No se compara contra cuBLAS a proposito: el objetivo del proyecto es\n"
-        "implementar el kernel, no llamarlo. La referencia util es el pico\n"
-        "teorico de la tarjeta, que es la columna de la derecha.\n\n");
+        "cuBLAS is the reference row, not a backend: the engine never calls it.\n"
+        "The point of the project is to write the kernel. The point of the row is\n"
+        "that a number with no ruler beside it is not a measurement.\n\n");
+#else
+    printf(
+        "Built without cuBLAS, so the reference row is missing. The only ruler\n"
+        "here is the card's theoretical peak, in the right-hand column.\n\n");
+#endif
 
     cuda::set_matmul_kernel(cuda::MatmulKernel::Auto);
     return 0;

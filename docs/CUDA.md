@@ -229,6 +229,43 @@ there is a parity test dedicated to that path.
 at all, which is what lets shapes with remainders be correct without penalising
 the hot path.
 
+### Measured, against cuBLAS
+
+The progression is only worth something if there is a ruler beside it. Measured on
+an RTX 3060 Ti (16 489 GFLOP/s fp32 peak), square products, operands already
+resident on the device so no transfer is inside the timed region:
+
+| Shape | `naive` | `tiled` | `register` | `vectorized` | **cuBLAS** |
+|---|---|---|---|---|---|
+| 512³ | 462 | 443 | 552 | 663 | **3 301** |
+| 1024³ | 499 | 701 | 1 463 | 1 637 | **7 304** |
+| 2048³ | 721 | 910 | 2 712 | 2 862 | **8 844** |
+| 4096³ | — | 1 078 | 4 582 | **4 663** | **9 043** |
+
+GFLOP/s. At 4096³ that is 28.3% of peak for the engine's best kernel against
+54.8% for cuBLAS: **1.94x behind, or 52% of cuBLAS's throughput.**
+
+Two things are worth reading off that table rather than the headline. The
+register tiling is where the jump happens — 910 to 4 582 GFLOP/s at 4096³, a
+factor of five for a change that touches no memory hierarchy, only how many
+results each thread keeps in registers. And the gap to cuBLAS *narrows* with
+size: 5x at 512³, 1.9x at 4096³, because the small shapes are dominated by launch
+overhead and tile quantisation that cuBLAS's shape-specialised kernels handle and
+a single 128x128 geometry does not.
+
+`bench_matmul` prints this table, and it prints cuBLAS's agreement with the
+engine before any of the timings, because a reference row that computed something
+else would make the whole comparison worse than no comparison. The first version
+of that check divided by `|expected|` and reported 7.2e-03, which looked like a
+broken reference and was really catastrophic cancellation in the divisor; with
+the parity test's `max(1, |expected|)` scale it reports 1.8e-05, which is FMA
+rounding and nothing else.
+
+cuBLAS is linked into `bench_matmul` and **nowhere else**. The engine never calls
+it. Not measuring against it, which is what this project did until now, reads as
+avoiding the comparison — and losing by 1.9x with the reason visible is a much
+better answer than declining to look.
+
 ### The roofline says where to attack
 
 Before optimising it is worth knowing which ceiling you are hitting. An N×N×N
@@ -338,9 +375,10 @@ recompiling anything.
   would attack the PCIe cost directly.
 - **Tensor cores.** The engine is fp32 everywhere. Using them requires fp16 or
   tf32 and a precision discussion this project has not had.
-- **cuBLAS.** For the same reason there is no BLAS on the CPU path: the goal is
-  to implement it, not to call it. A tiled `matmul` falls well short of cuBLAS,
-  and that is information, not a defect.
+- **cuBLAS, as a backend.** For the same reason there is no BLAS on the CPU path:
+  the goal is to implement it, not to call it. It *is* linked into
+  `bench_matmul` as the reference row, and the engine's best kernel lands 1.94x
+  behind it at 4096³ — measured above rather than asserted.
 
 ---
 

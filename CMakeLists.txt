@@ -121,6 +121,24 @@ target_link_libraries(bench PRIVATE engine)
 add_executable(bench_matmul bench/bench_matmul.cpp)
 target_link_libraries(bench_matmul PRIVATE engine)
 
+# cuBLAS entra SOLO aqui, y solo como fila de referencia del banco. El motor no
+# la llama nunca: el objetivo del proyecto es escribir el kernel. Pero medirse
+# contra la biblioteca de NVIDIA es la unica forma de que el numero signifique
+# algo, y no medirse se lee como esquivar la comparacion.
+#
+# Si el toolkit no trae cuBLAS, la fila simplemente no aparece y el resto del
+# banco funciona igual.
+if(ENGINE_CUDA)
+    find_package(CUDAToolkit QUIET)
+    if(TARGET CUDA::cublas)
+        target_link_libraries(bench_matmul PRIVATE CUDA::cublas)
+        target_compile_definitions(bench_matmul PRIVATE ENGINE_BENCH_CUBLAS)
+        message(STATUS "bench_matmul: fila de referencia de cuBLAS activada")
+    else()
+        message(STATUS "bench_matmul: cuBLAS no encontrada; se omite su fila")
+    endif()
+endif()
+
 # Suite de pruebas
 enable_testing()
 add_executable(test_engine

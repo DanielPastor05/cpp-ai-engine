@@ -305,7 +305,21 @@ first does **1 FMA per 2 shared-memory reads**, and it is that ratio, not
 occupancy and not global traffic, that caps it. Giving each thread an 8x8 block
 of outputs in registers turns it into 64 FMAs per 16 reads. Each variant is
 parity-checked separately, because a kernel built on 128x128 blocks fails
-precisely on the shapes that are not a multiple of that:
+precisely on the shapes that are not a multiple of that.
+
+**And it is measured against cuBLAS, not against itself.** On a 4096³ product,
+RTX 3060 Ti, operands already resident:
+
+| | `tiled` | `register` | `vectorized` | cuBLAS |
+|---|---|---|---|---|
+| GFLOP/s | 1 078 | 4 582 | **4 663** | **9 043** |
+| % of fp32 peak | 6.5% | 27.8% | **28.3%** | **54.8%** |
+
+**1.94× behind cuBLAS** — 52% of its throughput — with the register tiling worth
+a factor of five over the textbook version. cuBLAS is linked into the benchmark
+as the reference row and nowhere else; the engine never calls it. Declining to
+make that comparison, which is what this project did until recently, reads as
+avoiding it: losing by 1.9× with the reason on the page is the better answer.
 
 ```bash
 ./build-cuda/bench_matmul                              # all variants, with % of peak
