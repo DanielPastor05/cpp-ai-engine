@@ -25,12 +25,12 @@ std::ifstream open_idx(const std::string& path, uint32_t expected_magic, uint32_
                        std::vector<uint32_t>& dims) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
-        throw std::runtime_error("No se pudo abrir: " + path);
+        throw std::runtime_error("Could not open: " + path);
     }
 
     const uint32_t magic = read_be_uint32(in, path);
     if (magic != expected_magic) {
-        throw std::runtime_error("'" + path + "' no tiene el magic IDX esperado (" +
+        throw std::runtime_error("'" + path + "' does not have the expected IDX magic (" +
                                  std::to_string(expected_magic) + ", encontrado " +
                                  std::to_string(magic) + ").");
     }
@@ -58,7 +58,7 @@ Tensor load_idx_images(const std::string& path, size_t max_samples) {
     std::ifstream in = open_idx(path, 0x00000803, count, dims);
 
     if (dims.size() != 2) {
-        throw std::runtime_error("Se esperaban imágenes 2D en " + path + ".");
+        throw std::runtime_error("Expected 2D images in " + path + ".");
     }
     const size_t height = dims[0];
     const size_t width = dims[1];
@@ -73,8 +73,8 @@ Tensor load_idx_images(const std::string& path, size_t max_samples) {
     for (size_t i = 0; i < n; ++i) {
         in.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(pixels));
         if (!in) {
-            throw std::runtime_error("Fichero de imágenes truncado en la muestra " +
-                                     std::to_string(i) + ": " + path);
+            throw std::runtime_error("Image file truncated at sample " + std::to_string(i) + ": " +
+                                     path);
         }
         // Normalised to [0, 1]: with values 0-255 the first layer's gradients
         // would be two orders of magnitude larger than is reasonable.
@@ -133,10 +133,9 @@ MnistPaths find_mnist(const std::string& directory) {
         return paths;
     }
 
-    throw std::runtime_error(
-        "No se encontró MNIST en '" + directory +
-        "'. Ejecuta tools/download_mnist.sh para el conjunto completo, o comprueba "
-        "que el subconjunto del repositorio sigue ahí.");
+    throw std::runtime_error("MNIST not found in '" + directory +
+                             "'. Run tools/download_mnist.sh for the full set, or check "
+                             "that the repository subset is still there.");
 }
 
 Dataset load_mnist_train(const MnistPaths& paths, size_t max_samples) {

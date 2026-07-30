@@ -26,8 +26,8 @@ constexpr size_t kConvRowsPerThread = 4096;
 size_t output_size(size_t in_size, size_t kernel, size_t stride, size_t padding) {
     const size_t padded = in_size + 2 * padding;
     if (kernel > padded) {
-        throw std::invalid_argument("El kernel (" + std::to_string(kernel) +
-                                    ") no cabe en la dimension de entrada con relleno (" +
+        throw std::invalid_argument("The kernel (" + std::to_string(kernel) +
+                                    ") does not fit the padded input dimension (" +
                                     std::to_string(padded) + ").");
     }
     return (padded - kernel) / stride + 1;
@@ -44,10 +44,10 @@ size_t Window2d::out_w(size_t in_w) const {
 
 void Window2d::validate(size_t in_h, size_t in_w) const {
     if (kernel_h == 0 || kernel_w == 0) {
-        throw std::invalid_argument("El kernel debe tener ambas dimensiones mayores que cero.");
+        throw std::invalid_argument("The kernel must have both dimensions greater than zero.");
     }
     if (stride == 0) {
-        throw std::invalid_argument("El paso (stride) debe ser mayor que cero.");
+        throw std::invalid_argument("The stride must be greater than zero.");
     }
     out_h(in_h);
     out_w(in_w);
@@ -59,7 +59,7 @@ void Window2d::validate(size_t in_h, size_t in_w) const {
 
 Tensor im2col(const Tensor& input, const Window2d& window) {
     if (input.ndim() != 4) {
-        throw std::invalid_argument("im2col espera un volumen 4D (N, C, H, W), recibió " +
+        throw std::invalid_argument("im2col expects a 4D volume (N, C, H, W), received " +
                                     input.shape_str() + ".");
     }
     const size_t N = input.shape()[0];
@@ -124,7 +124,7 @@ Tensor im2col(const Tensor& input, const Window2d& window) {
 
 Tensor col2im(const Tensor& cols, const std::vector<size_t>& input_shape, const Window2d& window) {
     if (input_shape.size() != 4) {
-        throw std::invalid_argument("col2im necesita una forma de destino 4D (N, C, H, W).");
+        throw std::invalid_argument("col2im needs a 4D destination shape (N, C, H, W).");
     }
     const size_t N = input_shape[0];
     const size_t C = input_shape[1];
@@ -139,9 +139,9 @@ Tensor col2im(const Tensor& cols, const std::vector<size_t>& input_shape, const 
     const size_t K = C * kH * kW;
 
     if (cols.ndim() != 2 || cols.shape()[0] != N * oH * oW || cols.shape()[1] != K) {
-        throw std::invalid_argument("col2im esperaba columnas (" + std::to_string(N * oH * oW) +
-                                    ", " + std::to_string(K) + ") y recibió " + cols.shape_str() +
-                                    ".");
+        throw std::invalid_argument("col2im expected columns (" + std::to_string(N * oH * oW) +
+                                    ", " + std::to_string(K) + ") and received " +
+                                    cols.shape_str() + ".");
     }
 
     Tensor out(input_shape, 0.0f, false);
@@ -212,9 +212,13 @@ Tensor im2col_node(const Tensor& input, const Window2d& window) {
     cols.get_impl()->parents = {input.get_impl()};
 
     Tensor input_copy = input;
-    const std::vector<size_t> in_shape = input.shape();
+    const std::vector<size_t>& in_shape = input.shape();
     const Window2d win = window;
 
+    // col2im throws on a shape it cannot reconcile, and that is the intended
+    // behaviour: the exception propagates out of autograd::backward() to
+    // whoever asked for the gradient, which is what the tests asserting a
+    // throw on mismatched shapes rely on.
     cols.get_impl()->backward_fn = [input_copy, in_shape, win](const Tensor& grad_out) mutable {
         input_copy.add_grad(col2im(grad_out, in_shape, win));
     };
@@ -226,10 +230,11 @@ Tensor im2col_node(const Tensor& input, const Window2d& window) {
 Conv2d::Conv2d(size_t in_channels, size_t out_channels, const Window2d& window, bool use_bias)
     : in_channels_(in_channels), out_channels_(out_channels), window_(window), use_bias_(use_bias) {
     if (in_channels == 0 || out_channels == 0) {
-        throw std::invalid_argument("Conv2d requiere in_channels y out_channels mayores que cero.");
+        throw std::invalid_argument(
+            "Conv2d requires in_channels and out_channels greater than zero.");
     }
     if (window_.kernel_h == 0 || window_.kernel_w == 0 || window_.stride == 0) {
-        throw std::invalid_argument("Conv2d requiere un kernel y un paso mayores que cero.");
+        throw std::invalid_argument("Conv2d requires a kernel and a stride greater than zero.");
     }
 
     // Xavier/Glorot with a convolution's fans:
@@ -247,12 +252,12 @@ Conv2d::Conv2d(size_t in_channels, size_t out_channels, const Window2d& window, 
 
 Tensor Conv2d::forward(const Tensor& input) {
     if (input.ndim() != 4) {
-        throw std::invalid_argument("Conv2d espera un volumen 4D (N, C, H, W), recibió " +
+        throw std::invalid_argument("Conv2d expects a 4D volume (N, C, H, W), received " +
                                     input.shape_str() + ".");
     }
     if (input.shape()[1] != in_channels_) {
-        throw std::invalid_argument("Conv2d con in_channels=" + std::to_string(in_channels_) +
-                                    " recibió una entrada " + input.shape_str() + ".");
+        throw std::invalid_argument("Conv2d with in_channels=" + std::to_string(in_channels_) +
+                                    " received an input " + input.shape_str() + ".");
     }
 
     const size_t N = input.shape()[0];
@@ -288,7 +293,7 @@ Tensor Conv2d::forward(const Tensor& input) {
     // (outC, K) reinterprets rather than reorders it; the transpose is what leaves
     // it as (K, outC) to multiply from the right.
     Tensor out = cols.matmul(weight_.reshape({out_channels_, K}).transpose());
-    if (use_bias_) out = out + bias_;  // difusión del vector de canales por fila
+    if (use_bias_) out = out + bias_;  // broadcast of the channel vector across each row
 
     // The product comes out ordered (N, oH*oW, outC) and the layer returns
     // (N, outC, oH, oW): swapping the last two axes is all that is left.
@@ -321,9 +326,9 @@ MaxPool2d::MaxPool2d(const Window2d& window) : window_(window) {
     // With padding >= kernel there would be windows entirely inside the padded
     // region, with no real value to maximise: the output would be -infinity.
     if (window_.padding >= window_.kernel_h || window_.padding >= window_.kernel_w) {
-        throw std::invalid_argument("MaxPool2d requiere un relleno menor que el kernel; con " +
+        throw std::invalid_argument("MaxPool2d requires padding smaller than the kernel; with " +
                                     std::to_string(window_.padding) +
-                                    " habría ventanas sin ningún valor real.");
+                                    " there would be windows with no real value at all.");
     }
 }
 
@@ -331,7 +336,7 @@ MaxPool2d::MaxPool2d(size_t kernel, size_t stride) : window_(kernel, kernel, str
 
 Tensor MaxPool2d::forward(const Tensor& input) {
     if (input.ndim() != 4) {
-        throw std::invalid_argument("MaxPool2d espera un volumen 4D (N, C, H, W), recibió " +
+        throw std::invalid_argument("MaxPool2d expects a 4D volume (N, C, H, W), received " +
                                     input.shape_str() + ".");
     }
     const size_t N = input.shape()[0];
@@ -449,12 +454,12 @@ std::string MaxPool2d::name() const {
 
 Tensor Flatten::forward(const Tensor& input) {
     if (input.ndim() < 2) {
-        throw std::invalid_argument("Flatten espera al menos 2 dimensiones, recibió " +
+        throw std::invalid_argument("Flatten expects at least 2 dimensions, received " +
                                     input.shape_str() + ".");
     }
     const size_t N = input.shape()[0];
     if (N == 0) {
-        throw std::invalid_argument("Flatten recibió un lote vacío.");
+        throw std::invalid_argument("Flatten received an empty batch.");
     }
     // reshape already carries its own derivative, so Flatten needs no node.
     return input.reshape({N, input.size() / N});

@@ -51,13 +51,13 @@ int cores_per_sm(int major, int minor) {
         case 6:
             return (minor == 0) ? 64 : 128;  // Pascal
         case 7:
-            return 64;  // Volta y Turing
+            return 64;  // Volta and Turing
         case 8:
-            return (minor == 0) ? 64 : 128;  // Ampere: GA100 vs el resto
+            return (minor == 0) ? 64 : 128;  // Ampere: GA100 vs the rest
         case 9:
             return 128;  // Hopper
         default:
-            return 128;  // lo más probable de aquí en adelante
+            return 128;  // the most likely from here on
     }
 }
 
@@ -90,8 +90,8 @@ struct Context {
         // The clocks are queried by attribute rather than from a cudaDeviceProp field:
         // CUDA 13 removed props.clockRate and props.memoryClockRate, and
         // cudaDeviceGetAttribute is the route that works the same on 11, 12 and 13.
-        int clock_khz = 0;         // frecuencia de núcleo, en kHz
-        int memory_clock_khz = 0;  // frecuencia de memoria, en kHz
+        int clock_khz = 0;         // core clock, in kHz
+        int memory_clock_khz = 0;  // memory clock, in kHz
         cudaDeviceGetAttribute(&clock_khz, cudaDevAttrClockRate, 0);
         cudaDeviceGetAttribute(&memory_clock_khz, cudaDevAttrMemoryClockRate, 0);
 
@@ -218,7 +218,7 @@ const char* matmul_kernel_name(MatmulKernel kernel) {
         case MatmulKernel::Vectorized:
             return "vectorized";
     }
-    return "desconocido";
+    return "unknown";
 }
 
 // The resolution of `Auto`, in one place so the benchmark can ask what will run
@@ -312,8 +312,8 @@ void device_free(float* ptr) {
         if (!reported) {
             reported = true;
             std::fprintf(stderr,
-                         "\nengine: no se pudo liberar memoria de dispositivo (%s).\n"
-                         "  Los siguientes no se repiten aqui.\n\n",
+                         "\nengine: could not free device memory (%s).\n"
+                         "  Later ones are not repeated here.\n\n",
                          cudaGetErrorString(status));
         }
         cudaGetLastError();

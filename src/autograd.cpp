@@ -75,7 +75,7 @@ void backward(Tensor& root_tensor) {
     if (!root_impl->grad) {
         if (root_impl->storage.size() != 1) {
             throw std::runtime_error(
-                "backward() implícito solo esta permitido sobre un escalar; el tensor raíz tiene "
+                "An implicit backward() is only allowed on a scalar; the root tensor has "
                 "forma " +
                 root_tensor.shape_str() + ". Usa backward(grad_output).");
         }

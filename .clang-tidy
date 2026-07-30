@@ -1,13 +1,24 @@
-# Comprobaciones de análisis estático.
+# Static analysis checks.
 #
-# Se excluyen las que chocan con las convenciones del proyecto: nombres con
-# guion bajo final, aritmética de punteros en los núcleos numéricos y números
-# "mágicos" en las fórmulas.
+# Excluded where they collide with the project's conventions: trailing-underscore
+# names, pointer arithmetic in the numeric kernels, and "magic" numbers in the
+# formulas.
 #
-# readability-braces-around-statements queda fuera a propósito. Los bucles de
-# reducción se escriben en una línea —`for (size_t j = 0; j < D; ++j) mean +=
-# row[j];`— y envolverlos en llaves triplicaría las líneas de las fórmulas sin
-# hacerlas más claras.
+# readability-braces-around-statements is left out on purpose. The reduction
+# loops are written on one line — `for (size_t j = 0; j < D; ++j) mean +=
+# row[j];` — and wrapping those in braces would triple the line count of the
+# formulas without making them any clearer.
+#
+# bugprone-exception-escape is left out for a reason worth stating, because it is
+# the one exclusion that suppresses a bugprone check. It fires on the autograd
+# `backward_fn` lambdas — three of them, wherever the throw happens to be
+# traceable inside the same translation unit. The premise does not hold here:
+# this engine reports errors by throwing (a gradient whose shape does not match
+# its tensor, a window that cannot be reconciled), `autograd::backward()` is not
+# noexcept, and the exception is meant to reach whoever asked for the gradient.
+# Several tests assert exactly that. The alternative the check implies —
+# swallowing it in the lambda — would turn a reported error into a silently wrong
+# gradient, which is the failure mode this whole test suite exists to prevent.
 Checks: >
   bugprone-*,
   clang-analyzer-*,
@@ -17,6 +28,11 @@ Checks: >
   modernize-use-emplace,
   -bugprone-easily-swappable-parameters,
   -bugprone-narrowing-conversions,
+  -bugprone-exception-escape,
   -performance-avoid-endl
+
+# Empty here, set on the command line by the CI job. Keeping it out of the file
+# means a local run reports everything without stopping at the first finding,
+# while CI still fails on any of them.
 WarningsAsErrors: ''
 HeaderFilterRegex: 'include/engine/.*'

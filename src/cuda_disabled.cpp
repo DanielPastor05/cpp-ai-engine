@@ -76,7 +76,7 @@ const char* matmul_kernel_name(MatmulKernel kernel) {
         case MatmulKernel::Vectorized:
             return "vectorized";
     }
-    return "desconocido";
+    return "unknown";
 }
 
 size_t min_matmul_flops() {
@@ -101,17 +101,17 @@ void note_kernel_launched() {}
 void note_kernel_failed() {}
 
 float* device_alloc(size_t) {
-    throw std::logic_error("El motor se compilo sin CUDA: no hay memoria de dispositivo.");
+    throw std::logic_error("The engine was built without CUDA: there is no device memory.");
 }
 void device_free(float*) {}
 void copy_to_device(float*, const float*, size_t) {
-    throw std::logic_error("El motor se compilo sin CUDA: no hay memoria de dispositivo.");
+    throw std::logic_error("The engine was built without CUDA: there is no device memory.");
 }
 void copy_to_host(float*, const float*, size_t) {
-    throw std::logic_error("El motor se compilo sin CUDA: no hay memoria de dispositivo.");
+    throw std::logic_error("The engine was built without CUDA: there is no device memory.");
 }
 void copy_device_to_device(float*, const float*, size_t) {
-    throw std::logic_error("El motor se compilo sin CUDA: no hay memoria de dispositivo.");
+    throw std::logic_error("The engine was built without CUDA: there is no device memory.");
 }
 
 }  // namespace detail

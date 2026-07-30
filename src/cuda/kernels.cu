@@ -28,25 +28,25 @@ namespace ops {
 
 namespace {
 
-constexpr int kTile = 32;          // lado del bloque compartido del matmul
-constexpr int kBlock = 256;        // hilos por bloque en los kernels 1D
-constexpr int kReduceBlock = 256;  // potencia de dos: lo exige la reducción
+constexpr int kTile = 32;          // side of the matmul's shared-memory tile
+constexpr int kBlock = 256;        // threads per block in the 1D kernels
+constexpr int kReduceBlock = 256;  // a power of two: the reduction requires it
 
 // Geometry of the register-tiled matmul. The five numbers are tied to each
 // other and cannot be changed independently:
 //   (kBM / kTM) * (kBN / kTN) == kRegBlock   -> one output square per thread
 //   kBM * kBK == kBN * kBK == 1024           -> a tile fits in 4 scalar load
 //                                               passes, or 1 vectorised
-constexpr int kBM = 128;                              // filas de la salida por bloque
-constexpr int kBN = 128;                              // columnas de la salida por bloque
-constexpr int kBK = 8;                                // paso sobre K
-constexpr int kTM = 8;                                // filas de la salida por hilo
-constexpr int kTN = 8;                                // columnas de la salida por hilo
-constexpr int kRegBlock = (kBM / kTM) * (kBN / kTN);  // 256 hilos
+constexpr int kBM = 128;                              // output rows per block
+constexpr int kBN = 128;                              // output columns per block
+constexpr int kBK = 8;                                // step over K
+constexpr int kTM = 8;                                // output rows per thread
+constexpr int kTN = 8;                                // output columns per thread
+constexpr int kRegBlock = (kBM / kTM) * (kBN / kTN);  // 256 threads
 
-static_assert(kRegBlock == 256, "los índices de carga suponen 256 hilos por bloque");
+static_assert(kRegBlock == 256, "the load indices assume 256 threads per block");
 static_assert(kBM * kBK == 1024 && kBN * kBK == 1024,
-              "cada tesela debe ser de 1024 valores para que el reparto cuadre");
+              "each tile must hold 1024 values for the split to work out");
 
 // The gridDim.y and gridDim.z limit on every supported architecture.
 constexpr size_t kMaxGridYZ = 65535;
@@ -110,9 +110,9 @@ bool launch_ok(const char* what) {
         const int built = compiled_version();
         const int drv = driver_version();
         std::fprintf(stderr,
-                     "\nengine: el kernel %s no se pudo lanzar (%s).\n"
-                     "  Se calcula en CPU, asi que los resultados son correctos pero lentos.\n"
-                     "  Compilado con CUDA %d.%d, driver instalado CUDA %d.%d.\n",
+                     "\nengine: kernel %s could not be launched (%s).\n"
+                     "  It is computed on the CPU, so the results are correct but slow.\n"
+                     "  Built with CUDA %d.%d, installed driver CUDA %d.%d.\n",
                      what, cudaGetErrorString(status), built / 1000, (built % 1000) / 10,
                      drv / 1000, (drv % 1000) / 10);
 
@@ -122,20 +122,20 @@ bool launch_ok(const char* what) {
         // else-if would tell half the story.
         if (drv > 0 && built > drv) {
             std::fprintf(stderr,
-                         "  El driver es mas antiguo que el toolkit: actualiza el driver de\n"
-                         "  NVIDIA, o compila con una version de CUDA que el driver admita.\n");
+                         "  The driver is older than the toolkit: update the NVIDIA driver, or\n"
+                         "  build with a CUDA version the driver supports.\n");
         }
         if (status == cudaErrorUnsupportedPtxVersion || status == cudaErrorNoKernelImageForDevice) {
             const DeviceInfo info = device_info();
             std::fprintf(stderr,
-                         "  El binario no lleva codigo nativo para esta tarjeta (cc %d.%d).\n"
-                         "  Reconfigura con -DCMAKE_CUDA_ARCHITECTURES=%d%d\n",
+                         "  The binary carries no native code for this card (cc %d.%d).\n"
+                         "  Reconfigure with -DCMAKE_CUDA_ARCHITECTURES=%d%d\n",
                          info.compute_major, info.compute_minor, info.compute_major,
                          info.compute_minor);
         }
         std::fprintf(stderr,
-                     "  Los siguientes fallos no se repiten aqui;"
-                     " se cuentan en cuda::kernels_failed().\n\n");
+                     "  Later failures are not repeated here;"
+                     " they are counted in cuda::kernels_failed().\n\n");
     }
     return false;
 }
@@ -624,9 +624,9 @@ __global__ void matmul_register_tiled(const float* __restrict__ A, const float* 
     // Load indices, distinct from the compute ones: to bring the tiles in it
     // matters that consecutive threads read consecutive positions, not that each
     // reads what it will later use.
-    const int a_load_row_v = threadIdx.x / (kBK / 4);  // [0, 128) con float4
+    const int a_load_row_v = threadIdx.x / (kBK / 4);  // [0, 128) with float4
     const int a_load_col_v = (threadIdx.x % (kBK / 4)) * 4;
-    const int b_load_row_v = threadIdx.x / (kBN / 4);  // [0, 8) con float4
+    const int b_load_row_v = threadIdx.x / (kBN / 4);  // [0, 8) with float4
     const int b_load_col_v = (threadIdx.x % (kBN / 4)) * 4;
 
     const int a_load_row_s = threadIdx.x / kBK;  // [0, 32) escalar

@@ -28,7 +28,7 @@ void Optimizer::zero_grad() {
 
 SGD::SGD(std::vector<Tensor> parameters, float lr, float momentum, float weight_decay)
     : Optimizer(std::move(parameters)), momentum_(momentum), weight_decay_(weight_decay) {
-    if (lr <= 0.0f) throw std::invalid_argument("SGD requiere un learning rate positivo.");
+    if (lr <= 0.0f) throw std::invalid_argument("SGD requires a positive learning rate.");
     lr_ = lr;
 
     if (momentum_ != 0.0f) {
@@ -85,9 +85,9 @@ Adam::Adam(std::vector<Tensor> parameters, float lr, float beta1, float beta2, f
       beta2_(beta2),
       eps_(eps),
       weight_decay_(weight_decay) {
-    if (lr <= 0.0f) throw std::invalid_argument("Adam requiere un learning rate positivo.");
+    if (lr <= 0.0f) throw std::invalid_argument("Adam requires a positive learning rate.");
     if (beta1 < 0.0f || beta1 >= 1.0f || beta2 < 0.0f || beta2 >= 1.0f) {
-        throw std::invalid_argument("Adam requiere beta1 y beta2 en el intervalo [0, 1).");
+        throw std::invalid_argument("Adam requires beta1 and beta2 in the interval [0, 1).");
     }
     lr_ = lr;
 
@@ -148,7 +148,7 @@ void Adam::step() {
 
 float clip_grad_norm(const std::vector<Tensor>& parameters, float max_norm) {
     if (max_norm <= 0.0f) {
-        throw std::invalid_argument("clip_grad_norm necesita un max_norm positivo.");
+        throw std::invalid_argument("clip_grad_norm needs a positive max_norm.");
     }
     autograd::NoGradGuard no_grad;
 
@@ -186,8 +186,8 @@ void Scheduler::step() {
 
 StepLR::StepLR(Optimizer& optimizer, size_t step_size, float gamma)
     : Scheduler(optimizer), step_size_(step_size), gamma_(gamma) {
-    if (step_size == 0) throw std::invalid_argument("StepLR necesita un step_size positivo.");
-    if (gamma <= 0.0f) throw std::invalid_argument("StepLR necesita un gamma positivo.");
+    if (step_size == 0) throw std::invalid_argument("StepLR needs a positive step_size.");
+    if (gamma <= 0.0f) throw std::invalid_argument("StepLR needs a positive gamma.");
 }
 
 float StepLR::compute(size_t epoch) const {
@@ -201,9 +201,9 @@ float StepLR::compute(size_t epoch) const {
 CosineAnnealingLR::CosineAnnealingLR(Optimizer& optimizer, size_t total_epochs, float min_lr)
     : Scheduler(optimizer), total_epochs_(total_epochs), min_lr_(min_lr) {
     if (total_epochs == 0) {
-        throw std::invalid_argument("CosineAnnealingLR necesita al menos una época.");
+        throw std::invalid_argument("CosineAnnealingLR needs at least one epoch.");
     }
-    if (min_lr < 0.0f) throw std::invalid_argument("CosineAnnealingLR necesita min_lr >= 0.");
+    if (min_lr < 0.0f) throw std::invalid_argument("CosineAnnealingLR needs min_lr >= 0.");
 }
 
 float CosineAnnealingLR::compute(size_t epoch) const {
@@ -219,10 +219,10 @@ WarmupCosineLR::WarmupCosineLR(Optimizer& optimizer, size_t warmup_epochs, size_
       total_epochs_(total_epochs),
       min_lr_(min_lr) {
     if (total_epochs == 0) {
-        throw std::invalid_argument("WarmupCosineLR necesita al menos una época.");
+        throw std::invalid_argument("WarmupCosineLR needs at least one epoch.");
     }
     if (warmup_epochs >= total_epochs) {
-        throw std::invalid_argument("El calentamiento debe ser más corto que el total de épocas.");
+        throw std::invalid_argument("The warm-up must be shorter than the total number of epochs.");
     }
 }
 

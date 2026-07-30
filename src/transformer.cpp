@@ -17,10 +17,10 @@ namespace nn {
 LayerNorm::LayerNorm(size_t normalized_size, float eps)
     : normalized_size_(normalized_size), eps_(eps) {
     if (normalized_size == 0) {
-        throw std::invalid_argument("LayerNorm requiere un tamano mayor que cero.");
+        throw std::invalid_argument("LayerNorm requires a size greater than zero.");
     }
     if (eps <= 0.0f) {
-        throw std::invalid_argument("LayerNorm requiere un epsilon positivo.");
+        throw std::invalid_argument("LayerNorm requires a positive epsilon.");
     }
 
     autograd::NoGradGuard no_grad;
@@ -31,8 +31,8 @@ LayerNorm::LayerNorm(size_t normalized_size, float eps)
 
 Tensor LayerNorm::forward(const Tensor& input) {
     if (input.ndim() < 1 || input.shape().back() != normalized_size_) {
-        throw std::invalid_argument("LayerNorm de tamano " + std::to_string(normalized_size_) +
-                                    " recibió una entrada " + input.shape_str() + ".");
+        throw std::invalid_argument("LayerNorm of size " + std::to_string(normalized_size_) +
+                                    " received an input " + input.shape_str() + ".");
     }
 
     const size_t D = normalized_size_;
@@ -161,7 +161,7 @@ std::string LayerNorm::name() const {
 Embedding::Embedding(size_t num_embeddings, size_t dim)
     : num_embeddings_(num_embeddings), dim_(dim) {
     if (num_embeddings == 0 || dim == 0) {
-        throw std::invalid_argument("Embedding requiere un vocabulario y una dimension positivos.");
+        throw std::invalid_argument("Embedding requires a positive vocabulary and dimension.");
     }
     autograd::NoGradGuard no_grad;
     weight_ = Tensor::randn({num_embeddings, dim}, 0.0f, 0.02f, true);
@@ -169,7 +169,7 @@ Embedding::Embedding(size_t num_embeddings, size_t dim)
 
 Tensor Embedding::forward(const Tensor& ids) {
     if (ids.ndim() != 2) {
-        throw std::invalid_argument("Embedding espera indices (batch, secuencia), recibió " +
+        throw std::invalid_argument("Embedding expects indices (batch, sequence), received " +
                                     ids.shape_str() + ".");
     }
     const size_t batch = ids.shape()[0];
@@ -180,8 +180,8 @@ Tensor Embedding::forward(const Tensor& ids) {
     for (float v : ids.data()) {
         const long long id = std::llround(v);
         if (id < 0 || static_cast<size_t>(id) >= num_embeddings_) {
-            throw std::out_of_range("Embedding: el token " + std::to_string(id) +
-                                    " esta fuera de un vocabulario de " +
+            throw std::out_of_range("Embedding: token " + std::to_string(id) +
+                                    " is outside a vocabulary of " +
                                     std::to_string(num_embeddings_) + ".");
         }
         indices.push_back(static_cast<size_t>(id));
@@ -210,7 +210,8 @@ std::string Embedding::name() const {
 
 Tensor positional_encoding(size_t seq_len, size_t d_model) {
     if (seq_len == 0 || d_model == 0) {
-        throw std::invalid_argument("positional_encoding requiere longitud y dimension positivas.");
+        throw std::invalid_argument(
+            "positional_encoding requires a positive length and dimension.");
     }
 
     Tensor pe({seq_len, d_model}, 0.0f, false);
@@ -240,12 +241,12 @@ Tensor causal_mask(size_t seq_len, float masked_value) {
 Tensor scaled_dot_product_attention(const Tensor& query, const Tensor& key, const Tensor& value,
                                     const Tensor* mask, Tensor* attention_weights) {
     if (query.ndim() < 2 || key.ndim() < 2 || value.ndim() < 2) {
-        throw std::invalid_argument("La atencion necesita al menos 2 dimensiones (seq, d_k).");
+        throw std::invalid_argument("Attention needs at least 2 dimensions (seq, d_k).");
     }
     const size_t d_k = query.shape().back();
     if (key.shape().back() != d_k) {
-        throw std::invalid_argument("Query y key deben compartir d_k: " + query.shape_str() +
-                                    " y " + key.shape_str() + ".");
+        throw std::invalid_argument("Query and key must share d_k: " + query.shape_str() + " and " +
+                                    key.shape_str() + ".");
     }
 
     // Without the scaling the dot product grows with d_k, the softmax saturates
@@ -254,7 +255,7 @@ Tensor scaled_dot_product_attention(const Tensor& query, const Tensor& key, cons
     Tensor scores = query.matmul(key.transpose()) * scale;
 
     if (mask != nullptr) {
-        scores = scores + *mask;  // máscara aditiva, difundida sobre lote y cabezas
+        scores = scores + *mask;  // additive mask, broadcast over batch and heads
     }
 
     Tensor weights = scores.softmax();
@@ -277,11 +278,11 @@ MultiHeadAttention::MultiHeadAttention(size_t d_model, size_t num_heads)
       w_value_(d_model, d_model),
       w_out_(d_model, d_model) {
     if (num_heads == 0) {
-        throw std::invalid_argument("MultiHeadAttention requiere al menos una cabeza.");
+        throw std::invalid_argument("MultiHeadAttention requires at least one head.");
     }
     if (d_model % num_heads != 0) {
         throw std::invalid_argument("d_model (" + std::to_string(d_model) +
-                                    ") debe ser divisible entre num_heads (" +
+                                    ") must be divisible by num_heads (" +
                                     std::to_string(num_heads) + ").");
     }
 }
@@ -292,8 +293,8 @@ Tensor MultiHeadAttention::forward(const Tensor& input) {
 
 Tensor MultiHeadAttention::forward(const Tensor& input, const Tensor* mask) {
     if (input.ndim() != 3 || input.shape()[2] != d_model_) {
-        throw std::invalid_argument("MultiHeadAttention espera (batch, seq, " +
-                                    std::to_string(d_model_) + "), recibió " + input.shape_str() +
+        throw std::invalid_argument("MultiHeadAttention expects (batch, seq, " +
+                                    std::to_string(d_model_) + "), received " + input.shape_str() +
                                     ".");
     }
     const size_t batch = input.shape()[0];
@@ -359,7 +360,7 @@ TransformerBlock::TransformerBlock(size_t d_model, size_t num_heads, size_t ff_h
       ff1_(d_model, ff_hidden),
       ff2_(ff_hidden, d_model) {
     if (ff_hidden == 0) {
-        throw std::invalid_argument("TransformerBlock requiere una capa oculta positiva.");
+        throw std::invalid_argument("TransformerBlock requires a positive hidden layer.");
     }
 }
 

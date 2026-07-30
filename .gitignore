@@ -34,3 +34,6 @@ Makefile
 data/mnist/train-*
 data/mnist/t10k-*
 mnist_cnn.bin
+
+# Local compilation database for clang-tidy: machine-specific absolute paths.
+compile_commands.json

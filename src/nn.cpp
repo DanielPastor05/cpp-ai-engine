@@ -63,6 +63,7 @@ std::vector<std::pair<std::string, Tensor>> Module::named_parameters(const std::
     // By default they are numbered in the order the layer declares them
     std::vector<std::pair<std::string, Tensor>> named;
     std::vector<Tensor> params = parameters();
+    named.reserve(params.size());
     for (size_t i = 0; i < params.size(); ++i) {
         named.emplace_back(prefix + name() + "." + std::to_string(i), params[i]);
     }
@@ -84,7 +85,8 @@ size_t Module::num_parameters() {
 Linear::Linear(size_t in_features, size_t out_features, bool use_bias)
     : in_features_(in_features), out_features_(out_features), use_bias_(use_bias) {
     if (in_features == 0 || out_features == 0) {
-        throw std::invalid_argument("Linear requiere in_features y out_features mayores que cero.");
+        throw std::invalid_argument(
+            "Linear requires in_features and out_features greater than zero.");
     }
 
     // Uniform Xavier/Glorot initialisation: it keeps the variance of the
@@ -99,12 +101,12 @@ Linear::Linear(size_t in_features, size_t out_features, bool use_bias)
 Tensor Linear::forward(const Tensor& input) {
     if (input.ndim() < 2) {
         throw std::invalid_argument(
-            "Linear espera al menos 2 dimensiones (..., in_features), recibió " +
+            "Linear expects at least 2 dimensions (..., in_features), received " +
             input.shape_str() + ".");
     }
     if (input.shape().back() != in_features_) {
-        throw std::invalid_argument("Linear con in_features=" + std::to_string(in_features_) +
-                                    " recibió una entrada " + input.shape_str() + ".");
+        throw std::invalid_argument("Linear with in_features=" + std::to_string(in_features_) +
+                                    " received an input " + input.shape_str() + ".");
     }
 
     // The layer acts on the last axis. With inputs of more than 2 axes -- like
@@ -116,7 +118,7 @@ Tensor Linear::forward(const Tensor& input) {
 
     Tensor out = flat.matmul(weight_);
     if (use_bias_) {
-        out = out + bias_;  // difusión del vector fila sobre todo el lote
+        out = out + bias_;  // broadcast the row vector over the batch
     }
 
     if (needs_reshape) {
@@ -197,7 +199,7 @@ Tensor GELU::forward(const Tensor& input) {
 
 Dropout::Dropout(float p) : p_(p) {
     if (p < 0.0f || p >= 1.0f) {
-        throw std::invalid_argument("Dropout necesita una probabilidad en [0, 1).");
+        throw std::invalid_argument("Dropout needs a probability in [0, 1).");
     }
 }
 
@@ -251,12 +253,12 @@ std::string Dropout::name() const {
 
 Sequential::Sequential(std::initializer_list<std::shared_ptr<Module>> layers) : layers_(layers) {
     for (const auto& layer : layers_) {
-        if (!layer) throw std::invalid_argument("Sequential no admite capas nulas.");
+        if (!layer) throw std::invalid_argument("Sequential does not accept null layers.");
     }
 }
 
 Sequential& Sequential::add(std::shared_ptr<Module> layer) {
-    if (!layer) throw std::invalid_argument("Sequential no admite capas nulas.");
+    if (!layer) throw std::invalid_argument("Sequential does not accept null layers.");
     layers_.push_back(std::move(layer));
     return *this;
 }
@@ -326,18 +328,19 @@ Tensor mse_loss(const Tensor& prediction, const Tensor& target) {
 Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targets) {
     if (logits.ndim() != 2) {
         throw std::invalid_argument(
-            "cross_entropy_loss espera logits 2D (batch, clases), recibió " + logits.shape_str() +
-            ".");
+            "cross_entropy_loss expects 2D logits (batch, classes), received " +
+            logits.shape_str() + ".");
     }
     const size_t N = logits.shape()[0];
     const size_t C = logits.shape()[1];
 
     if (targets.size() != N) {
-        throw std::invalid_argument("cross_entropy_loss recibió " + std::to_string(targets.size()) +
-                                    " etiquetas para un lote de " + std::to_string(N) + ".");
+        throw std::invalid_argument("cross_entropy_loss received " +
+                                    std::to_string(targets.size()) + " labels for a batch of " +
+                                    std::to_string(N) + ".");
     }
     if (N == 0) {
-        throw std::invalid_argument("cross_entropy_loss recibió un lote vacío.");
+        throw std::invalid_argument("cross_entropy_loss received an empty batch.");
     }
 
     // Row-stable softmax and the batch's mean loss in a single pass.
@@ -353,7 +356,7 @@ Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targe
     for (size_t i = 0; i < N; ++i) {
         if (targets[i] >= C) {
             throw std::out_of_range("Etiqueta " + std::to_string(targets[i]) +
-                                    " fuera del rango de " + std::to_string(C) + " clases.");
+                                    " outside the range of " + std::to_string(C) + " classes.");
         }
         const float* row = logits.data().data() + i * C;
         const float max_v = *std::max_element(row, row + C);
@@ -380,6 +383,8 @@ Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targe
         loss.get_impl()->parents = {logits.get_impl()};
         Tensor logits_copy = logits;
 
+        // add_grad throws when the gradient's shape does not match: that is the
+        // intended report rather than a fault to swallow here.
         loss.get_impl()->backward_fn = [logits_copy, probs, targets, N,
                                         C](const Tensor& grad_out) mutable {
             // dL/dlogits = (softmax(logits) - one_hot(y)) / N
@@ -412,7 +417,7 @@ Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targe
 
 std::vector<size_t> argmax_rows(const Tensor& logits) {
     if (logits.ndim() != 2) {
-        throw std::invalid_argument("argmax_rows espera un tensor 2D, recibió " +
+        throw std::invalid_argument("argmax_rows expects a 2D tensor, received " +
                                     logits.shape_str() + ".");
     }
     const size_t N = logits.shape()[0];
@@ -430,7 +435,7 @@ float accuracy(const Tensor& logits, const std::vector<size_t>& targets) {
     std::vector<size_t> predictions = argmax_rows(logits);
     if (predictions.size() != targets.size()) {
         throw std::invalid_argument(
-            "accuracy recibió un número de etiquetas distinto al de predicciones.");
+            "accuracy received a different number of labels than predictions.");
     }
     if (targets.empty()) return 0.0f;
 

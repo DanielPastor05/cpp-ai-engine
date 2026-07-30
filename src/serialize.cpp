@@ -23,7 +23,7 @@ void require_little_endian() {
     // The format fixes little-endian. Rather than silently reading numbers
     // backwards, it is rejected explicitly.
     if (!is_little_endian()) {
-        throw std::runtime_error("El formato de pesos es little-endian y esta máquina no lo es.");
+        throw std::runtime_error("The weight format is little-endian and this machine is not.");
     }
 }
 
@@ -55,8 +55,8 @@ void check_unique_names(const std::vector<std::pair<std::string, Tensor>>& param
     std::set<std::string> seen;
     for (const auto& entry : params) {
         if (!seen.insert(entry.first).second) {
-            throw std::runtime_error("Dos parámetros comparten el nombre '" + entry.first +
-                                     "'; no se podrían distinguir al cargar.");
+            throw std::runtime_error("Two parameters share the name '" + entry.first +
+                                     "'; they could not be told apart on load.");
         }
     }
 }
@@ -74,7 +74,7 @@ void save_parameters(const std::vector<std::pair<std::string, Tensor>>& params,
 
     std::ofstream out(path, std::ios::binary);
     if (!out) {
-        throw std::runtime_error("No se pudo abrir para escritura: " + path);
+        throw std::runtime_error("Could not open for writing: " + path);
     }
 
     out.write(kMagic, sizeof(kMagic));
@@ -96,7 +96,7 @@ void save_parameters(const std::vector<std::pair<std::string, Tensor>>& params,
     }
 
     if (!out) {
-        throw std::runtime_error("Error al escribir los pesos en: " + path);
+        throw std::runtime_error("Error writing the weights to: " + path);
     }
 }
 
@@ -120,7 +120,7 @@ std::vector<std::pair<std::string, StoredTensor>> read_file(const std::string& p
 
     std::ifstream in(path, std::ios::binary);
     if (!in) {
-        throw std::runtime_error("No se pudo abrir para lectura: " + path);
+        throw std::runtime_error("Could not open for reading: " + path);
     }
 
     char magic[sizeof(kMagic)];
@@ -131,8 +131,8 @@ std::vector<std::pair<std::string, StoredTensor>> read_file(const std::string& p
 
     const uint32_t version = read_raw<uint32_t>(in, path);
     if (version != kSerializationVersion) {
-        throw std::runtime_error("Version de formato " + std::to_string(version) +
-                                 " no soportada (esta compilación entiende la " +
+        throw std::runtime_error("Format version " + std::to_string(version) +
+                                 " not supported (this build understands version " +
                                  std::to_string(kSerializationVersion) + ").");
     }
 
@@ -204,7 +204,7 @@ size_t load_parameters(std::vector<std::pair<std::string, Tensor>>& params, cons
             [&](const std::pair<std::string, StoredTensor>& s) { return s.first == entry.first; });
         if (it == stored.end()) {
             if (strict) {
-                throw std::runtime_error("El fichero no contiene el parámetro '" + entry.first +
+                throw std::runtime_error("The file does not contain the parameter '" + entry.first +
                                          "'.");
             }
             continue;
@@ -213,9 +213,9 @@ size_t load_parameters(std::vector<std::pair<std::string, Tensor>>& params, cons
         // The shape is always checked: loading weights from another model under
         // the same name would give a silently broken model.
         if (it->second.shape != entry.second.shape()) {
-            throw std::runtime_error("El parámetro '" + entry.first + "' tiene forma " +
+            throw std::runtime_error("The parameter '" + entry.first + "' has shape " +
                                      entry.second.shape_str() +
-                                     " en el modelo, y otra distinta en '" + path + "'.");
+                                     " in the model, and a different one in '" + path + "'.");
         }
 
         entry.second.data() = it->second.data;
@@ -226,8 +226,8 @@ size_t load_parameters(std::vector<std::pair<std::string, Tensor>>& params, cons
     if (strict && used.size() != stored.size()) {
         for (const auto& s : stored) {
             if (used.find(s.first) == used.end()) {
-                throw std::runtime_error("El modelo no tiene el parámetro '" + s.first +
-                                         "' que trae el fichero.");
+                throw std::runtime_error("The model has no parameter '" + s.first +
+                                         "' that the file carries.");
             }
         }
     }

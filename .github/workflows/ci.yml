@@ -192,6 +192,8 @@ jobs:
             /usr/bin/clang-format-18 100
           sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy \
             /usr/bin/clang-tidy-18 100
+          clang-format --version
+          clang-tidy --version
 
       - name: Check the formatting
         run: |
@@ -205,22 +207,21 @@ jobs:
         run: cmake -B build -S . -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       # The .cu files are excluded: clang-tidy would need the CUDA headers and a
-      # host/device split that adds nothing here. Everything else is checked.
+      # host/device split that adds nothing here. Everything else is checked, and
+      # every finding is an error.
       #
-      # Reporting, not blocking, and it is worth saying exactly why rather than
-      # leaving it looking like an oversight. The format check above blocks
-      # because its result was verified before it was written. clang-tidy's was
-      # not: it cannot run on the machine this was developed on, where the only
-      # available clang-tidy refuses to parse the MSVC standard library. Turning
-      # it into an error without having read its output once would be guessing,
-      # and a red badge over guesses is worse than no job at all.
-      #
-      # To finish it: run the line below on a Linux checkout, triage what it
-      # reports, then drop the `|| true` and add --warnings-as-errors='*'.
+      # Its output was read before this was made blocking. The first full run
+      # produced five findings across the library -- two
+      # performance-unnecessary-copy-initialization, one
+      # performance-inefficient-vector-operation, and
+      # bugprone-exception-escape on the autograd backward_fn lambdas. The first
+      # three are fixed; the last is excluded in .clang-tidy with the reason
+      # written out, because this engine reports errors by throwing and those
+      # lambdas are meant to propagate.
       - name: Run clang-tidy
         run: |
           files=$(git ls-files 'src/*.cpp' 'include/**/*.hpp')
-          clang-tidy -p build $files || true
+          clang-tidy -p build --warnings-as-errors='*' $files
 
   coverage:
     name: Linux / coverage

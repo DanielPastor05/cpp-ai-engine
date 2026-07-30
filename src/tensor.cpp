@@ -73,8 +73,8 @@ size_t product(const std::vector<size_t>& dims, size_t from = 0, size_t to = 0) 
 // axes reduces to repeating the final block: base[i] + other[i % inner].
 struct BroadcastPlan {
     bool valid = false;
-    size_t inner = 1;   // tamaño del bloque que se repite
-    size_t repeat = 1;  // cuántas veces se repite
+    size_t inner = 1;   // size of the block that repeats
+    size_t repeat = 1;  // how many times it repeats
 };
 
 BroadcastPlan plan_broadcast(const std::vector<size_t>& base, const std::vector<size_t>& other) {
@@ -184,7 +184,7 @@ TensorImpl::TensorImpl(const std::vector<size_t>& s, const std::vector<float>& d
     for (size_t dim : shape) total_elements *= dim;
     if (storage.size() != total_elements) {
         throw std::invalid_argument(
-            "El número de elementos en data no coincide con la forma dada.");
+            "The number of elements in data does not match the given shape.");
     }
 }
 
@@ -200,12 +200,12 @@ void TensorImpl::compute_strides() {
 
 size_t TensorImpl::get_flat_index(const std::vector<size_t>& indices) const {
     if (indices.size() != shape.size()) {
-        throw std::invalid_argument("Número de índices incompatible con ndim.");
+        throw std::invalid_argument("Index count incompatible with ndim.");
     }
     size_t flat_idx = 0;
     for (size_t i = 0; i < indices.size(); ++i) {
         if (indices[i] >= shape[i]) {
-            throw std::out_of_range("Índice fuera de rango.");
+            throw std::out_of_range("Index out of range.");
         }
         flat_idx += indices[i] * strides[i];
     }
@@ -220,8 +220,7 @@ Tensor::Tensor() : impl_(std::make_shared<TensorImpl>(std::vector<size_t>{0}, 0.
 
 Tensor::Tensor(std::shared_ptr<TensorImpl> impl) : impl_(std::move(impl)) {
     if (!impl_) {
-        throw std::invalid_argument(
-            "No se puede construir un Tensor sobre una implementación nula.");
+        throw std::invalid_argument("Cannot construct a Tensor over a null implementation.");
     }
 }
 
@@ -275,7 +274,7 @@ void Tensor::set_requires_grad(bool req_grad) {
 
 Tensor Tensor::grad() const {
     if (!impl_->grad) {
-        throw std::runtime_error("El tensor no tiene gradiente calculado.");
+        throw std::runtime_error("The tensor has no computed gradient.");
     }
     return Tensor(impl_->grad);
 }
@@ -298,8 +297,8 @@ void Tensor::zero_grad() {
 void Tensor::add_grad(const Tensor& g) {
     if (!requires_grad()) return;
     if (g.shape() != shape()) {
-        throw std::invalid_argument("Forma del gradiente " + g.shape_str() +
-                                    " incompatible con la del tensor " + shape_str() + ".");
+        throw std::invalid_argument("Gradient shape " + g.shape_str() +
+                                    " incompatible with the tensor's " + shape_str() + ".");
     }
     // This is where the backward's whole residency was being decided by accident.
     // Building the gradient from g.data() pulled it off the device, and autograd
@@ -338,8 +337,8 @@ void Tensor::backward() {
 
 void Tensor::backward(const Tensor& grad_output) {
     if (grad_output.shape() != shape()) {
-        throw std::invalid_argument("Forma del gradiente inicial " + grad_output.shape_str() +
-                                    " incompatible con la de la raíz " + shape_str() + ".");
+        throw std::invalid_argument("Initial gradient shape " + grad_output.shape_str() +
+                                    " incompatible with the root's " + shape_str() + ".");
     }
     impl_->grad = std::make_shared<TensorImpl>(shape(), grad_output.data(), false);
     autograd::backward(*this);
@@ -364,12 +363,12 @@ float& Tensor::operator()(size_t row, size_t col) {
 
 const float& Tensor::operator()(size_t row, size_t col) const {
     if (ndim() != 2) {
-        throw std::invalid_argument(
-            "La indexacion (fila, columna) requiere un tensor 2D, este es " + shape_str() + ".");
+        throw std::invalid_argument("(row, column) indexing requires a 2D tensor; this one is " +
+                                    shape_str() + ".");
     }
     if (row >= shape()[0] || col >= shape()[1]) {
-        throw std::out_of_range("Índice (" + std::to_string(row) + ", " + std::to_string(col) +
-                                ") fuera de rango para un tensor " + shape_str() + ".");
+        throw std::out_of_range("Index (" + std::to_string(row) + ", " + std::to_string(col) +
+                                ") out of range for a tensor " + shape_str() + ".");
     }
     return impl_->storage[row * shape()[1] + col];
 }
@@ -435,8 +434,8 @@ Tensor Tensor::operator+(const Tensor& other) const {
     if (broadcast) {
         plan = plan_broadcast(shape(), other.shape());
         if (!plan.valid) {
-            throw std::invalid_argument("Formas incompatibles para suma de tensores: " +
-                                        shape_str() + " y " + other.shape_str() + ".");
+            throw std::invalid_argument("Incompatible shapes for tensor addition: " + shape_str() +
+                                        " and " + other.shape_str() + ".");
         }
     }
 
@@ -500,8 +499,8 @@ Tensor Tensor::operator-(const Tensor& other) const {
     if (broadcast) {
         plan = plan_broadcast(shape(), other.shape());
         if (!plan.valid) {
-            throw std::invalid_argument("Formas incompatibles para resta de tensores: " +
-                                        shape_str() + " y " + other.shape_str() + ".");
+            throw std::invalid_argument("Incompatible shapes for tensor subtraction: " +
+                                        shape_str() + " and " + other.shape_str() + ".");
         }
     }
 
@@ -555,8 +554,8 @@ Tensor Tensor::operator*(const Tensor& other) const {
     if (broadcast) {
         plan = plan_broadcast(shape(), other.shape());
         if (!plan.valid) {
-            throw std::invalid_argument("Formas incompatibles para multiplicación de tensores: " +
-                                        shape_str() + " y " + other.shape_str() + ".");
+            throw std::invalid_argument("Incompatible shapes for tensor multiplication: " +
+                                        shape_str() + " and " + other.shape_str() + ".");
         }
     }
 
@@ -611,8 +610,8 @@ Tensor Tensor::operator/(const Tensor& other) const {
     if (broadcast) {
         plan = plan_broadcast(shape(), other.shape());
         if (!plan.valid) {
-            throw std::invalid_argument("Formas incompatibles para división de tensores: " +
-                                        shape_str() + " y " + other.shape_str() + ".");
+            throw std::invalid_argument("Incompatible shapes for tensor division: " + shape_str() +
+                                        " and " + other.shape_str() + ".");
         }
     }
 
@@ -713,7 +712,7 @@ Tensor Tensor::operator*(float scalar) const {
 // Scalar division
 Tensor Tensor::operator/(float scalar) const {
     if (scalar == 0.0f) {
-        throw std::invalid_argument("División por cero.");
+        throw std::invalid_argument("Division by zero.");
     }
     return (*this) * (1.0f / scalar);
 }
@@ -723,7 +722,7 @@ Tensor Tensor::operator/(float scalar) const {
 // transposes each matrix in the batch, which is what attention needs.
 Tensor Tensor::transpose() const {
     if (ndim() < 2) {
-        throw std::invalid_argument("Transpose requiere al menos 2 dimensiones, este tensor es " +
+        throw std::invalid_argument("Transpose requires at least 2 dimensions; this tensor is " +
                                     shape_str() + ".");
     }
     const size_t nd = ndim();
@@ -779,13 +778,13 @@ Tensor Tensor::transpose() const {
 Tensor Tensor::permute(const std::vector<size_t>& order) const {
     const size_t nd = ndim();
     if (order.size() != nd) {
-        throw std::invalid_argument("permute necesita un orden de " + std::to_string(nd) +
-                                    " ejes para un tensor " + shape_str() + ".");
+        throw std::invalid_argument("permute needs an order of " + std::to_string(nd) +
+                                    " axes for a tensor " + shape_str() + ".");
     }
     std::vector<bool> seen(nd, false);
     for (size_t axis : order) {
         if (axis >= nd || seen[axis]) {
-            throw std::invalid_argument("permute necesita una permutacion valida de los ejes.");
+            throw std::invalid_argument("permute needs a valid permutation of the axes.");
         }
         seen[axis] = true;
     }
@@ -851,7 +850,7 @@ Tensor Tensor::permute(const std::vector<size_t>& order) const {
 // (M, K) x (K, N) -> (M, N) y (B..., M, K) x (B..., K, N) -> (B..., M, N).
 Tensor Tensor::matmul(const Tensor& B) const {
     if (ndim() < 2 || B.ndim() < 2) {
-        throw std::invalid_argument("MatMul requiere al menos 2 dimensiones en ambos operandos.");
+        throw std::invalid_argument("MatMul requires at least 2 dimensions in both operands.");
     }
     const size_t nd_a = ndim();
     const size_t nd_b = B.ndim();
@@ -864,8 +863,8 @@ Tensor Tensor::matmul(const Tensor& B) const {
     const bool a_batched = !batch_a.empty();
     const bool b_batched = !batch_b.empty();
     if (a_batched && b_batched && batch_a != batch_b) {
-        throw std::invalid_argument("MatMul por lotes necesita ejes de lote identicos: " +
-                                    shape_str() + " y " + B.shape_str() + ".");
+        throw std::invalid_argument("Batched MatMul needs identical batch axes: " + shape_str() +
+                                    " and " + B.shape_str() + ".");
     }
     const std::vector<size_t>& batch_dims = a_batched ? batch_a : batch_b;
 
@@ -875,8 +874,8 @@ Tensor Tensor::matmul(const Tensor& B) const {
     const size_t N = B.shape()[nd_b - 1];
 
     if (K != K2) {
-        throw std::invalid_argument("Dimensiones incompatibles para MatMul: " + shape_str() +
-                                    " y " + B.shape_str() + ".");
+        throw std::invalid_argument("Incompatible dimensions for MatMul: " + shape_str() + " and " +
+                                    B.shape_str() + ".");
     }
 
     const size_t batch = product(batch_dims);
@@ -998,7 +997,7 @@ Tensor Tensor::relu() const {
 // Softmax over the last axis (numerically stable: the maximum is subtracted).
 Tensor Tensor::softmax() const {
     if (ndim() == 0 || size() == 0) {
-        throw std::invalid_argument("Softmax necesita un tensor no vacio.");
+        throw std::invalid_argument("Softmax needs a non-empty tensor.");
     }
     // It always normalises over the last axis: for (N, C) those are the rows, and
     // for (B, H, S, S) the attention scores of each query.
@@ -1080,7 +1079,7 @@ Tensor Tensor::sum() const {
 // Mean reduction to a {1} scalar
 Tensor Tensor::mean() const {
     if (size() == 0) {
-        throw std::invalid_argument("No se puede calcular la media de un tensor vacío.");
+        throw std::invalid_argument("Cannot take the mean of an empty tensor.");
     }
     Tensor s = sum();
     return s * (1.0f / static_cast<float>(size()));
@@ -1091,7 +1090,7 @@ Tensor Tensor::reshape(const std::vector<size_t>& new_shape) const {
     size_t new_total = 1;
     for (size_t dim : new_shape) new_total *= dim;
     if (new_total != size()) {
-        throw std::invalid_argument("Total de elementos incompatibles para Reshape.");
+        throw std::invalid_argument("Incompatible element count for Reshape.");
     }
     bool req_g = track(requires_grad());
 
@@ -1151,8 +1150,8 @@ std::vector<size_t> reduced_shape(const std::vector<size_t>& shape, size_t axis,
 
 void check_axis(size_t axis, size_t ndim, const std::string& what, const std::string& shape_txt) {
     if (axis >= ndim) {
-        throw std::out_of_range(what + ": el eje " + std::to_string(axis) +
-                                " no existe en un tensor " + shape_txt + ".");
+        throw std::out_of_range(what + ": axis " + std::to_string(axis) +
+                                " does not exist in a tensor " + shape_txt + ".");
     }
 }
 
@@ -1204,7 +1203,7 @@ Tensor Tensor::mean(size_t axis, bool keepdim) const {
 
 Tensor Tensor::max(size_t axis, bool keepdim) const {
     check_axis(axis, ndim(), "max", shape_str());
-    if (size() == 0) throw std::invalid_argument("max sobre un tensor vacío.");
+    if (size() == 0) throw std::invalid_argument("max over an empty tensor.");
     const AxisView v = axis_view(shape(), axis);
 
     bool req_g = track(requires_grad());
@@ -1249,11 +1248,11 @@ Tensor Tensor::max(size_t axis, bool keepdim) const {
 
 Tensor Tensor::slice(size_t axis, size_t start, size_t count) const {
     check_axis(axis, ndim(), "slice", shape_str());
-    if (count == 0) throw std::invalid_argument("slice necesita al menos un elemento.");
+    if (count == 0) throw std::invalid_argument("slice needs at least one element.");
     if (start + count > shape()[axis]) {
         throw std::out_of_range("slice [" + std::to_string(start) + ", " +
-                                std::to_string(start + count) + ") se sale del eje " +
-                                std::to_string(axis) + " de un tensor " + shape_str() + ".");
+                                std::to_string(start + count) + ") runs off axis " +
+                                std::to_string(axis) + " of a tensor " + shape_str() + ".");
     }
 
     const AxisView v = axis_view(shape(), axis);
@@ -1287,7 +1286,7 @@ Tensor Tensor::slice(size_t axis, size_t start, size_t count) const {
 }
 
 Tensor Tensor::concat(const std::vector<Tensor>& parts, size_t axis) {
-    if (parts.empty()) throw std::invalid_argument("concat necesita al menos un tensor.");
+    if (parts.empty()) throw std::invalid_argument("concat needs at least one tensor.");
     const std::vector<size_t>& first = parts[0].shape();
     check_axis(axis, first.size(), "concat", parts[0].shape_str());
 
@@ -1295,14 +1294,13 @@ Tensor Tensor::concat(const std::vector<Tensor>& parts, size_t axis) {
     bool req_g = false;
     for (const Tensor& t : parts) {
         if (t.ndim() != first.size()) {
-            throw std::invalid_argument(
-                "concat necesita el mismo número de ejes en todas las partes.");
+            throw std::invalid_argument("concat needs the same number of axes in every part.");
         }
         for (size_t d = 0; d < first.size(); ++d) {
             if (d != axis && t.shape()[d] != first[d]) {
-                throw std::invalid_argument("concat: las partes solo pueden diferir en el eje " +
+                throw std::invalid_argument("concat: the parts may only differ along axis " +
                                             std::to_string(axis) + "; " + parts[0].shape_str() +
-                                            " frente a " + t.shape_str() + ".");
+                                            " against " + t.shape_str() + ".");
             }
         }
         total_axis += t.shape()[axis];
@@ -1356,19 +1354,18 @@ Tensor Tensor::concat(const std::vector<Tensor>& parts, size_t axis) {
 }
 
 Tensor Tensor::stack(const std::vector<Tensor>& parts, size_t axis) {
-    if (parts.empty()) throw std::invalid_argument("stack necesita al menos un tensor.");
+    if (parts.empty()) throw std::invalid_argument("stack needs at least one tensor.");
     if (axis > parts[0].ndim()) {
-        throw std::out_of_range("stack: el eje " + std::to_string(axis) + " no cabe en un tensor " +
-                                parts[0].shape_str() + ".");
+        throw std::out_of_range("stack: axis " + std::to_string(axis) +
+                                " does not fit in a tensor " + parts[0].shape_str() + ".");
     }
     // Stacking is concatenating after inserting a size-1 axis into each part
     std::vector<Tensor> expanded;
     expanded.reserve(parts.size());
     for (const Tensor& t : parts) {
         if (t.shape() != parts[0].shape()) {
-            throw std::invalid_argument(
-                "stack necesita que todas las partes tengan la misma forma: " +
-                parts[0].shape_str() + " frente a " + t.shape_str() + ".");
+            throw std::invalid_argument("stack needs every part to have the same shape: " +
+                                        parts[0].shape_str() + " against " + t.shape_str() + ".");
         }
         std::vector<size_t> s = t.shape();
         s.insert(s.begin() + static_cast<long>(axis), 1);
@@ -1380,11 +1377,11 @@ Tensor Tensor::stack(const std::vector<Tensor>& parts, size_t axis) {
 // Row selection (gathering a mini-batch)
 Tensor Tensor::select_rows(const std::vector<size_t>& indices) const {
     if (ndim() < 2) {
-        throw std::invalid_argument("select_rows requiere al menos 2 dimensiones, este tensor es " +
+        throw std::invalid_argument("select_rows requires at least 2 dimensions; this tensor is " +
                                     shape_str() + ".");
     }
     if (indices.empty()) {
-        throw std::invalid_argument("select_rows recibió una lista de índices vacía.");
+        throw std::invalid_argument("select_rows received an empty index list.");
     }
 
     const size_t rows = shape()[0];
@@ -1394,8 +1391,8 @@ Tensor Tensor::select_rows(const std::vector<size_t>& indices) const {
 
     for (size_t idx : indices) {
         if (idx >= rows) {
-            throw std::out_of_range("select_rows: la fila " + std::to_string(idx) +
-                                    " no existe en un tensor " + shape_str() + ".");
+            throw std::out_of_range("select_rows: row " + std::to_string(idx) +
+                                    " does not exist in a tensor " + shape_str() + ".");
         }
     }
 
@@ -1412,7 +1409,7 @@ Tensor Tensor::select_rows(const std::vector<size_t>& indices) const {
     if (req_g) {
         res.impl_->parents = {impl_};
         Tensor self_copy = *this;
-        std::vector<size_t> idx_copy = indices;
+        const std::vector<size_t>& idx_copy = indices;
 
         res.impl_->backward_fn = [self_copy, idx_copy, row_size](const Tensor& grad_out) mutable {
             // Inverse scatter: each row returns its gradient to the source row. The += is
