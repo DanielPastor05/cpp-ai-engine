@@ -181,8 +181,8 @@ void run_cuda_indexing_tests() {
         {32, 32, 32},    {33, 65, 129},  // resto en los tres ejes
         {127, 128, 129},                 // uno por debajo y uno por encima del bloque
         {128, 128, 128},                 // exactamente un bloque
-        {129, 256, 257},                 // más de un bloque, con resto
-        {256, 260, 256},                 // K múltiplo de 4 pero no de 8: última tesela parcial
+        {129, 256, 257},                 // more than one block, with a remainder
+        {256, 260, 256},                 // K a multiple of 4 but not 8: last tile partial
         {131, 133, 135},                 // nada alineado
         {200, 8, 200},                   // una sola tesela de K
         {130, 4, 130},                   // K menor que el paso

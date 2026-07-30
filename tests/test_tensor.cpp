@@ -61,9 +61,9 @@ void test_broadcast_add() {
     Tensor bad({1, 4}, 0.0f);
     check_throws([&] { X + bad; }, "a broadcast with a different width throws");
 
-    // Regresión: con más ejes que la base pero unos iniciales, el número de
-    // repeticiones se calculaba con un producto sobre un rango vacío que se
-    // confundía con el producto completo, y el backward leía fuera del búfer.
+    // Regression: with more axes than the base but leading ones, the repetition count
+    // was computed with a product over an empty range that was mistaken for the full
+    // product, and the backward read past the buffer.
     Tensor same_rank({3, 4}, 1.0f, false);
     Tensor leading_one({1, 3, 4}, 2.0f, true);
     Tensor bc = same_rank + leading_one;
@@ -74,7 +74,7 @@ void test_broadcast_add() {
     check_close(leading_one.grad().data()[0], 1.0f,
                 "its gradient is 1, not the sum of repetitions that do not exist");
 
-    // Un escalar tambien se difunde sobre cualquier forma
+    // A scalar also broadcasts over any shape
     Tensor scalar({1}, std::vector<float>{5.0f}, true);
     Tensor plus_scalar = X + scalar;
     check_close(plus_scalar.data()[0], 6.0f, "a one-element tensor broadcasts as a scalar");
@@ -86,7 +86,7 @@ void test_broadcast_add() {
 void test_nd_tensor_ops() {
     section("Tensor: N-dimensional operations");
 
-    // transpose intercambia los dos ultimos ejes en cualquier rango
+    // transpose swaps the last two axes at any rank
     Tensor T3({2, 2, 3}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12});
     Tensor Tt = T3.transpose();
     check(Tt.shape() == std::vector<size_t>({2, 3, 2}), "3D transpose swaps the last two axes");
@@ -99,7 +99,7 @@ void test_nd_tensor_ops() {
     for (size_t i = 0; i < P.size(); ++i) P.data()[i] = static_cast<float>(i);
     Tensor Pp = P.permute({2, 0, 1});
     check(Pp.shape() == std::vector<size_t>({4, 2, 3}), "permute reorders the shape");
-    // El elemento (i, j, k) de P debe estar en (k, i, j) de Pp
+    // Element (i, j, k) of P must sit at (k, i, j) of Pp
     check_close(Pp.data()[(2 * 2 + 1) * 3 + 0], P.data()[(1 * 3 + 0) * 4 + 2],
                 "permute relocates the elements correctly");
     check(P.permute({0, 1, 2}).shape() == P.shape(), "the identity permutation changes nothing");
@@ -107,7 +107,7 @@ void test_nd_tensor_ops() {
     check_throws([&] { P.permute({0, 1, 1}); }, "permute with a repeated axis throws");
     check_throws([&] { P.permute({0, 1, 5}); }, "permute with a nonexistent axis throws");
 
-    // matmul por lotes: cada matriz del lote se multiplica por separado
+    // batched matmul: each matrix in the batch is multiplied separately
     Tensor A({2, 2, 3}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12});
     Tensor B({2, 3, 2}, {1, 0, 0, 1, 1, 1, 2, 0, 0, 2, 1, 1});
     Tensor C = A.matmul(B);
@@ -116,7 +116,7 @@ void test_nd_tensor_ops() {
     check_close(C.data()[1], 5.0f, "batch 0: 1*0 + 2*1 + 3*1 == 5");
     check_close(C.data()[4], 23.0f, "batch 1: 7*2 + 8*0 + 9*1 == 23");
 
-    // Un operando 2D se comparte con todo el lote
+    // A 2D operand is shared with the whole batch
     Tensor shared({3, 2}, {1, 0, 0, 1, 1, 1});
     Tensor Cs = A.matmul(shared);
     check(Cs.shape() == std::vector<size_t>({2, 2, 2}),
@@ -129,7 +129,7 @@ void test_nd_tensor_ops() {
     check_throws([&] { Tensor({4}, 1.0f).matmul(Tensor({4}, 1.0f)); },
                  "matmul of 1D vectors throws");
 
-    // softmax sobre el ultimo eje de un tensor 3D
+    // softmax over the last axis of a 3D tensor
     Tensor S3 = Tensor::randn({2, 3, 4}).softmax();
     check(S3.shape() == std::vector<size_t>({2, 3, 4}), "3D softmax preserves the shape");
     bool all_rows_sum_one = true;
@@ -140,7 +140,7 @@ void test_nd_tensor_ops() {
     }
     check(all_rows_sum_one, "each vector along the last axis sums to 1 after softmax");
 
-    // Difusion por sufijo
+    // Suffix broadcasting
     Tensor base({2, 3, 4}, 1.0f);
     Tensor row({3, 4}, 2.0f, true);
     Tensor sum_bc = base + row;
@@ -154,7 +154,7 @@ void test_nd_tensor_ops() {
     check_throws([&] { base + Tensor({5, 4}, 1.0f); },
                  "a broadcast with an incompatible suffix throws");
 
-    // Gradientes numericos de las operaciones nuevas
+    // Numerical gradients of the new operations
     Tensor G({2, 3, 4}, 0.0f);
     for (size_t i = 0; i < G.size(); ++i) G.data()[i] = 0.3f * static_cast<float>(i) - 3.1f;
 
@@ -164,9 +164,9 @@ void test_nd_tensor_ops() {
         return (t.permute({2, 0, 1}) * w).sum();
     });
     check_gradient("gradient of 3D transpose()", G, [](Tensor& t) { return t.transpose().sum(); });
-    // El tensor de ponderación se crea FUERA del closure: si se generase
-    // dentro, cada evaluación numérica usaría pesos distintos y la
-    // comprobación no compararía la misma función consigo misma.
+    // The weighting tensor is built OUTSIDE the closure: generated inside, each
+    // numerical evaluation would use different weights and the check would not be
+    // comparing the same function with itself.
     Tensor w_soft = Tensor::randn({2, 3, 4});
     check_gradient("gradient of 3D softmax()", G,
                    [&](Tensor& t) { return (t.softmax() * w_soft).sum(); });
@@ -179,14 +179,14 @@ void test_nd_tensor_ops() {
         return t.matmul(shared2).sum();
     });
     {
-        // La matriz compartida recibe la suma de las contribuciones del lote
+        // The shared matrix receives the sum of the batch's contributions
         Tensor shared3({4, 2}, {1, -2, 0.5f, 3, -1, 2, 0.25f, -0.5f});
         Tensor batched = Tensor::randn({3, 2, 4});
         check_gradient("gradient of the shared matrix in matmul", shared3,
                        [&](Tensor& t) { return batched.matmul(t).sum(); });
     }
 
-    // Linear sobre entradas de mas de 2 ejes
+    // Linear over inputs with more than 2 axes
     engine::manual_seed(19);
     nn::Linear proj(4, 5);
     Tensor seq_input = Tensor::randn({2, 3, 4});
@@ -236,13 +236,13 @@ void test_reductions() {
     check_gradient("gradient of sum(axis)", G, [&](Tensor& t) { return (t.sum(1) * w_sum).sum(); });
     check_gradient("gradient of mean(axis)", G,
                    [&](Tensor& t) { return (t.mean(1) * w_sum).sum(); });
-    // Valores bien separados: el maximo no es derivable en un empate
+    // Well-separated values: the maximum is not differentiable at a tie
     Tensor Gm({2, 3, 4}, 0.0f);
     for (size_t i = 0; i < Gm.size(); ++i) Gm.data()[i] = static_cast<float>((i * 37) % 24) * 0.5f;
     check_gradient("gradient of max(axis)", Gm,
                    [&](Tensor& t) { return (t.max(1) * w_sum).sum(); });
 
-    // El gradiente del maximo va solo al ganador
+    // The maximum's gradient goes only to the winner
     Tensor mg({1, 3}, {1.0f, 9.0f, 2.0f}, true);
     mg.max(1).sum().backward();
     check_close(mg.grad().data()[1], 1.0f, "the maximum receives the whole gradient");
@@ -324,7 +324,7 @@ void test_broadcast_all_operators() {
     check_close((X * row).data()[2], 12.0f, "multiplication broadcasts: 3 * 4");
     check_close((X / row).data()[1], 1.0f, "division broadcasts: 2 / 2");
 
-    // Un tensor de un elemento actua como escalar
+    // A one-element tensor acts as a scalar
     Tensor k({1}, std::vector<float>{10.0f}, true);
     check_close((X * k).data()[3], 40.0f, "a {1} tensor broadcasts as a scalar");
 
@@ -332,7 +332,7 @@ void test_broadcast_all_operators() {
                  "a subtraction with an incompatible suffix throws");
     check_throws([&] { X* Tensor({5, 3}, 1.0f); }, "an incompatible product throws");
 
-    // Gradientes del operando difundido
+    // Gradients of the broadcast operand
     Tensor base({2, 3}, {1, 2, 3, 4, 5, 6}, false);
     Tensor b1({3}, {1.0f, 2.0f, 4.0f}, true);
     (base * b1).sum().backward();
@@ -366,7 +366,7 @@ void test_parallelism() {
     check(par::num_threads() >= 1, "the pool starts with at least one thread");
     check(!par::inside_parallel_region(), "the main thread is not inside a region");
 
-    // Cobertura: cada indice se visita exactamente una vez
+    // Coverage: each index is visited exactly once
     for (size_t threads : {size_t(1), size_t(2), size_t(4)}) {
         par::set_num_threads(threads);
         const size_t n = 100000;
@@ -381,8 +381,8 @@ void test_parallelism() {
               "with " + std::to_string(threads) + " threads each index is visited exactly once");
     }
 
-    // Determinismo: el reparto por filas no altera el orden de acumulacion,
-    // asi que el resultado debe ser identico BIT A BIT, no solo parecido.
+    // Determinism: splitting by rows does not change the accumulation order, so the
+    // result must be identical BIT FOR BIT, not merely close.
     engine::manual_seed(7);
     Tensor A = Tensor::randn({200, 150});
     Tensor B = Tensor::randn({150, 120});
@@ -409,8 +409,8 @@ void test_parallelism() {
     }
     check(identical, "addition is identical bit for bit with 1 and with 4 threads");
 
-    // Las regiones anidadas se ejecutan en linea: multiplicar hilos dentro de
-    // un hilo solo anade contencion
+    // Nested regions run inline: multiplying threads inside a thread only adds
+    // contention
     par::set_num_threads(4);
     bool nested_inline = true;
     par::parallel_for(10000, 100, [&](size_t, size_t) {
@@ -421,7 +421,7 @@ void test_parallelism() {
     });
     check(nested_inline, "a nested region runs inline");
 
-    // Una excepcion en un trabajador llega al hilo que reparte
+    // An exception in a worker reaches the thread that split the work
     check_throws(
         [&] {
             par::parallel_for(100000, 1000, [](size_t from, size_t) {

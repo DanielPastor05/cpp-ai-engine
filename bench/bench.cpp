@@ -1,8 +1,8 @@
-// Banco de pruebas de rendimiento.
+// Performance benchmark.
 //
-// No verifica nada: mide. Está en el repositorio para que las cifras de las
-// notas de rendimiento del README sean reproducibles y para detectar
-// regresiones al tocar los núcleos. No se ejecuta en CI, porque los tiempos de
+// It verifies nothing: it measures. It is in the repository so the figures in the
+// README's performance notes are reproducible, and to catch regressions when the
+// kernels are touched. It does not run in CI, because a shared runner's timings
 // un runner compartido no son comparables entre ejecuciones.
 //
 //   cmake --build build --target bench && ./build/bench
@@ -29,11 +29,11 @@ namespace optim = engine::optim;
 
 namespace {
 
-// Ejecuta la función hasta acumular al menos min_seconds y devuelve el tiempo
-// medio por iteración, para que las operaciones rápidas no queden a merced de
-// la resolución del reloj.
+// Runs the function until at least min_seconds have accumulated and returns the
+// mean time per iteration, so that fast operations are not left at the mercy of
+// the clock's resolution.
 double time_op(const std::function<void()>& fn, double min_seconds = 0.3) {
-    // Una pasada en frío para no medir el primer fallo de caché
+    // A cold pass, so the first cache miss is not what gets measured
     fn();
 
     size_t reps = 0;
@@ -80,7 +80,7 @@ int main() {
             row(std::to_string(c.M) + "x" + std::to_string(c.K) + "x" + std::to_string(c.N), t,
                 gflops(t, 2.0 * c.M * c.K * c.N));
         }
-        // Por lotes, como en la atención
+        // Batched, as in attention
         Tensor Q = Tensor::randn({32, 4, 16, 16});
         Tensor K = Tensor::randn({32, 4, 16, 16});
         const double t = time_op([&] { Tensor C = Q.matmul(K); });
@@ -175,8 +175,8 @@ int main() {
 
     section("scaling with thread count");
     {
-        // El reparto es por filas de la salida, asi que el resultado es
-        // identico bit a bit sea cual sea el numero de hilos.
+        // The split is by output row, so the result is identical bit for bit whatever
+        // the thread count.
         Tensor A = Tensor::randn({512, 512});
         Tensor B = Tensor::randn({512, 512});
         Tensor E1 = Tensor::randn({2000, 2000});
@@ -220,7 +220,7 @@ int main() {
                    info.compute_major, info.compute_minor, info.multiprocessors,
                    info.total_memory >> 20);
 
-            // Sin umbral: aqui interesa medir donde esta el cruce, no aplicarlo.
+            // No threshold: the point here is to measure where the crossover is, not apply it.
             const size_t saved_flops = cuda::min_matmul_flops();
             const size_t saved_elems = cuda::min_elementwise_elements();
             cuda::set_thresholds(0, 0);
@@ -238,8 +238,8 @@ int main() {
                 cuda::set_enabled(false);
                 const double cpu = time_op([&] { Tensor C = A.matmul(B); });
 
-                // La primera pasada sube A y B; a partir de ahi se quedan
-                // arriba, asi que lo que se mide es el kernel y no el PCIe.
+                // The first pass uploads A and B; from then on they stay up there, so what is
+                // measured is the kernel and not PCIe.
                 cuda::set_enabled(true);
                 const double gpu = time_op([&] {
                     Tensor C = A.matmul(B);
@@ -250,10 +250,10 @@ int main() {
                        cpu / gpu, flops / gpu / 1e9);
             }
 
-            // El numero que de verdad importa: cuanto cuesta cruzar el PCIe.
-            // Una tabla CPU/GPU que esconda esto dentro del total no dice nada,
-            // porque en un motor real la transferencia domina mucho antes que
-            // el calculo.
+            // The number that really matters: what crossing PCIe costs.
+            // A CPU/GPU table that hides this inside the total says nothing, because in a
+            // real engine the transfer dominates long before the arithmetic does.
+            //
             printf("\n  Cost of the host <-> device transfers:\n");
             {
                 const size_t n = 1024;
@@ -261,7 +261,7 @@ int main() {
                 Tensor B = Tensor::randn({n, n});
                 cuda::set_enabled(true);
 
-                // Caso 1: los datos ya estan arriba y el resultado se queda.
+                // Case 1: the data is already up there and the result stays.
                 Tensor warm = A.matmul(B);
                 cuda::synchronize();
                 cuda::reset_transfer_stats();
@@ -271,9 +271,9 @@ int main() {
                 });
                 const cuda::TransferStats resident_stats = cuda::transfer_stats();
 
-                // Caso 2: los operandos se tocan en host entre iteraciones, que
-                // es lo que pasa en un bucle de entrenamiento donde el
-                // optimizador y la perdida siguen en CPU. Cada iteracion vuelve
+                // Case 2: the operands are touched on the host between iterations, which is what
+                // happens in a training loop where the optimiser and the loss are still on the
+                // CPU. Each iteration goes back
                 // a subir y a bajar.
                 cuda::reset_transfer_stats();
                 const double round_trip = time_op([&] {

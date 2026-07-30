@@ -29,7 +29,7 @@ void test_layernorm_and_embedding() {
     check_close(mean, 0.0f, "LayerNorm deja media 0", 1e-3f);
     check_close(var, 1.0f, "LayerNorm deja varianza 1", 1e-2f);
 
-    // Fila constante: sin varianza, epsilon evita dividir por cero
+    // A constant row: with no variance, epsilon avoids dividing by zero
     check_close(normed.data()[4], 0.0f, "a constant row normalises to 0 without dividing by zero");
 
     // gamma y beta reescalan
@@ -83,7 +83,7 @@ void test_layernorm_and_embedding() {
 void test_attention() {
     section("transformer: atencion");
 
-    // Claves ortogonales: cada consulta debe recuperar su valor
+    // Orthogonal keys: each query must recover its value
     Tensor Q({3, 3}, {20, 0, 0, 0, 20, 0, 0, 0, 20}, false);
     Tensor K({3, 3}, {1, 0, 0, 0, 1, 0, 0, 0, 1}, false);
     Tensor V({3, 2}, {10, 100, 20, 200, 30, 300}, false);
@@ -116,7 +116,7 @@ void test_attention() {
         [&] { nn::scaled_dot_product_attention(Tensor({3, 4}, 1.0f), Tensor({3, 5}, 1.0f), V); },
         "query and key with different d_k throw");
 
-    // Gradiente de la atencion
+    // Gradient of attention
     Tensor gq = Tensor::randn({2, 4, 3});
     Tensor k_fixed = Tensor::randn({2, 4, 3});
     Tensor v_fixed = Tensor::randn({2, 4, 3});
@@ -140,13 +140,13 @@ void test_positional_encoding() {
     Tensor pe = nn::positional_encoding(4, 6);
     check(pe.shape() == std::vector<size_t>({4, 6}), "positional_encoding da (seq, d_model)");
 
-    // Posicion 0: sin(0) = 0 en los indices pares, cos(0) = 1 en los impares
+    // Position 0: sin(0) = 0 at even indices, cos(0) = 1 at odd ones
     check_close(pe(0, 0), 0.0f, "PE[0] starts with sin(0) == 0");
     check_close(pe(0, 1), 1.0f, "PE[0] continues with cos(0) == 1");
     check_close(pe(1, 0), std::sin(1.0f), "PE[1][0] == sin(1)");
     check_close(pe(1, 1), std::cos(1.0f), "PE[1][1] == cos(1)");
 
-    // Las frecuencias decrecen: la ultima pareja varia mucho menos con la posicion
+    // The frequencies decrease: the last pair varies far less with position
     const float fast = std::fabs(pe(3, 0) - pe(0, 0));
     const float slow = std::fabs(pe(3, 4) - pe(0, 4));
     check(slow < fast, "the high dimensions use lower frequencies");
@@ -175,7 +175,7 @@ void test_multihead_and_block() {
           "the attention weights are (B, H, S, S)");
     check(!mha.last_attention().requires_grad(), "the saved weights are detached from the graph");
 
-    // Por defecto no se guardan: es una copia de (B, H, S, S) por paso
+    // They are not kept by default: it is a (B, H, S, S) copy per step
     nn::MultiHeadAttention quiet(8, 2);
     quiet(x);
     check(quiet.last_attention().size() == 0,
@@ -187,7 +187,7 @@ void test_multihead_and_block() {
     check_throws([&] { mha(Tensor::randn({2, 5, 4})); }, "MHA with the wrong d_model throws");
     check_throws([&] { mha(Tensor::randn({5, 8})); }, "MHA with a 2D input throws");
 
-    // Cada cabeza atiende por separado: con 1 cabeza los pesos son (B,1,S,S)
+    // Each head attends separately: with 1 head the weights are (B,1,S,S)
     nn::MultiHeadAttention single(8, 1);
     single.keep_attention(true);
     single(x);
@@ -218,7 +218,7 @@ void test_multihead_and_block() {
     check_gradient("gradient of TransformerBlock", gb,
                    [&](Tensor& t) { return (block(t) * w_block).sum(); });
 
-    // Con mascara causal el gradiente debe seguir siendo correcto
+    // With a causal mask the gradient must still be correct
     check_gradient("gradient of TransformerBlock with a causal mask", gb,
                    [&](Tensor& t) { return (block.forward(t, &block_mask) * w_block).sum(); });
 }
@@ -228,8 +228,8 @@ void test_transformer_training() {
 
     engine::manual_seed(41);
 
-    // Tarea minima que exige orden: la etiqueta es el primer token de la
-    // secuencia, pero todas las secuencias contienen los mismos dos tokens.
+    // The smallest task that demands order: the label is the sequence's first token,
+    // but every sequence contains the same two tokens.
     const size_t N = 40;
     const size_t seq = 4;
     Tensor X({N, seq}, 0.0f, false);

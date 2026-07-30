@@ -11,7 +11,7 @@ int main() {
     using engine::Tensor;
 
     // ---------------------------------------------------------
-    // 1. Verificación de Gradientes Analíticos vs Autograd
+    // 1. Analytic gradients checked against autograd
     // ---------------------------------------------------------
     std::cout << "--- 1. Derivacion Automatica de Funcion Escalar ---\n";
     std::cout << "Funcion: L = a * b + ReLU(a)\n";
@@ -32,7 +32,7 @@ int main() {
     std::cout << "Gradiente dL/db = " << b.grad().data()[0] << " (Esperado: a = 2.0000)\n\n";
 
     // ---------------------------------------------------------
-    // 2. Autograd en Multiplicación Matricial (MatMul)
+    // 2. Autograd through matrix multiplication (MatMul)
     // ---------------------------------------------------------
     std::cout << "--- 2. Autograd over matrices (MatMul) ---\n";
     Tensor A({2, 3}, {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f}, true);
@@ -52,17 +52,17 @@ int main() {
     B.grad().print("dL/dB");
 
     // ---------------------------------------------------------
-    // 3. Entrenamiento de Regresión Lineal con Descenso de Gradiente
+    // 3. Training a linear regression by gradient descent
     // ---------------------------------------------------------
     std::cout << "--- 3. Gradient-descent optimisation (linear regression) ---\n";
     std::cout << "Objetivo: Aprender y = W * x + b donde W_real = 2.5, b_real = 1.0\n\n";
 
-    // Parámetros a optimizar. W es (1, 1) para poder usarse en matmul y bias es
-    // un vector fila (1, 1) que se difunde sobre las 4 filas del lote.
+    // The parameters to optimise. W is (1, 1) so it can go through matmul, and bias
+    // is a (1, 1) row vector broadcast over the batch's 4 rows.
     Tensor W({1, 1}, std::vector<float>{0.0f}, true);     // Inicializar peso en 0
     Tensor bias({1, 1}, std::vector<float>{0.0f}, true);  // Inicializar sesgo en 0
 
-    // Datos de entrenamiento (x e y)
+    // Training data (x and y)
     Tensor x({4, 1}, {1.0f, 2.0f, 3.0f, 4.0f}, false);
     Tensor y_target({4, 1}, {3.5f, 6.0f, 8.5f, 11.0f}, false);  // 2.5 * x + 1.0
 
@@ -70,7 +70,7 @@ int main() {
 
     std::cout << "Training starts (100 iterations):\n";
     for (int epoch = 1; epoch <= 100; ++epoch) {
-        // 0. Limpiar los gradientes de la iteración anterior (se acumulan)
+        // 0. Clear the previous iteration's gradients (they accumulate)
         W.zero_grad();
         bias.zero_grad();
 

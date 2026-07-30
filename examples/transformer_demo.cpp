@@ -18,15 +18,15 @@ namespace optim = engine::optim;
 // ---------------------------------------------------------
 // Tarea: "which token comes after the marker?"
 //
-// Cada secuencia es [CLS] seguido de una permutación de los seis valores, con
-// una MARCA insertada en una posición aleatoria. La etiqueta es el valor que
-// aparece justo después de la marca.
+// Each sequence is [CLS] followed by a permutation of the six values, with a
+// MARKER inserted at a random position. The label is the value that appears
+// immediately after the marker.
 //
-// El detalle importante: cada valor aparece exactamente una vez en toda
-// secuencia. El multiconjunto de tokens es siempre el mismo, así que saber
-// *qué* tokens hay no aporta absolutamente nada — un modelo que promedie la
-// secuencia está condenado al azar (1/6). La única información está en el
-// orden, y hay que relacionar dos posiciones para extraerla.
+// The detail that matters: every value appears exactly once in every sequence.
+// The multiset of tokens is always the same, so knowing *which* tokens are there
+// contributes nothing at all -- a model that averages the sequence is condemned
+// to chance (1/6). The only information is in the order, and extracting it means
+// relating two positions.
 // ---------------------------------------------------------
 constexpr size_t kNumValues = 6;            // valores 0..5
 constexpr size_t kMarker = kNumValues;      // id 6
@@ -42,7 +42,7 @@ void make_dataset(size_t num_samples, Tensor& ids, std::vector<size_t>& labels,
 
     std::vector<size_t> values(kNumValues);
     std::iota(values.begin(), values.end(), 0);
-    // La marca nunca va al final: siempre tiene un valor detrás
+    // The marker never goes last: it always has a value after it
     std::uniform_int_distribution<size_t> slot(0, kNumValues - 1);
 
     for (size_t n = 0; n < num_samples; ++n) {
@@ -52,7 +52,7 @@ void make_dataset(size_t num_samples, Tensor& ids, std::vector<size_t>& labels,
         float* row = ids.data().data() + n * kSeqLen;
         row[0] = static_cast<float>(kCls);
 
-        // Se copian los valores insertando la marca justo antes del m-esimo
+        // The values are copied with the marker inserted just before the m-th
         size_t out = 1;
         for (size_t i = 0; i < kNumValues; ++i) {
             if (i == m) row[out++] = static_cast<float>(kMarker);
@@ -65,12 +65,12 @@ void make_dataset(size_t num_samples, Tensor& ids, std::vector<size_t>& labels,
 }
 
 // ---------------------------------------------------------
-// Modelo con atención
+// The model with attention
 // ---------------------------------------------------------
-// Dos bloques, no uno: la tarea es de dos saltos. Un bloque tiene que marcar
-// cada posición con "the one before me is the MARKER" y el otro recoger esa posición
-// desde el [CLS]. Con un solo bloque la consulta del [CLS] no puede depender
-// de dónde está la marca, y el modelo se queda muy por debajo.
+// Two blocks, not one: the task takes two hops. One block has to tag each
+// position with "the one before me is the MARKER" and the other collect that
+// position from the [CLS]. With a single block the [CLS] query cannot depend on
+// where the marker is, and the model falls well short.
 struct TransformerClassifier {
     nn::Embedding embedding;
     nn::TransformerBlock block1;
@@ -86,23 +86,23 @@ struct TransformerClassifier {
           norm(d_model),
           head(d_model, kNumValues),
           pos_encoding(nn::positional_encoding(kSeqLen, d_model)) {
-        // Solo el segundo bloque guarda los pesos, y solo para inspeccionarlos
-        // al final: durante el entrenamiento seria una copia inutil por paso.
+        // Only the second block keeps its weights, and only to inspect them at the end:
+        // during training it would be a useless copy per step.
         block2.attention().keep_attention(true);
     }
 
     Tensor forward(const Tensor& ids) {
         const size_t batch = ids.shape()[0];
 
-        // Embeddings + codificación posicional. La suma difunde (S, D) sobre
-        // el lote (B, S, D): sin ella la atención no distinguiría el orden.
+        // Embeddings + positional encoding. The addition broadcasts (S, D) over the
+        // batch (B, S, D): without it attention could not tell the order apart.
         Tensor h = embedding(ids) + pos_encoding;
         h = block1(h);
         h = block2(h);
         h = norm(h);
 
-        // Se clasifica desde la posición del [CLS], que ha ido recogiendo
-        // información del resto de la secuencia a través de la atención.
+        // Classification happens from the [CLS] position, which has been gathering
+        // information from the rest of the sequence through attention.
         const size_t d_model = h.shape()[2];
         Tensor cls = h.permute({1, 0, 2}).select_rows({0}).reshape({batch, d_model});
         return head(cls);
@@ -127,14 +127,14 @@ struct TransformerClassifier {
 };
 
 // ---------------------------------------------------------
-// Referencia sin atención: promedia los embeddings de la secuencia.
-// Ve exactamente los mismos tokens, pero pierde toda la información de orden.
+// Baseline with no attention: it averages the sequence's embeddings. It sees
+// exactly the same tokens but loses every bit of the order information.
 // ---------------------------------------------------------
 struct MeanPoolClassifier {
     nn::Embedding embedding;
     nn::Linear hidden;
     nn::Linear head;
-    Tensor averager;  // (S, 1) con 1/S en cada posición
+    Tensor averager;  // (S, 1) with 1/S at each position
 
     MeanPoolClassifier(size_t d_model, size_t hidden_size)
         : embedding(kVocab, d_model),
@@ -147,7 +147,7 @@ struct MeanPoolClassifier {
         Tensor h = embedding(ids);  // (B, S, D)
         const size_t d_model = h.shape()[2];
 
-        // Promedio sobre la secuencia como producto matricial: (B, D, S) x (S, 1)
+        // Averaging over the sequence as a matrix product: (B, D, S) x (S, 1)
         Tensor pooled = h.permute({0, 2, 1}).matmul(averager).reshape({batch, d_model});
         return head(hidden(pooled).relu());
     }
@@ -227,11 +227,11 @@ int main() {
     engine::manual_seed(2024);
 
     // ---------------------------------------------------------
-    // 1. Atención por producto escalar escalado
+    // 1. Scaled dot-product attention
     // ---------------------------------------------------------
     std::cout << "--- 1. Scaled Dot-Product Attention ---\n";
-    // Tres claves ortogonales y tres consultas, cada una alineada con una de
-    // ellas. La atención debe recuperar casi exactamente el valor asociado.
+    // Three orthogonal keys and three queries, each aligned with one of them.
+    // Attention must recover the associated value almost exactly.
     Tensor Q({3, 3}, {8.0f, 0.0f, 0.0f, 0.0f, 8.0f, 0.0f, 0.0f, 0.0f, 8.0f}, false);
     Tensor K({3, 3}, {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f}, false);
     Tensor V({3, 2}, {10.0f, 100.0f, 20.0f, 200.0f, 30.0f, 300.0f}, false);
@@ -242,7 +242,7 @@ int main() {
     attended.print("output = weights x V");
 
     // ---------------------------------------------------------
-    // 2. Máscara causal
+    // 2. The causal mask
     // ---------------------------------------------------------
     std::cout << "--- 2. Mascara causal ---\n";
     Tensor mask = nn::causal_mask(4);
@@ -252,7 +252,7 @@ int main() {
     masked_weights.print("masked weights (triangular: nobody sees the future)");
 
     // ---------------------------------------------------------
-    // 3. Codificación posicional
+    // 3. Positional encoding
     // ---------------------------------------------------------
     std::cout << "--- 3. Codificacion posicional sinusoidal ---\n";
     Tensor pe = nn::positional_encoding(6, 8);
@@ -307,7 +307,7 @@ int main() {
         train("Referencia: promedio de embeddings", baseline, b_opt, X, y, X_test, y_test, 60, 32);
 
     // ---------------------------------------------------------
-    // 6. ¿Dónde mira el modelo?
+    // 6. Where does the model look?
     // ---------------------------------------------------------
     std::cout << "--- 6. Pesos de atencion aprendidos ---\n";
     {
@@ -324,7 +324,7 @@ int main() {
         for (size_t h = 0; h < heads; ++h) {
             std::cout << "  Cabeza " << h << ": ";
             for (size_t s = 0; s < kSeqLen; ++s) {
-                // attn es (B, H, S, S): la fila 0 es a qué atiende el [CLS]
+                // attn is (B, H, S, S): row 0 is what the [CLS] attends to
                 const float w = attn.data()[(h * kSeqLen + 0) * kSeqLen + s];
                 std::cout << std::fixed << std::setprecision(2) << w;
                 std::cout << (s == markers[0] + 1 ? "* " : "  ");

@@ -1,8 +1,8 @@
-// MNIST: la CNN del motor sobre datos reales.
+// MNIST: the engine's CNN on real data.
 //
-// El repositorio trae un subconjunto de 2.000 + 1.000 imágenes para que esto
-// funcione recién clonado. Con tools/download_mnist.sh se obtiene el conjunto
-// completo (60.000 + 10.000) y el ejemplo lo detecta solo.
+// The repository ships a 2,000 + 1,000 image subset so this works on a fresh
+// clone. tools/download_mnist.sh fetches the full set (60,000 + 10,000) and the
+// example detects it by itself.
 
 #include "engine/tensor.hpp"
 #include "engine/random.hpp"
@@ -47,8 +47,8 @@ void print_digit(const Tensor& images, size_t index, size_t label) {
     }
 }
 
-// La exactitud se calcula por lotes: con 10.000 imágenes de golpe, las
-// activaciones intermedias de la CNN no caben cómodamente en memoria.
+// Accuracy is computed in batches: with 10,000 images at once, the CNN's
+// intermediate activations do not fit comfortably in memory.
 float evaluate(nn::Sequential& model, const data::Dataset& set, size_t batch_size = 500) {
     engine::autograd::NoGradGuard no_grad;
     model.eval();
@@ -109,10 +109,10 @@ int main() {
     std::cout << "  MNIST: the engine's CNN on real data              \n";
     std::cout << "====================================================\n\n";
 
-    // Conviene que quien lea el tiempo sepa qué se ejecutó y dónde. Las
-    // convoluciones ya pasan por Tensor::matmul, así que la cadena
-    // conv -> relu -> pool -> conv se queda entera en la tarjeta; la pérdida y
-    // el optimizador siguen en CPU y la cortan una vez por paso.
+    // Whoever reads the timing should know what ran where. The convolutions now go
+    // through Tensor::matmul, so the conv -> relu -> pool -> conv chain stays on the
+    // card end to end; the loss and the optimiser are still on the CPU and break it
+    // once per step.
     if (engine::cuda::available()) {
         const engine::cuda::DeviceInfo gpu = engine::cuda::device_info();
         std::cout << "Backend: CUDA on " << gpu.name << " (cc " << gpu.compute_major << "."
@@ -202,7 +202,7 @@ int main() {
             opt.zero_grad();
             Tensor loss = nn::cross_entropy_loss(model(train.images.select_rows(idx)), y);
             loss.backward();
-            // Recorte por norma global: evita que un lote atipico dé un paso enorme
+            // Global-norm clipping: stops an outlier batch from taking a huge step
             optim::clip_grad_norm(model.parameters(), 5.0f);
             opt.step();
 
@@ -234,14 +234,14 @@ int main() {
     print_confusion(model, test);
 
     // ---------------------------------------------------------
-    // 5. El modelo entrenado se guarda y se recupera
+    // 5. The trained model is saved and restored
     // ---------------------------------------------------------
     std::cout << "--- 5. Persistencia ---\n";
     engine::save_parameters(model, kCheckpoint);
     std::cout << "Pesos guardados en " << kCheckpoint << " (" << model.num_parameters()
               << " parametros).\n";
 
-    // Un modelo nuevo, con pesos aleatorios, que carga los guardados
+    // A fresh model with random weights, which then loads the saved ones
     engine::manual_seed(999);
     nn::Sequential restored{nn::make<nn::Conv2d>(1, 16, nn::Window2d(3, 3, 1, 1)),
                             nn::make<nn::ReLU>(),

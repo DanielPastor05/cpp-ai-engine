@@ -122,7 +122,7 @@ inline void check_gradient(const std::string& what, Tensor input,
 
 }  // namespace testing
 
-// Cada fichero de prueba expone su bloque; test_main.cpp los encadena.
+// Each test file exposes its block; test_main.cpp chains them together.
 void run_tensor_tests();
 void run_autograd_tests();
 void run_nn_tests();

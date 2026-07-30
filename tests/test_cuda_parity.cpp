@@ -200,8 +200,8 @@ void run_cuda_parity_tests() {
             {33, 65, 129},    // restos en los tres ejes
             {127, 128, 129},  // alrededor del bloque de 128
             {128, 128, 128},  // exactamente un bloque
-            {129, 256, 257},  // más de un bloque, con resto
-            {256, 260, 256},  // K múltiplo de 4 pero no de 8: tesela K parcial
+            {129, 256, 257},  // more than one block, with a remainder
+            {256, 260, 256},  // K a multiple of 4 but not 8: partial K tile
         };
 
         for (cuda::MatmulKernel variant : variants) {
@@ -536,7 +536,7 @@ void run_cuda_parity_tests() {
         cuda::set_enabled(true);
         Tensor A = Tensor::randn({64, 64});
         Tensor B = Tensor::randn({64, 64});
-        A.data();  // fuerza que ambos estén en host antes de empezar a contar
+        A.data();  // force both onto the host before counting starts
         B.data();
 
         cuda::reset_transfer_stats();

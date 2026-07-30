@@ -15,14 +15,14 @@ using engine::Tensor;
 namespace nn = engine::nn;
 namespace optim = engine::optim;
 
-constexpr size_t kImageSize = 12;  // imágenes de 12x12
+constexpr size_t kImageSize = 12;  // 12x12 images
 constexpr size_t kNumClasses = 3;  // barra horizontal, barra vertical, cruz
 
-// Dibuja una figura de la clase pedida en una imagen de un solo canal,
-// en una posición aleatoria y sobre un fondo con ruido. La posición cambia
-// en cada muestra a propósito: es lo que obliga al modelo a reconocer la
-// forma en lugar de memorizar píxeles concretos, y donde la invariancia a la
-// traslación de una convolución marca la diferencia frente a una capa densa.
+// Draws a shape of the requested class into a single-channel image, at a random
+// position over a noisy background. The position changes on every sample on
+// purpose: that is what forces the model to recognise the shape rather than
+// memorise particular pixels, and where a convolution's translation invariance
+// makes the difference against a dense layer.
 void draw_shape(float* img, size_t label) {
     std::uniform_int_distribution<size_t> pos(2, kImageSize - 5);
     std::normal_distribution<float> noise(0.0f, 0.12f);
@@ -78,7 +78,7 @@ void print_image(const Tensor& X, size_t index, size_t label) {
     }
 }
 
-// Entrena por mini-lotes y devuelve la exactitud sobre el conjunto de prueba
+// Trains in mini-batches and returns the accuracy on the test set
 float train(const std::string& title, nn::Sequential& model, optim::Optimizer& opt, const Tensor& X,
             const std::vector<size_t>& y, const Tensor& X_test, const std::vector<size_t>& y_test,
             int epochs, size_t batch_size) {
@@ -134,7 +134,7 @@ int main() {
     engine::manual_seed(7);
 
     // ---------------------------------------------------------
-    // 1. im2col: la convolución como producto matricial
+    // 1. im2col: the convolution as a matrix product
     // ---------------------------------------------------------
     std::cout << "--- 1. Transformacion im2col ---\n";
     Tensor small({1, 1, 4, 4}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, false);
@@ -157,8 +157,8 @@ int main() {
     std::cout << "--- 2. Synthetic dataset ---\n";
     Tensor X, X_test;
     std::vector<size_t> y, y_test;
-    make_dataset(120, X, y);           // 360 imágenes de entrenamiento
-    make_dataset(40, X_test, y_test);  // 120 imágenes de prueba
+    make_dataset(120, X, y);           // 360 training images
+    make_dataset(40, X_test, y_test);  // 120 test images
 
     std::cout << "Train: " << X.shape_str() << "   Test: " << X_test.shape_str() << "\n";
     std::cout << "Three classes drawn at random positions, over background noise:\n\n";
@@ -167,7 +167,7 @@ int main() {
     std::cout << "\n";
 
     // ---------------------------------------------------------
-    // 3. CNN frente a un MLP con un número de parámetros parecido
+    // 3. CNN against an MLP with a comparable parameter count
     // ---------------------------------------------------------
     std::cout << "--- 3. Architectures ---\n";
 

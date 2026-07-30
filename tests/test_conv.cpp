@@ -11,7 +11,7 @@ namespace {
 void test_im2col() {
     section("conv: im2col y col2im");
 
-    // Ventana 3x3 sobre una imagen 4x4 -> 2x2 posiciones, filas de 9 valores
+    // A 3x3 window over a 4x4 image -> 2x2 positions, rows of 9 values
     Tensor img({1, 1, 4, 4}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, false);
     nn::Window2d w3(3, 3, 1, 0);
 
@@ -24,17 +24,17 @@ void test_im2col() {
     // Primera ventana: esquina superior izquierda 3x3
     check_close(cols(0, 0), 1.0f, "the first window starts at pixel (0,0)");
     check_close(cols(0, 8), 11.0f, "the first window ends at pixel (2,2)");
-    // Última ventana: desplazada un pixel en ambos ejes
+    // Last window: shifted one pixel along both axes
     check_close(cols(3, 0), 6.0f, "the last window starts at pixel (1,1)");
     check_close(cols(3, 8), 16.0f, "the last window ends at pixel (3,3)");
 
-    // Con relleno, las esquinas del kernel caen fuera y valen cero
+    // With padding, the kernel's corners fall outside and are zero
     Tensor padded_cols = nn::im2col(img, nn::Window2d(3, 3, 1, 1));
     check(padded_cols.shape() == std::vector<size_t>({16, 9}), "with padding there are 16 windows");
     check_close(padded_cols(0, 0), 0.0f, "the padded area contributes zeros");
     check_close(padded_cols(0, 4), 1.0f, "the centre of the first padded window is pixel (0,0)");
 
-    // col2im devuelve la forma original y acumula los solapes
+    // col2im returns the original shape and accumulates the overlaps
     Tensor ones({4, 9}, 1.0f, false);
     Tensor scattered = nn::col2im(ones, {1, 1, 4, 4}, w3);
     check(scattered.shape() == std::vector<size_t>({1, 1, 4, 4}),
@@ -42,9 +42,9 @@ void test_im2col() {
     check_close(scattered.data()[0], 1.0f, "a corner belongs to a single window");
     check_close(scattered.data()[5], 4.0f, "pixel (1,1) belongs to all four windows");
 
-    // Prueba del adjunto: <im2col(x), y> == <x, col2im(y)>.
-    // Es la afirmación exacta de que col2im es la traspuesta de im2col, y por
-    // tanto la derivada correcta de la convolución.
+    // The adjoint test: <im2col(x), y> == <x, col2im(y)>.
+    // It is the exact statement that col2im is im2col's transpose, and therefore the
+    // correct derivative of the convolution.
     engine::manual_seed(31);
     for (const nn::Window2d& win : {nn::Window2d(3, 3, 1, 0), nn::Window2d(3, 3, 1, 1),
                                     nn::Window2d(2, 2, 2, 0), nn::Window2d(2, 3, 1, 1)}) {
@@ -73,7 +73,7 @@ void test_conv_layers() {
 
     engine::manual_seed(11);
 
-    // Forma de salida
+    // Output shape
     nn::Conv2d conv(3, 5, nn::Window2d(3, 3, 1, 1));
     Tensor input = Tensor::randn({2, 3, 8, 8});
     Tensor out = conv(input);
@@ -93,7 +93,7 @@ void test_conv_layers() {
     check_throws([&] { nn::Conv2d(0, 4, nn::Window2d(3)); },
                  "Conv2d with no input channels throws");
 
-    // Convolución 1x1 con un peso conocido: la salida es un reescalado exacto
+    // A 1x1 convolution with a known weight: the output is an exact rescaling
     nn::Conv2d unit(1, 1, nn::Window2d(1, 1, 1, 0));
     unit.weight() = Tensor({1, 1, 1, 1}, std::vector<float>{2.0f}, true);
     unit.bias() = Tensor({1}, std::vector<float>{0.5f}, true);
@@ -102,7 +102,7 @@ void test_conv_layers() {
     check_close(scaled.data()[0], 2.5f, "conv 1x1: 1*2 + 0.5 == 2.5");
     check_close(scaled.data()[3], 8.5f, "conv 1x1: 4*2 + 0.5 == 8.5");
 
-    // Kernel 3x3 de unos sin relleno: cada salida es la suma del bloque 3x3
+    // A 3x3 kernel of ones with no padding: each output is the 3x3 block's sum
     nn::Conv2d summer(1, 1, nn::Window2d(3, 3, 1, 0), false);
     summer.weight() = Tensor({1, 1, 3, 3}, std::vector<float>(9, 1.0f), true);
     Tensor grid({1, 1, 3, 3}, {1, 2, 3, 4, 5, 6, 7, 8, 9}, false);
@@ -119,11 +119,11 @@ void test_conv_layers() {
     check_close(pooled.data()[2], 14.0f, "maximum of the lower-left block");
     check_close(pooled.data()[3], 16.0f, "maximum of the lower-right block");
     check_throws([&] { pool(Tensor({4, 4}, 1.0f)); }, "MaxPool2d with a 2D input throws");
-    // Con relleno >= kernel habria ventanas sin ningun valor real que maximizar
+    // With padding >= kernel there would be windows with no real value to maximise
     check_throws([&] { nn::MaxPool2d(nn::Window2d(2, 2, 1, 2)); },
                  "MaxPool2d with padding greater than or equal to the kernel throws");
 
-    // El gradiente va solo a la posición ganadora
+    // The gradient goes only to the winning position
     Tensor pool_grad({1, 1, 2, 2}, {1.0f, 2.0f, 3.0f, 4.0f}, true);
     nn::MaxPool2d pool2(2, 2);
     Tensor small_out = pool2(pool_grad);
@@ -143,7 +143,7 @@ void test_conv_gradients() {
 
     engine::manual_seed(5);
 
-    // Gradiente respecto a la entrada, con y sin relleno y con paso 2
+    // Gradient with respect to the input, with and without padding and with stride 2
     {
         nn::Conv2d conv(2, 3, nn::Window2d(3, 3, 1, 1));
         Tensor x = Tensor::randn({2, 2, 5, 5});
@@ -158,14 +158,14 @@ void test_conv_gradients() {
                        [&](Tensor& t) { return conv(t).sum(); });
     }
 
-    // Gradiente respecto a los pesos y al sesgo. El tensor perturbado es el
-    // propio parámetro de la capa (comparten implementación), así que la capa
-    // ve el cambio y basta con reevaluar el forward.
+    // Gradient with respect to the weights and the bias. The perturbed tensor is the
+    // layer's own parameter (they share an implementation), so the layer sees the
+    // change and re-evaluating the forward is enough.
     {
         nn::Conv2d conv(2, 3, nn::Window2d(3, 3, 1, 1));
         Tensor x = Tensor::randn({2, 2, 4, 4});
-        // Ponderacion no uniforme: con sum() a secas el gradiente de salida es
-        // todo unos, y eso puede ocultar un error de indexacion.
+        // Non-uniform weighting: with a bare sum() the output gradient is all ones, and
+        // that can hide an indexing error.
         Tensor w = Tensor::randn({2, 3, 4, 4});
 
         check_gradient("gradient of Conv2d with respect to the weights", conv.weight(),
@@ -174,8 +174,8 @@ void test_conv_gradients() {
                        [&](Tensor&) { return (conv(x) * w).sum(); });
     }
 
-    // MaxPool: valores bien separados para que ninguna perturbacion cambie el
-    // ganador de una ventana (el maximo no es derivable en un empate).
+    // MaxPool: well-separated values so that no perturbation changes a window's
+    // winner (the maximum is not differentiable at a tie).
     {
         Tensor x({1, 2, 4, 4}, 0.0f);
         for (size_t i = 0; i < x.size(); ++i) {
@@ -185,7 +185,7 @@ void test_conv_gradients() {
         check_gradient("gradient of MaxPool2d", x, [&](Tensor& t) { return pool(t).sum(); });
     }
 
-    // Flatten y una pila completa conv -> relu -> pool -> flatten -> linear
+    // Flatten and a full conv -> relu -> pool -> flatten -> linear stack
     {
         Tensor x = Tensor::randn({2, 3, 4, 4});
         nn::Flatten flat;
@@ -207,8 +207,8 @@ void test_cnn_training() {
 
     engine::manual_seed(3);
 
-    // Dos clases separables por una caracteristica local: un pixel brillante
-    // arriba a la izquierda o abajo a la derecha, en posiciones variables.
+    // Two classes separable by a local feature: a bright pixel at the top left or the
+    // bottom right, at varying positions.
     const size_t N = 40;
     Tensor X({N, 1, 6, 6}, 0.0f, false);
     std::vector<size_t> y(N, 0);
@@ -241,7 +241,7 @@ void test_cnn_training() {
     check(last_loss < first_loss, "the CNN's loss decreases");
     check_close(nn::accuracy(cnn(X), y), 1.0f, "the CNN learns the task at 100%");
 
-    // Los mini-lotes deben funcionar también con volumenes 4D
+    // Mini-batches must work with 4D volumes too
     Tensor batch = X.select_rows({0, 1, 2});
     check(batch.shape() == std::vector<size_t>({3, 1, 6, 6}),
           "select_rows takes whole images from a 4D tensor");
@@ -272,9 +272,9 @@ void test_conv_determinism() {
     auto serial = run(1);
     auto parallel = run(4);
 
-    // El backward de Conv2d se reparte en dos pasadas con ejes disjuntos
-    // precisamente para que el orden de acumulacion no dependa de los hilos.
-    // Aqui se exige igualdad BIT A BIT, no aproximada.
+    // Conv2d's backward is split into two passes over disjoint axes precisely so that
+    // the accumulation order does not depend on the threads.
+    // Equality here is BIT FOR BIT, not approximate.
     const char* names[] = {"the output", "the gradient of the input", "the gradient of the kernel",
                            "the gradient of the bias"};
     const Tensor* s_all[] = {&std::get<0>(serial), &std::get<1>(serial), &std::get<2>(serial),

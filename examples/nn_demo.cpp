@@ -15,9 +15,9 @@ using engine::Tensor;
 namespace nn = engine::nn;
 namespace optim = engine::optim;
 
-// Genera el clásico conjunto "espiral": K brazos entrelazados que ningún
-// clasificador lineal puede separar, así que obliga a la red a usar las capas
-// ocultas y la no linealidad de ReLU.
+// Generates the classic "spiral" set: K interleaved arms that no linear
+// classifier can separate, forcing the network to use its hidden layers and
+// ReLU's non-linearity.
 void make_spiral(size_t points_per_class, size_t num_classes, Tensor& X, std::vector<size_t>& y) {
     const size_t N = points_per_class * num_classes;
     X = Tensor({N, 2}, 0.0f, false);
@@ -39,26 +39,26 @@ void make_spiral(size_t points_per_class, size_t num_classes, Tensor& X, std::ve
     }
 }
 
-// Entrena un perceptrón multicapa y devuelve la exactitud final
+// Trains a multi-layer perceptron and returns the final accuracy
 float train(const std::string& title, optim::Optimizer& opt, nn::Sequential& model, const Tensor& X,
             const std::vector<size_t>& y, int epochs) {
     std::cout << "--- " << title << " ---\n";
 
     float acc = 0.0f;
     for (int epoch = 1; epoch <= epochs; ++epoch) {
-        // 1. Limpiar los gradientes de la iteración anterior
+        // 1. Clear the previous iteration's gradients
         opt.zero_grad();
 
         // 2. Forward pass
         Tensor logits = model(X);
 
-        // 3. Pérdida
+        // 3. Loss
         Tensor loss = nn::cross_entropy_loss(logits, y);
 
         // 4. Backward pass
         loss.backward();
 
-        // 5. Actualizar los pesos
+        // 5. Update the weights
         opt.step();
 
         acc = nn::accuracy(logits, y);
@@ -72,9 +72,9 @@ float train(const std::string& title, optim::Optimizer& opt, nn::Sequential& mod
     return acc;
 }
 
-// Entrenamiento por mini-lotes: en cada época se baraja el conjunto y se
-// recorren trozos de `batch_size` filas. Es lo que hace "stochastic" al
-// descenso de gradiente estocástico: cada paso usa una muestra distinta.
+// Mini-batch training: each epoch shuffles the set and walks chunks of
+// `batch_size` rows. That is what makes stochastic gradient descent stochastic:
+// every step uses a different sample.
 float train_minibatch(const std::string& title, optim::Optimizer& opt, nn::Sequential& model,
                       const Tensor& X, const std::vector<size_t>& y, int epochs,
                       size_t batch_size) {
@@ -109,7 +109,7 @@ float train_minibatch(const std::string& title, optim::Optimizer& opt, nn::Seque
         }
 
         if (epoch == 1 || epoch % 20 == 0) {
-            // La exactitud se mide sobre todo el conjunto, sin construir grafo
+            // Accuracy is measured over the whole set, without building a graph
             engine::autograd::NoGradGuard no_grad;
             std::cout << "  Epoch " << std::setw(4) << epoch << " | Mean loss = " << std::fixed
                       << std::setprecision(4) << (epoch_loss / static_cast<float>(num_batches))
@@ -129,11 +129,11 @@ int main() {
     std::cout << "  Phase 3: layers (nn::Module) and optimisers        \n";
     std::cout << "====================================================\n\n";
 
-    // Semilla fija para que el entrenamiento sea reproducible
+    // A fixed seed so the training is reproducible
     engine::manual_seed(42);
 
     // ---------------------------------------------------------
-    // 1. Capa densa y difusión del sesgo
+    // 1. Dense layer and bias broadcasting
     // ---------------------------------------------------------
     std::cout << "--- 1. Capa Densa (Linear) ---\n";
     nn::Linear dense(3, 2);
@@ -148,7 +148,7 @@ int main() {
               << " (the bias broadcasts over the batch's 4 rows)\n\n";
 
     // ---------------------------------------------------------
-    // 2. Softmax y entropía cruzada
+    // 2. Softmax and cross entropy
     // ---------------------------------------------------------
     std::cout << "--- 2. Softmax y Entropia Cruzada ---\n";
     Tensor logits({2, 3}, {2.0f, 1.0f, 0.1f, 0.5f, 2.5f, 0.3f}, true);
@@ -162,7 +162,7 @@ int main() {
     std::cout << "Exactitud = " << nn::accuracy(logits, labels) * 100.0f << "%\n\n";
 
     // ---------------------------------------------------------
-    // 3. Clasificación no lineal: espiral de 3 clases
+    // 3. Non-linear classification: the 3-class spiral
     // ---------------------------------------------------------
     std::cout << "--- 3. Classifying the 3-class spiral ---\n";
     const size_t num_classes = 3;
@@ -174,13 +174,13 @@ int main() {
     std::cout << "Dataset: " << X.shape_str() << ", " << num_classes
               << " clases entrelazadas (no separables linealmente)\n\n";
 
-    // Referencia: un clasificador lineal (una sola capa densa, sin activación)
+    // Baseline: a linear classifier (one dense layer, no activation)
     nn::Sequential linear_model{nn::make<nn::Linear>(2, num_classes)};
     optim::Adam linear_opt(linear_model.parameters(), 0.05f);
     float linear_acc =
         train("Referencia: clasificador lineal (Adam)", linear_opt, linear_model, X, y, 300);
 
-    // Perceptrón multicapa: 2 -> 64 -> 32 -> 3
+    // Multi-layer perceptron: 2 -> 64 -> 32 -> 3
     nn::Sequential mlp{nn::make<nn::Linear>(2, 64), nn::make<nn::ReLU>(),
                        nn::make<nn::Linear>(64, 32), nn::make<nn::ReLU>(),
                        nn::make<nn::Linear>(32, num_classes)};
@@ -190,8 +190,8 @@ int main() {
     optim::Adam adam(mlp.parameters(), 0.02f);
     float mlp_acc = train("MLP 2-64-32-3 with Adam", adam, mlp, X, y, 500);
 
-    // El mismo modelo con SGD + momento, entrenado por mini-lotes: 50 épocas
-    // de 10 pasos bastan donde el lote completo necesitaba 500 iteraciones.
+    // The same model with SGD + momentum, trained in mini-batches: 50 epochs of 10
+    // steps is enough where full-batch needed 500 iterations.
     engine::manual_seed(42);
     nn::Sequential mlp_sgd{nn::make<nn::Linear>(2, 64), nn::make<nn::ReLU>(),
                            nn::make<nn::Linear>(64, 32), nn::make<nn::ReLU>(),

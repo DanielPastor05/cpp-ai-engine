@@ -7,7 +7,7 @@ namespace {
 void test_autograd_scalar() {
     section("Autograd: derivadas analiticas conocidas");
 
-    // L = a*b + relu(a), con a=2, b=3 -> dL/da = b+1 = 4, dL/db = a = 2
+    // L = a*b + relu(a), with a=2, b=3 -> dL/da = b+1 = 4, dL/db = a = 2
     Tensor a({1}, std::vector<float>{2.0f}, true);
     Tensor b({1}, std::vector<float>{3.0f}, true);
     Tensor L = (a * b) + a.relu();
@@ -17,14 +17,14 @@ void test_autograd_scalar() {
     check_close(a.grad().data()[0], 4.0f, "dL/da == b + 1 == 4");
     check_close(b.grad().data()[0], 2.0f, "dL/db == a == 2");
 
-    // Un nodo reutilizado debe acumular gradiente por ambas ramas: L = x + x
+    // A reused node must accumulate gradient through both branches: L = x + x
     Tensor x({1}, std::vector<float>{5.0f}, true);
     Tensor y = (x + x).sum();
     y.backward();
     check_close(x.grad().data()[0], 2.0f,
                 "a shared node accumulates the gradient of both branches");
 
-    // Llamar backward dos veces acumula (igual que PyTorch)
+    // Calling backward twice accumulates (as in PyTorch)
     Tensor z({1}, std::vector<float>{3.0f}, true);
     Tensor w = (z * 2.0f).sum();
     w.backward();
@@ -39,8 +39,8 @@ void test_autograd_scalar() {
 void test_autograd_numeric() {
     section("Autograd: verificacion numerica de gradients");
 
-    // Ningún valor debe caer exactamente en 0: ReLU no es derivable en ese
-    // punto y la diferencia centrada daría 0.5 frente al 0 analítico.
+    // No value may land exactly on 0: ReLU is not differentiable there and the
+    // centred difference would give 0.5 against the analytic 0.
     Tensor A({3, 4}, 0.0f);
     for (size_t i = 0; i < A.size(); ++i) A.data()[i] = 0.5f * static_cast<float>(i) - 2.25f;
 
@@ -78,9 +78,9 @@ void test_autograd_numeric() {
 void test_repeated_backward() {
     section("Autograd: repeated backward over the same graph");
 
-    // Regresión: los nodos intermedios conservaban el gradiente de la llamada
-    // anterior, así que el segundo recorrido propagaba la suma de ambos y
-    // multiplicaba el gradiente de las hojas (daba 18 en lugar de 6).
+    // Regression: intermediate nodes kept the previous call's gradient, so the second
+    // traversal propagated the sum of both and multiplied the leaves' gradients (it
+    // gave 18 instead of 6).
     Tensor x({1}, std::vector<float>{1.0f}, true);
     Tensor h = x * 2.0f;
     Tensor L = (h * 3.0f).sum();
@@ -92,8 +92,8 @@ void test_repeated_backward() {
     L.backward();
     check_close(x.grad().data()[0], 6.0f, "a second backward over the same graph: dL/dx == 6");
 
-    // Sin limpiar la hoja, el resultado debe ser exactamente el doble:
-    // solo las hojas acumulan.
+    // Without clearing the leaf, the result must be exactly double: only leaves
+    // accumulate.
     L.backward();
     check_close(x.grad().data()[0], 12.0f, "without zero_grad the leaves accumulate (6 + 6)");
 }
@@ -109,7 +109,7 @@ void test_row_indexing_and_batches() {
     check_throws([&] { A(2, 0); }, "A(fila, col) out of range throws");
     check_throws([&] { Tensor({4}, 1.0f)(0, 0); }, "A(fila, col) on a 1D tensor throws");
 
-    // Escalar a la izquierda
+    // Scalar on the left
     Tensor t({2}, {1.0f, 2.0f});
     check_close((2.0f * t).data()[1], 4.0f, "2.0f * t multiplies from the left");
     check_close((1.0f + t).data()[0], 2.0f, "1.0f + t adds from the left");
@@ -122,7 +122,7 @@ void test_row_indexing_and_batches() {
     check_close(batch(0, 0), 3.0f, "select_rows respects the requested order");
     check_close(batch(1, 0), 1.0f, "select_rows takes the right row");
 
-    // Con índices repetidos el gradiente debe acumularse en la fila de origen
+    // With repeated indices the gradient must accumulate into the source row
     X.zero_grad();
     Tensor loss = X.select_rows({0, 0, 2}).sum();
     loss.backward();
@@ -168,8 +168,8 @@ void test_no_grad_and_errors() {
 void test_graph_is_released() {
     section("Autograd: the graph is freed (no shared_ptr cycles)");
 
-    // Si backward_fn capturase su propio tensor de salida se formaría un ciclo
-    // de shared_ptr y el nodo no se destruiría nunca al salir del ámbito.
+    // If backward_fn captured its own output tensor there would be a shared_ptr cycle
+    // and the node would never be destroyed when it went out of scope.
     std::weak_ptr<engine::TensorImpl> weak_node;
     {
         Tensor a({4, 4}, 2.0f, true);
