@@ -1,6 +1,7 @@
 #ifndef ENGINE_OPTIM_HPP
 #define ENGINE_OPTIM_HPP
 
+#include "engine/detail/storage.hpp"
 #include "engine/tensor.hpp"
 
 #include <vector>
@@ -54,7 +55,10 @@ public:
 private:
     float momentum_;
     float weight_decay_;
-    std::vector<std::vector<float>> velocity_;
+    // Storage rather than vector<float>: the state has to be able to live on
+    // the device too, or the optimiser kernel would upload it every step and
+    // the transfers would only move rather than disappear.
+    std::vector<Storage> velocity_;
 };
 
 // ---------------------------------------------------------
@@ -80,8 +84,9 @@ private:
     float eps_;
     float weight_decay_;
     size_t t_ = 0;
-    std::vector<std::vector<float>> m_;  // primer momento
-    std::vector<std::vector<float>> v_;  // segundo momento
+    // As in SGD: device-resident state, or the kernel saves nothing.
+    std::vector<Storage> m_;  // first moment
+    std::vector<Storage> v_;  // second moment
 };
 
 // ---------------------------------------------------------

@@ -634,6 +634,88 @@ void run_cuda_parity_tests() {
         });
     }
 
+    // --- the optimisers ---
+    //
+    // The largest transfer saving in the engine, and for that reason the easiest
+    // to get subtly wrong. The parameter is updated **in place**, and the
+    // optimiser's own state -- velocity for SGD, the two moments for Adam --
+    // has to follow it onto the device. A step that reads a stale velocity
+    // still produces a perfectly plausible number.
+    //
+    // Several steps, not one: momentum and Adam's bias correction both only
+    // diverge from a single step after the state has had a chance to be wrong.
+    {
+        const size_t n = 96;
+
+        auto seeded_weight = [n] {
+            Tensor w(std::vector<size_t>{n, n}, 0.0f, true);
+            for (size_t i = 0; i < w.size(); ++i) {
+                w.data()[i] = 0.01f * static_cast<float>((int)(i % 17) - 8);
+            }
+            return w;
+        };
+
+        auto run_sgd = [&](bool on) {
+            cuda::set_enabled(on);
+            Tensor w = seeded_weight();
+            Tensor x = seeded_weight();
+            optim::SGD opt({w}, 0.05f, 0.9f);
+            for (int step = 0; step < 5; ++step) {
+                opt.zero_grad();
+                w.matmul(x).relu().sum().backward();
+                opt.step();
+            }
+            return w.data();
+        };
+
+        auto run_adam = [&](bool on) {
+            cuda::set_enabled(on);
+            Tensor w = seeded_weight();
+            Tensor x = seeded_weight();
+            optim::Adam opt({w}, 0.01f);
+            for (int step = 0; step < 5; ++step) {
+                opt.zero_grad();
+                w.matmul(x).relu().sum().backward();
+                opt.step();
+            }
+            return w.data();
+        };
+
+        for (int which = 0; which < 2; ++which) {
+            const std::string name = which == 0 ? "SGD with momentum" : "Adam";
+            const std::vector<float> want = which == 0 ? run_sgd(false) : run_adam(false);
+
+            const size_t before = cuda::kernels_launched();
+            const std::vector<float> got = which == 0 ? run_sgd(true) : run_adam(true);
+            const size_t launched = cuda::kernels_launched() - before;
+
+            ++testing::g_checks;
+            if (launched == 0) {
+                ++testing::g_failures;
+                std::cout << "  [FAIL] " << name
+                          << ": five steps launched no kernel, so this compared CPU to CPU\n";
+                continue;
+            }
+
+            double worst = 0.0;
+            for (size_t i = 0; i < want.size(); ++i) {
+                const double scale = std::max(1.0, std::fabs((double)want[i]));
+                worst = std::max(worst, std::fabs((double)got[i] - want[i]) / scale);
+            }
+            // Five steps of accumulated FMA differences, not one, so the bound is
+            // looser than the single-operation cases above and deliberately so.
+            if (worst <= 1e-4) {
+                std::cout << "  [ ok ] " << name << ": 5 steps agree to " << std::scientific
+                          << std::setprecision(2) << worst << std::defaultfloat << "\n";
+            } else {
+                ++testing::g_failures;
+                std::cout << "  [FAIL] " << name << ": 5 steps drift to " << std::scientific
+                          << std::setprecision(3) << worst << std::defaultfloat << "\n";
+            }
+        }
+        cuda::set_enabled(true);
+    }
+
     // --- reshape stays on the device ---
     //
     // reshape copies the whole buffer by definition -- it is not a view -- but

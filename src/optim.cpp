@@ -1,4 +1,5 @@
 #include "engine/optim.hpp"
+#include "engine/detail/cuda_ops.hpp"
 #include "engine/autograd.hpp"
 #include "engine/detail/restrict.hpp"
 #include "engine/parallel.hpp"
@@ -51,14 +52,24 @@ void SGD::step() {
         // from p.grad().data() would point into a temporary.
         //
         Tensor grad_tensor = p.grad();
-        const std::vector<float>& g = grad_tensor.data();
-        std::vector<float>& w = p.data();
+        Storage& param = p.get_impl()->storage;
+        Storage& grad = grad_tensor.get_impl()->storage;
+        Storage* vel = velocity_.empty() ? nullptr : &velocity_[i];
+
+        // Offered to the device before anything reads .data(). That ordering is
+        // the whole point: one .data() here pulls the entire model down, and the
+        // next forward pushes it straight back up.
+        if (cuda::ops::sgd_step(param, grad, vel, lr_, momentum_, weight_decay_)) continue;
+
+        const std::vector<float>& g = grad.host();
+        std::vector<float>& w = param.host_mut();
 
         // Each weight is updated with its own gradient and its own velocity: there is
         // no reduction, so splitting does not change the result.
         const float* ENGINE_RESTRICT gp = g.data();
         float* ENGINE_RESTRICT wp = w.data();
-        float* ENGINE_RESTRICT vp = momentum_ != 0.0f ? velocity_[i].data() : nullptr;
+        float* ENGINE_RESTRICT vp = (vel != nullptr && momentum_ != 0.0f) ? vel->host_mut().data()
+                                                                          : nullptr;
         parallel::parallel_for(w.size(), parallel::kElementsPerThread, [&](size_t from, size_t to) {
             for (size_t j = from; j < to; ++j) {
                 float grad = gp[j];
@@ -116,15 +127,23 @@ void Adam::step() {
         // from p.grad().data() would point into a temporary.
         //
         Tensor grad_tensor = p.grad();
-        const std::vector<float>& g = grad_tensor.data();
-        std::vector<float>& w = p.data();
+        Storage& param = p.get_impl()->storage;
+        Storage& grad = grad_tensor.get_impl()->storage;
+
+        if (cuda::ops::adam_step(param, grad, m_[i], v_[i], lr_, beta1_, beta2_, eps_,
+                                 weight_decay_, bias_c1, bias_c2)) {
+            continue;
+        }
+
+        const std::vector<float>& g = grad.host();
+        std::vector<float>& w = param.host_mut();
 
         // As in SGD: each weight carries its own moment and its own variance,
         // and nothing crosses between indices.
         const float* ENGINE_RESTRICT gp = g.data();
         float* ENGINE_RESTRICT wp = w.data();
-        float* ENGINE_RESTRICT mp = m_[i].data();
-        float* ENGINE_RESTRICT vp = v_[i].data();
+        float* ENGINE_RESTRICT mp = m_[i].host_mut().data();
+        float* ENGINE_RESTRICT vp = v_[i].host_mut().data();
         parallel::parallel_for(w.size(), parallel::kElementsPerThread, [&](size_t from, size_t to) {
             for (size_t j = from; j < to; ++j) {
                 float grad = gp[j];
@@ -154,10 +173,23 @@ float clip_grad_norm(const std::vector<Tensor>& parameters, float max_norm) {
 
     // The norm is global, over all parameters together: clipping each separately
     // would change the step's direction, not just its length.
+    // Reduced on the device when the gradient is already there, per parameter,
+    // and only the resulting double comes back. Reading .data() here instead is
+    // what used to pull the entire model's gradients down every single step --
+    // and, worse, left them host-resident, so the optimiser kernel that runs
+    // immediately afterwards found nothing to work on and never fired at all.
+    // One host-side reduction in the middle of a step poisons everything after
+    // it.
     double total = 0.0;
     for (const Tensor& p : parameters) {
         if (!p.has_grad()) continue;
-        for (float g : p.grad().data()) total += static_cast<double>(g) * g;
+        Tensor g = p.grad();
+        double partial = 0.0;
+        if (cuda::ops::reduce_sum_squares(g.get_impl()->storage, partial)) {
+            total += partial;
+            continue;
+        }
+        for (float v : g.data()) total += static_cast<double>(v) * v;
     }
     const float norm = static_cast<float>(std::sqrt(total));
 
@@ -166,6 +198,7 @@ float clip_grad_norm(const std::vector<Tensor>& parameters, float max_norm) {
         for (const Tensor& p : parameters) {
             if (!p.has_grad()) continue;
             Tensor g = p.grad();
+            if (cuda::ops::scale_in_place(g.get_impl()->storage, scale)) continue;
             for (float& v : g.data()) v *= scale;
         }
     }

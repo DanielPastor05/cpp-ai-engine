@@ -18,6 +18,7 @@
 #include <cuda_runtime.h>
 #include <mma.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -949,6 +950,125 @@ __global__ void matmul_tensor_core(const float* __restrict__ A, const float* __r
 }
 
 // ---------------------------------------------------------
+// Whole-buffer reductions, in double
+// ---------------------------------------------------------
+//
+// Two stages over a fixed block count. Stage one gives each block a slice and
+// leaves one double behind; stage two sums those in a single block, in index
+// order. The alternative -- one kernel and an atomicAdd on a double -- is
+// shorter and makes the answer depend on which block finishes first, so two runs
+// over the same data could disagree in the last bits. Everything else in this
+// backend is reproducible run to run and this is not the place to stop.
+//
+// double all the way through, because Tensor::sum() accumulates in double
+// deliberately and mean(), mse_loss and every backward's initial gradient hang
+// off it.
+
+constexpr int kReduceBlocks = 256;
+
+// One buffer for the partials, allocated once and never freed. It is 2 KB, it
+// outlives every call, and freeing it at exit would mean touching the CUDA
+// context during shutdown -- which src/cuda/runtime.cu already documents as a
+// thing not to do.
+double* reduction_partials() {
+    static double* buffer = [] {
+        void* p = nullptr;
+        if (cudaMalloc(&p, kReduceBlocks * sizeof(double)) != cudaSuccess) return (double*)nullptr;
+        return (double*)p;
+    }();
+    return buffer;
+}
+
+template <bool Square>
+__global__ void reduce_stage1(const float* __restrict__ x, double* __restrict__ partials,
+                              long long n) {
+    __shared__ double shared[kReduceBlock];
+
+    const long long stride = (long long)blockDim.x * gridDim.x;
+    double acc = 0.0;
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
+        const double v = (double)x[i];
+        acc += Square ? v * v : v;
+    }
+
+    const int tid = threadIdx.x;
+    shared[tid] = acc;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) shared[tid] += shared[tid + s];
+        __syncthreads();
+    }
+    if (tid == 0) partials[blockIdx.x] = shared[0];
+}
+
+// One block, walking the partials in index order: the same order every run.
+__global__ void reduce_stage2(double* __restrict__ partials, int count) {
+    __shared__ double shared[kReduceBlocks];
+    const int tid = threadIdx.x;
+    shared[tid] = (tid < count) ? partials[tid] : 0.0;
+    __syncthreads();
+    for (int s = kReduceBlocks / 2; s > 0; s >>= 1) {
+        if (tid < s) shared[tid] += shared[tid + s];
+        __syncthreads();
+    }
+    if (tid == 0) partials[0] = shared[0];
+}
+
+__global__ void scale_buffer(float* __restrict__ x, float factor, long long n) {
+    const long long stride = (long long)blockDim.x * gridDim.x;
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
+        x[i] *= factor;
+    }
+}
+
+// ---------------------------------------------------------
+// Optimiser steps
+// ---------------------------------------------------------
+//
+// The dullest kernels here and the ones that save the most traffic. Each thread
+// owns one weight, reads its gradient and its own slice of the optimiser state,
+// and writes the weight back. Nothing is shared between indices, so there is no
+// reduction and no barrier -- the arithmetic is identical to the CPU loop, line
+// for line, which is why the parity test can hold them to a tight tolerance.
+
+__global__ void sgd_update(float* __restrict__ w, const float* __restrict__ g,
+                           float* __restrict__ velocity, float lr, float momentum,
+                           float weight_decay, long long n) {
+    const long long stride = (long long)blockDim.x * gridDim.x;
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
+        float grad = g[i];
+        if (weight_decay != 0.0f) grad += weight_decay * w[i];
+        if (velocity != nullptr) {
+            velocity[i] = momentum * velocity[i] + grad;
+            grad = velocity[i];
+        }
+        w[i] -= lr * grad;
+    }
+}
+
+__global__ void adam_update(float* __restrict__ w, const float* __restrict__ g,
+                            float* __restrict__ m, float* __restrict__ v, float lr, float beta1,
+                            float beta2, float eps, float weight_decay, float bias_c1,
+                            float bias_c2, long long n) {
+    const long long stride = (long long)blockDim.x * gridDim.x;
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
+        float grad = g[i];
+        if (weight_decay != 0.0f) grad += weight_decay * w[i];
+
+        m[i] = beta1 * m[i] + (1.0f - beta1) * grad;
+        v[i] = beta2 * v[i] + (1.0f - beta2) * grad * grad;
+
+        // The bias corrections arrive precomputed: they depend on the step
+        // count, not on the index, so working them out per element would be the
+        // same two pow() calls repeated a million times.
+        const float m_hat = m[i] / bias_c1;
+        const float v_hat = v[i] / bias_c2;
+
+        w[i] -= lr * m_hat / (sqrtf(v_hat) + eps);
+    }
+}
+
+// ---------------------------------------------------------
 // Softmax over the last axis
 // ---------------------------------------------------------
 //
@@ -1299,6 +1419,111 @@ bool maxpool_backward(const Storage& argmax, const Storage& grad_out, Storage& d
     maxpool_windows_grad<<<grid_for(n), kBlock>>>(argmax.device(), grad_out.device(),
                                                   dx.device_write(), d, n);
     return launched_ok("maxpool_windows_grad", dx);
+}
+
+namespace {
+
+// Shared by both reductions. Like the optimisers, the admission rule is
+// residency and not size: if the values are already on the device, reducing them
+// here costs one 8-byte read back, and refusing costs pulling the whole buffer
+// down.
+template <bool Square>
+bool reduce_impl(const Storage& x, double& out) {
+    if (!enabled() || x.size() == 0) return false;
+    if (!x.resident_on_device()) return false;
+
+    double* partials = reduction_partials();
+    if (partials == nullptr) return false;
+
+    const long long n = (long long)x.size();
+    const int blocks = (int)std::min<long long>(kReduceBlocks, (n + kReduceBlock - 1) / kReduceBlock);
+
+    reduce_stage1<Square><<<blocks, kReduceBlock>>>(x.device(), partials, n);
+    if (!launch_ok("reduce_stage1")) return false;
+    reduce_stage2<<<1, kReduceBlocks>>>(partials, blocks);
+    if (!launch_ok("reduce_stage2")) return false;
+
+    double result = 0.0;
+    if (cudaMemcpy(&result, partials, sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        return false;
+    }
+    out = result;
+    return true;
+}
+
+}  // namespace
+
+bool reduce_sum(const Storage& x, double& out) {
+    return reduce_impl<false>(x, out);
+}
+
+bool reduce_sum_squares(const Storage& x, double& out) {
+    return reduce_impl<true>(x, out);
+}
+
+bool scale_in_place(Storage& x, float factor) {
+    if (!enabled() || x.size() == 0) return false;
+    if (!x.resident_on_device()) return false;
+
+    const long long n = (long long)x.size();
+    // device_mut() and not device_write(): the kernel reads each value before it
+    // writes it.
+    scale_buffer<<<grid_for(n), kBlock>>>(x.device_mut(), factor, n);
+    return launch_ok("scale_buffer");
+}
+
+// Both optimiser entry points share the same admission rule, and it is not a
+// size threshold. What decides is whether the backward left the gradient on the
+// device: if it did, running here costs nothing and saves pulling the whole
+// model down; if it did not, uploading a gradient to subtract it would pay the
+// very transfer this is meant to remove.
+//
+// Note what is deliberately absent: elementwise_worth_it(). A ten-element bias
+// still dispatches, because the alternative is not "a cheap CPU loop" but "a
+// download, a CPU loop, and an upload before the next forward".
+namespace {
+
+bool optimiser_can_run(const Storage& param, const Storage& grad) {
+    if (!enabled()) return false;
+    if (param.size() == 0 || grad.size() != param.size()) return false;
+    return grad.resident_on_device();
+}
+
+}  // namespace
+
+bool sgd_step(Storage& param, const Storage& grad, Storage* velocity, float lr, float momentum,
+              float weight_decay) {
+    if (!optimiser_can_run(param, grad)) return false;
+    if (velocity != nullptr && velocity->size() != param.size()) return false;
+
+    const long long n = (long long)param.size();
+    // device_mut() and not device_write(): every one of these reads the old
+    // value before writing the new one, so the buffer has to be uploaded if it
+    // is stale rather than merely reserved.
+    float* w = param.device_mut();
+    float* vel = (velocity != nullptr && momentum != 0.0f) ? velocity->device_mut() : nullptr;
+
+    sgd_update<<<grid_for(n), kBlock>>>(w, grad.device(), vel, lr, momentum, weight_decay, n);
+    // launch_ok and not launched_ok: nothing here was requested with
+    // device_write(), so there is no reservation to revert. The host copy is
+    // already marked stale and the device holds the good data, which is exactly
+    // what the CPU fallback needs in order to pull it down intact.
+    return launch_ok("sgd_update");
+}
+
+bool adam_step(Storage& param, const Storage& grad, Storage& m, Storage& v, float lr, float beta1,
+               float beta2, float eps, float weight_decay, float bias_c1, float bias_c2) {
+    if (!optimiser_can_run(param, grad)) return false;
+    if (m.size() != param.size() || v.size() != param.size()) return false;
+
+    const long long n = (long long)param.size();
+    float* w = param.device_mut();
+    float* mp = m.device_mut();
+    float* vp = v.device_mut();
+
+    adam_update<<<grid_for(n), kBlock>>>(w, grad.device(), mp, vp, lr, beta1, beta2, eps,
+                                         weight_decay, bias_c1, bias_c2, n);
+    return launch_ok("adam_update");
 }
 
 bool relu(const Storage& x, Storage& out) {

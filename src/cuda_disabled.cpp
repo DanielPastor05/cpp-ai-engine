@@ -150,6 +150,22 @@ bool permute(const Storage&, Storage&, const size_t*, const size_t*, size_t) {
 bool sum_axis(const Storage&, Storage&, size_t, size_t, size_t) {
     return false;
 }
+bool reduce_sum(const Storage&, double&) {
+    return false;
+}
+bool reduce_sum_squares(const Storage&, double&) {
+    return false;
+}
+bool scale_in_place(Storage&, float) {
+    return false;
+}
+bool sgd_step(Storage&, const Storage&, Storage*, float, float, float) {
+    return false;
+}
+bool adam_step(Storage&, const Storage&, Storage&, Storage&, float, float, float, float, float,
+               float, float) {
+    return false;
+}
 bool relu(const Storage&, Storage&) {
     return false;
 }

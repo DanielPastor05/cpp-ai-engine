@@ -106,6 +106,56 @@ bool maxpool(const Storage& input, Storage& out, Storage& argmax, const WindowSh
 bool maxpool_backward(const Storage& argmax, const Storage& grad_out, Storage& dx,
                       const WindowShape& s);
 
+// Whole-buffer reductions to one scalar, on the device.
+//
+// **double and not float**, and that is not a detail. Tensor::sum() accumulates
+// in double on purpose -- summing a million floats loses the low bits as soon as
+// the total grows against each addend, and mean(), mse_loss and the initial
+// gradient of every backward all hang off it. A float reduction here would
+// quietly undo a fix that has a commit of its own.
+//
+// Two stages with a fixed block count, not an atomicAdd. Atomics would be
+// shorter and would make the result depend on the order blocks happen to finish
+// in, so two runs on the same data could disagree in the last bits. The engine
+// promises that they do not.
+//
+// These exist because one host-side reduction in the middle of a step poisons
+// everything after it: clip_grad_norm reading p.grad().data() pulled every
+// gradient down, which left the optimiser kernel nothing device-resident to work
+// on and it never fired at all.
+bool reduce_sum(const Storage& x, double& out);
+bool reduce_sum_squares(const Storage& x, double& out);
+
+// x *= factor, in place. Distinct from scalar() because that one writes to a
+// separate output and aliasing it onto its own input is the device_write() trap:
+// the buffer would be marked valid without being uploaded, and the read would
+// see whatever was there before.
+bool scale_in_place(Storage& x, float factor);
+
+// One optimiser step, in place on the parameter.
+//
+// These two are the largest transfer saving in the engine and the least
+// interesting kernels in it: element-wise, no reductions, no shared memory. The
+// size is the point. Reading `p.data()` and `grad.data()` for every parameter
+// pulls the whole model down and pushes it back up once per step -- on MNIST,
+// 206,922 parameters, which is **606 MiB over PCIe per training run** from the
+// optimiser alone, on a model whose forward pass had just finished computing
+// entirely on the device.
+//
+// `velocity`, `m` and `v` are the optimiser's own state and have to be device
+// resident too, or the transfers only move rather than disappear.
+//
+// The dispatch condition is not a size threshold. It is whether the **gradient
+// is already on the device**: if the backward ran there, this costs nothing and
+// saves a round trip, and if it ran on the host, uploading a gradient just to
+// subtract it would pay exactly the cost this exists to avoid. Below any
+// sensible size threshold the launch is still cheaper than the download it
+// replaces, because the download also forces a synchronisation.
+bool sgd_step(Storage& param, const Storage& grad, Storage* velocity, float lr, float momentum,
+              float weight_decay);
+bool adam_step(Storage& param, const Storage& grad, Storage& m, Storage& v, float lr, float beta1,
+               float beta2, float eps, float weight_decay, float bias_c1, float bias_c2);
+
 // Softmax over the last axis: `rows` rows of `cols` contiguous values.
 bool softmax(const Storage& x, Storage& out, size_t rows, size_t cols);
 // y is the saved forward output, not the input.

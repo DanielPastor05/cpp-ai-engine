@@ -122,11 +122,23 @@ Tensor fold_leading(const Tensor& full, const std::vector<size_t>& target) {
     const size_t repeat = full.size() / inner;
 
     Tensor folded(target, 0.0f, false);
-    const float* ENGINE_RESTRICT src = full.data().data();
-    float* ENGINE_RESTRICT dst = folded.data().data();
-    for (size_t r = 0; r < repeat; ++r) {
-        for (size_t j = 0; j < inner; ++j) {
-            dst[j] += src[r * inner + j];
+
+    // This is sum_axis with a single outer block: out[j] = sum over r of
+    // full[r * inner + j]. The kernel already existed, and this was the single
+    // largest remaining download in a training step -- measured at 5.8 MiB per
+    // step on MNIST, almost all of it the bias gradient of the first
+    // convolution, where `full` is (50176, 16) and `target` is (16).
+    //
+    // The accumulation order matches the CPU loop's, r ascending, so the two
+    // agree bit for bit.
+    if (!cuda::ops::sum_axis(full.get_impl()->storage, folded.get_impl()->storage, 1, repeat,
+                             inner)) {
+        const float* ENGINE_RESTRICT src = full.data().data();
+        float* ENGINE_RESTRICT dst = folded.data().data();
+        for (size_t r = 0; r < repeat; ++r) {
+            for (size_t j = 0; j < inner; ++j) {
+                dst[j] += src[r * inner + j];
+            }
         }
     }
     return folded;
@@ -502,14 +514,18 @@ Tensor Tensor::operator+(const Tensor& other) const {
                 other_copy.add_grad(grad_out);
             } else {
                 // The broadcast operand was repeated `repeat` times, so its gradient
-                // is the sum of all those copies.
-                Tensor db(other_copy.shape(), 0.0f, false);
-                for (size_t r = 0; r < plan.repeat; ++r) {
-                    for (size_t j = 0; j < plan.inner; ++j) {
-                        db.data()[j] += grad_out.data()[r * plan.inner + j];
-                    }
-                }
-                other_copy.add_grad(db);
+                // is the sum of all those copies -- which is exactly what
+                // fold_leading does, and what the other three operators already
+                // called. This one had its own inline loop with a
+                // grad_out.data() in it, and that one accessor was **the largest
+                // download left in a training step**: 5.8 MiB per step on MNIST,
+                // almost all of it the first convolution's bias gradient, where
+                // grad_out is (50176, 16) folded down to (16).
+                //
+                // Four operators, four broadcast backwards, and the one that
+                // duplicated the shared helper instead of calling it was the one
+                // that stayed on the host.
+                other_copy.add_grad(fold_leading(grad_out, other_copy.shape()));
             }
         };
     }
@@ -1083,8 +1099,15 @@ Tensor Tensor::sum() const {
     // clip_grad_norm. Summing a million values in float loses the low bits as soon
     // as the total grows against each addend, and mean() hangs off this reduction,
     // which means mse_loss and the initial gradient of every backward.
+    // Offered to the device first, and the accumulator stays double on both
+    // paths. A float reduction on the GPU would be shorter and would undo the
+    // reason this one is double: mean(), mse_loss and the initial gradient of
+    // every backward hang off this sum.
     double total = 0.0;
-    for (float v : data()) total += v;
+    if (!cuda::ops::reduce_sum(impl_->storage, total)) {
+        total = 0.0;
+        for (float v : data()) total += v;
+    }
     bool req_g = track(requires_grad());
     Tensor res({1}, std::vector<float>{static_cast<float>(total)}, req_g);
 
