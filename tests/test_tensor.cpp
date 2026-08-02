@@ -15,9 +15,9 @@ void test_tensor_basics() {
     check(A.size() == 6, "the tensor has 6 elements");
     check_close(A({1, 2}), 6.0f, "A[1, 2] == 6");
 
-    check_throws([&] { A({2, 0}); }, "indexing out of range throws");
-    check_throws([&] { Tensor({2, 3}, {1.0f, 2.0f}); }, "data of the wrong size throws");
-    check_throws([&] { A.reshape({4, 2}); }, "an incompatible reshape throws");
+    check_throws([&] { (void)A({2, 0}); }, "indexing out of range throws");
+    check_throws([&] { (void)Tensor({2, 3}, {1.0f, 2.0f}); }, "data of the wrong size throws");
+    check_throws([&] { (void)A.reshape({4, 2}); }, "an incompatible reshape throws");
 
     Tensor R = A.reshape({3, 2});
     check(R.shape() == std::vector<size_t>({3, 2}), "reshape to (3, 2) preserves the data");
@@ -54,7 +54,7 @@ void test_matmul() {
     check_close(R({1, 0}), 85.0f, "R[1,0] == 85");
     check_close(R({1, 1}), 55.0f, "R[1,1] == 55");
 
-    check_throws([&] { M1.matmul(M1); }, "incompatible inner dimensions throw");
+    check_throws([&] { (void)M1.matmul(M1); }, "incompatible inner dimensions throw");
 
     Tensor T = M1.transpose();
     check(T.shape() == std::vector<size_t>({3, 2}), "transpose flips the shape");
@@ -76,7 +76,7 @@ void test_broadcast_add() {
     check_close(b.grad().data()[0], 2.0f, "the bias gradient sums by column (2 rows)");
 
     Tensor bad({1, 4}, 0.0f);
-    check_throws([&] { X + bad; }, "a broadcast with a different width throws");
+    check_throws([&] { (void)(X + bad); }, "a broadcast with a different width throws");
 
     // Regression: with more axes than the base but leading ones, the repetition count
     // was computed with a product over an empty range that was mistaken for the full
@@ -120,9 +120,9 @@ void test_nd_tensor_ops() {
     check_close(Pp.data()[(2 * 2 + 1) * 3 + 0], P.data()[(1 * 3 + 0) * 4 + 2],
                 "permute relocates the elements correctly");
     check(P.permute({0, 1, 2}).shape() == P.shape(), "the identity permutation changes nothing");
-    check_throws([&] { P.permute({0, 1}); }, "permute with too few axes throws");
-    check_throws([&] { P.permute({0, 1, 1}); }, "permute with a repeated axis throws");
-    check_throws([&] { P.permute({0, 1, 5}); }, "permute with a nonexistent axis throws");
+    check_throws([&] { (void)P.permute({0, 1}); }, "permute with too few axes throws");
+    check_throws([&] { (void)P.permute({0, 1, 1}); }, "permute with a repeated axis throws");
+    check_throws([&] { (void)P.permute({0, 1, 5}); }, "permute with a nonexistent axis throws");
 
     // batched matmul: each matrix in the batch is multiplied separately
     Tensor A({2, 2, 3}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12});
@@ -141,9 +141,9 @@ void test_nd_tensor_ops() {
     check_close(Cs.data()[0], 4.0f, "the shared matrix applies to the first batch");
     check_close(Cs.data()[4], 16.0f, "and the same matrix to the second (7 + 9)");
 
-    check_throws([&] { Tensor({2, 2, 3}, 1.0f).matmul(Tensor({3, 3, 2}, 1.0f)); },
+    check_throws([&] { (void)Tensor({2, 2, 3}, 1.0f).matmul(Tensor({3, 3, 2}, 1.0f)); },
                  "matmul with mismatched batches throws");
-    check_throws([&] { Tensor({4}, 1.0f).matmul(Tensor({4}, 1.0f)); },
+    check_throws([&] { (void)Tensor({4}, 1.0f).matmul(Tensor({4}, 1.0f)); },
                  "matmul of 1D vectors throws");
 
     // softmax over the last axis of a 3D tensor
@@ -168,7 +168,7 @@ void test_nd_tensor_ops() {
     check_close(row.grad().data()[0], 2.0f,
                 "the broadcast operand's gradient sums both repetitions");
 
-    check_throws([&] { base + Tensor({5, 4}, 1.0f); },
+    check_throws([&] { (void)(base + Tensor({5, 4}, 1.0f)); },
                  "a broadcast with an incompatible suffix throws");
 
     // Numerical gradients of the new operations
@@ -243,8 +243,8 @@ void test_reductions() {
     check(v.sum(0).shape() == std::vector<size_t>({1}), "reducing a 1D tensor gives a {1} scalar");
     check_close(v.max(0).data()[0], 7.0f, "max of a vector");
 
-    check_throws([&] { A.sum(5); }, "reducing a nonexistent axis throws");
-    check_throws([&] { A.max(2); }, "max over a nonexistent axis throws");
+    check_throws([&] { (void)A.sum(5); }, "reducing a nonexistent axis throws");
+    check_throws([&] { (void)A.max(2); }, "max over a nonexistent axis throws");
 
     // Gradientes
     Tensor G({2, 3, 4}, 0.0f);
@@ -281,9 +281,9 @@ void test_slice_concat_stack() {
     check_close(c(0, 0), 1.0f, "a column slice takes the right column");
     check_close(c(1, 1), 6.0f, "a column slice respects the rows");
 
-    check_throws([&] { A.slice(0, 2, 5); }, "a slice that runs off the end throws");
-    check_throws([&] { A.slice(0, 0, 0); }, "an empty slice throws");
-    check_throws([&] { A.slice(7, 0, 1); }, "a slice along a nonexistent axis throws");
+    check_throws([&] { (void)A.slice(0, 2, 5); }, "a slice that runs off the end throws");
+    check_throws([&] { (void)A.slice(0, 0, 0); }, "an empty slice throws");
+    check_throws([&] { (void)A.slice(7, 0, 1); }, "a slice along a nonexistent axis throws");
 
     // concat
     Tensor P({2, 2}, {1, 2, 3, 4});
@@ -299,8 +299,8 @@ void test_slice_concat_stack() {
     check_close(cc2(0, 2), 7.0f, "column-wise concat interleaves correctly");
     check_close(cc2(1, 0), 3.0f, "column-wise concat preserves the rows");
 
-    check_throws([&] { Tensor::concat({}, 0); }, "concat with no parts throws");
-    check_throws([&] { Tensor::concat({P, Tensor({3, 3}, 1.0f)}, 0); },
+    check_throws([&] { (void)Tensor::concat({}, 0); }, "concat with no parts throws");
+    check_throws([&] { (void)Tensor::concat({P, Tensor({3, 3}, 1.0f)}, 0); },
                  "concat with incompatible dimensions throws");
 
     // stack
@@ -308,7 +308,7 @@ void test_slice_concat_stack() {
     check(st.shape() == std::vector<size_t>({2, 2, 2}), "stack creates a new axis");
     Tensor st1 = Tensor::stack({P, P}, 1);
     check(st1.shape() == std::vector<size_t>({2, 2, 2}), "stack accepts a middle axis");
-    check_throws([&] { Tensor::stack({P, Q}, 0); }, "stack with mismatched shapes throws");
+    check_throws([&] { (void)Tensor::stack({P, Q}, 0); }, "stack with mismatched shapes throws");
 
     // Gradientes
     Tensor G({3, 4}, 0.0f);
@@ -345,9 +345,9 @@ void test_broadcast_all_operators() {
     Tensor k({1}, std::vector<float>{10.0f}, true);
     check_close((X * k).data()[3], 40.0f, "a {1} tensor broadcasts as a scalar");
 
-    check_throws([&] { X - Tensor({4}, 1.0f); },
+    check_throws([&] { (void)(X - Tensor({4}, 1.0f)); },
                  "a subtraction with an incompatible suffix throws");
-    check_throws([&] { X* Tensor({5, 3}, 1.0f); }, "an incompatible product throws");
+    check_throws([&] { (void)(X * Tensor({5, 3}, 1.0f)); }, "an incompatible product throws");
 
     // Gradients of the broadcast operand
     Tensor base({2, 3}, {1, 2, 3, 4, 5, 6}, false);
@@ -441,7 +441,7 @@ void test_parallelism() {
     // An exception in a worker reaches the thread that split the work
     check_throws(
         [&] {
-            par::parallel_for(100000, 1000, [](size_t from, size_t) {
+            (void)par::parallel_for(100000, 1000, [](size_t from, size_t) {
                 if (from > 0) throw std::runtime_error("failure in a worker");
             });
         },

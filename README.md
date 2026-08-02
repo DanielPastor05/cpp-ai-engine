@@ -6,7 +6,7 @@ PyTorch**.
 
 [![CI](https://github.com/DanielPastor05/cpp-ai-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/DanielPastor05/cpp-ai-engine/actions/workflows/ci.yml)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)
-![tests](https://img.shields.io/badge/tests-524%20checks-brightgreen)
+![tests](https://img.shields.io/badge/tests-530%20%2B%20644%20checks-brightgreen)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
 No dependencies. No BLAS. The point is to implement it, not to call it.
@@ -140,6 +140,66 @@ card end to end, and why an operation *without* a kernel is expensive out of
 proportion to its cost — it pulls its input down and forces the next one to push
 it back up.
 
+### What a tensor is made of
+
+Four types, and the split between them is the decision the rest of the engine
+rests on. `Storage` exists as its own type **because it was separated before the
+first kernel was written** — with a `std::vector<float>` inside `TensorImpl`
+there would have been nowhere to record that a tensor was already on the card,
+and every operation would have grown host/device branches.
+
+```mermaid
+classDiagram
+    class Tensor {
+        -shared_ptr~TensorImpl~ impl_
+        +shape() strides() size()
+        +matmul() relu() reshape()
+        +backward()
+    }
+    class TensorImpl {
+        +Storage storage
+        +vector shape
+        +vector strides
+        +bool requires_grad
+        +shared_ptr~TensorImpl~ grad
+        +vector~weak_ptr~ parents
+        +function backward_fn
+    }
+    class Storage {
+        -vector~float~ host
+        -float* device
+        -size_t count
+        -float fill
+        -bool host_valid
+        -bool device_valid
+        +host()
+        +device()
+        +device_write()
+    }
+    Tensor --> TensorImpl : shared handle, copies alias
+    TensorImpl --> Storage : owns
+    TensorImpl ..> TensorImpl : parents, weak_ptr
+```
+
+Three things this picture is the shortest way to say:
+
+**`Tensor` is a handle.** Copying one shares the data, the gradient and the
+history. That is what lets a `backward_fn` capture its inputs by value without
+copying a megabyte, and it is why `Storage`'s copy constructor deep-copies while
+sharing has to be asked for by name — a captured input that changed under a
+closure would be a very quiet bug.
+
+**The parent edges are `weak_ptr`.** A graph node holds its parents, and a
+parameter holds its gradient, which holds the node that produced it: a cycle,
+and one that leaked the entire computation graph until it was found. The write-up
+is in [docs/ENGINEERING.md](docs/ENGINEERING.md).
+
+**`Storage` describes its buffer before it allocates it.** `count` and `fill`
+say what the values are; the host vector is built on first host access and the
+device pointer on first device use. A tensor that only ever passes through
+kernels allocates no host memory at all — which was worth 20 ms of a 32 ms
+training step.
+
 ```
 include/engine/
   tensor.hpp       Tensor (handle) + N-dimensional operations
@@ -153,7 +213,7 @@ include/engine/
   serialize.hpp    Save and load weights
   data.hpp         IDX/MNIST reader
 examples/          Six runnable demos, one per phase plus MNIST
-tests/             524 checks across eight translation units + PyTorch fixtures
+tests/             530 checks across nine translation units + PyTorch fixtures
 bench/             Reproducible performance benchmarks, incl. an isolated
                    matmul harness meant to be handed to Nsight Compute
 tools/             PyTorch fixture generator, MNIST downloader
@@ -297,7 +357,7 @@ Attention from [CLS] in the second block:
 ## CUDA
 
 The GPU backend is **off by default** — the engine has to keep compiling and
-passing its 524 checks on a machine with no toolkit and no card, which is what
+passing its 530 checks on a machine with no toolkit and no card, which is what
 CI has.
 
 ```bash
@@ -405,7 +465,7 @@ the kernel that caused it instead of surfacing at the next `cudaMemcpy`.
 
 ## Testing
 
-524 checks over eight translation units, run on every push against **GCC, Clang,
+530 checks over nine translation units, run on every push against **GCC, Clang,
 AppleClang and MSVC**, plus a job under **AddressSanitizer and
 UndefinedBehaviorSanitizer** one under **ThreadSanitizer**, and one in
 **Debug** with standard-library assertions enabled.

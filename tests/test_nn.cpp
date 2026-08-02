@@ -26,9 +26,9 @@ void test_nn_layers() {
     Tensor out = layer(input);
     check(out.shape() == std::vector<size_t>({5, 3}), "Linear preserves the batch size");
 
-    check_throws([&] { layer(Tensor({5, 7}, 1.0f)); },
+    check_throws([&] { (void)layer(Tensor({5, 7}, 1.0f)); },
                  "an input with the wrong in_features throws");
-    check_throws([&] { layer(Tensor({5}, 1.0f)); }, "a 1D input throws");
+    check_throws([&] { (void)layer(Tensor({5}, 1.0f)); }, "a 1D input throws");
 
     nn::Linear no_bias(4, 3, false);
     check(no_bias.parameters().size() == 1, "Linear without bias exposes a single parameter");
@@ -76,8 +76,10 @@ void test_softmax_and_losses() {
     check_close(nn::cross_entropy_loss(uniform, {0}).data()[0], std::log(4.0f),
                 "uniform cross entropy equals log(C)");
 
-    check_throws([&] { nn::cross_entropy_loss(logits, {0}); }, "a wrong number of labels throws");
-    check_throws([&] { nn::cross_entropy_loss(logits, {0, 9}); }, "a label out of range throws");
+    check_throws([&] { (void)nn::cross_entropy_loss(logits, {0}); },
+                 "a wrong number of labels throws");
+    check_throws([&] { (void)nn::cross_entropy_loss(logits, {0, 9}); },
+                 "a label out of range throws");
 
     // MSE
     Tensor pred({1, 3}, {1.0f, 2.0f, 3.0f});
@@ -137,8 +139,8 @@ void test_optimizers() {
     idle.step();
     check_close(untouched.data()[0], 1.0f, "a parameter with no gradient is not modified");
 
-    check_throws([&] { optim::SGD({w_sgd}, -1.0f); }, "a negative learning rate throws");
-    check_throws([&] { optim::Adam({w_sgd}, 0.1f, 1.5f); }, "an invalid beta1 throws");
+    check_throws([&] { (void)(optim::SGD({w_sgd}, -1.0f)); }, "a negative learning rate throws");
+    check_throws([&] { (void)optim::Adam({w_sgd}, 0.1f, 1.5f); }, "an invalid beta1 throws");
 }
 
 void test_end_to_end_training() {
@@ -248,8 +250,8 @@ void test_train_eval_and_dropout() {
     }
     check(identical, "at evaluation Dropout is the identity");
 
-    check_throws([&] { nn::Dropout(1.0f); }, "a probability of 1 throws");
-    check_throws([&] { nn::Dropout(-0.1f); }, "a negative probability throws");
+    check_throws([&] { (void)nn::Dropout(1.0f); }, "a probability of 1 throws");
+    check_throws([&] { (void)(nn::Dropout(-0.1f)); }, "a negative probability throws");
 
     // The switch propagates through the container
     nn::Sequential model{nn::make<nn::Linear>(4, 4), nn::make<nn::Dropout>(0.5f),
@@ -324,7 +326,7 @@ void test_clip_and_schedulers() {
     check_close(optim::clip_grad_norm({p1, p2}, 100.0f), 5.0f,
                 "the joint norm of two parameters is 5");
 
-    check_throws([&] { optim::clip_grad_norm({a}, 0.0f); }, "a non-positive max_norm throws");
+    check_throws([&] { (void)optim::clip_grad_norm({a}, 0.0f); }, "a non-positive max_norm throws");
 
     // Planificadores
     Tensor w({1}, std::vector<float>{0.0f}, true);
@@ -358,8 +360,8 @@ void test_clip_and_schedulers() {
     for (int i = 0; i < 7; ++i) warm.step();
     check(opt3.learning_rate() < 0.01f, "then decays as a cosine");
 
-    check_throws([&] { optim::StepLR(opt, 0); }, "a zero step throws");
-    check_throws([&] { optim::WarmupCosineLR(opt, 10, 5); },
+    check_throws([&] { (void)optim::StepLR(opt, 0); }, "a zero step throws");
+    check_throws([&] { (void)optim::WarmupCosineLR(opt, 10, 5); },
                  "a warm-up longer than the total throws");
 }
 
@@ -404,7 +406,7 @@ void test_serialization() {
 
     // A different architecture is rejected rather than loaded wrongly
     nn::Sequential wrong{nn::make<nn::Linear>(4, 8)};
-    check_throws([&] { engine::load_parameters(wrong, path); },
+    check_throws([&] { (void)engine::load_parameters(wrong, path); },
                  "loading into a different architecture throws");
 
     // With strict=false only the ones matching by name are loaded. Since the default
@@ -439,17 +441,17 @@ void test_serialization() {
 
         // Four billion tensors in a twenty-byte file.
         const std::string huge_count = craft("hostile_count.bin", {0xFFFFFFFFu}, {});
-        check_throws([&] { engine::inspect_parameters(huge_count); },
+        check_throws([&] { (void)engine::inspect_parameters(huge_count); },
                      "a tensor count larger than the file is rejected");
 
         // One tensor, a name four gigabytes long.
         const std::string huge_name = craft("hostile_name.bin", {1u, 0xFFFFFFFFu}, {});
-        check_throws([&] { engine::inspect_parameters(huge_name); },
+        check_throws([&] { (void)engine::inspect_parameters(huge_name); },
                      "a name length larger than the file is rejected");
 
         // One tensor, one short name, four billion dimensions.
         const std::string huge_ndim = craft("hostile_ndim.bin", {1u, 0u, 0xFFFFFFFFu}, {});
-        check_throws([&] { engine::inspect_parameters(huge_ndim); },
+        check_throws([&] { (void)engine::inspect_parameters(huge_ndim); },
                      "a dimension count larger than the file is rejected");
 
         // The one that used to pass. Two dimensions of 2^32: their product
@@ -458,7 +460,7 @@ void test_serialization() {
         // reported -- the file simply loaded as something it was not.
         const std::string overflow =
             craft("hostile_overflow.bin", {1u, 0u, 2u}, {uint64_t(1) << 32, uint64_t(1) << 32});
-        check_throws([&] { engine::inspect_parameters(overflow); },
+        check_throws([&] { (void)engine::inspect_parameters(overflow); },
                      "a shape whose element count overflows is rejected, not silently wrapped");
 
         for (const char* f : {"hostile_count.bin", "hostile_name.bin", "hostile_ndim.bin",
@@ -476,7 +478,7 @@ void test_serialization() {
 
         Tensor mismatched({3, 3}, 0.0f, true);
         std::vector<std::pair<std::string, Tensor>> target = {{"peso", mismatched}};
-        check_throws([&] { engine::load_parameters(target, "shape_test.bin"); },
+        check_throws([&] { (void)engine::load_parameters(target, "shape_test.bin"); },
                      "the same name with another shape is rejected");
         std::remove("shape_test.bin");
     }
@@ -486,12 +488,12 @@ void test_serialization() {
         Tensor t1({1}, std::vector<float>{1.0f}, true);
         Tensor t2({1}, std::vector<float>{2.0f}, true);
         std::vector<std::pair<std::string, Tensor>> dup = {{"a", t1}, {"a", t2}};
-        check_throws([&] { engine::save_parameters(dup, "dup.bin"); },
+        check_throws([&] { (void)engine::save_parameters(dup, "dup.bin"); },
                      "duplicate names are rejected on save");
         std::remove("dup.bin");
     }
 
-    check_throws([&] { engine::load_parameters(model, "no_existe.bin"); },
+    check_throws([&] { (void)engine::load_parameters(model, "no_existe.bin"); },
                  "loading a nonexistent file throws");
 
     // A file that is not ours
@@ -499,7 +501,7 @@ void test_serialization() {
         std::ofstream bad("not_weights.bin", std::ios::binary);
         bad << "these are not weights at all";
     }
-    check_throws([&] { engine::load_parameters(model, "not_weights.bin"); },
+    check_throws([&] { (void)engine::load_parameters(model, "not_weights.bin"); },
                  "a file with a wrong signature is rejected");
 
     // A whole transformer round-trips too
@@ -569,11 +571,11 @@ void test_idx_reader() {
     engine::data::Dataset small = engine::data::load_mnist_test(paths, 10);
     check(small.size() == 10, "max_samples limits how many samples are read");
 
-    check_throws([&] { engine::data::load_idx_images("no_existe.idx"); },
+    check_throws([&] { (void)engine::data::load_idx_images("no_existe.idx"); },
                  "a nonexistent file throws");
-    check_throws([&] { engine::data::load_idx_images(paths.train_labels); },
+    check_throws([&] { (void)engine::data::load_idx_images(paths.train_labels); },
                  "reading labels as images throws (different magic)");
-    check_throws([&] { engine::data::find_mnist("directorio_inexistente"); },
+    check_throws([&] { (void)engine::data::find_mnist("directorio_inexistente"); },
                  "a directory with no data throws");
 }
 

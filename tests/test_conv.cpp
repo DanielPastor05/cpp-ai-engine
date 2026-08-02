@@ -61,10 +61,11 @@ void test_im2col() {
         check_close(lhs, rhs, "col2im is the adjoint of im2col for " + win_name(win), 1e-2f);
     }
 
-    check_throws([&] { nn::im2col(Tensor({4, 4}, 1.0f), w3); }, "im2col on a 2D tensor throws");
-    check_throws([&] { nn::im2col(img, nn::Window2d(5, 5, 1, 0)); },
+    check_throws([&] { (void)nn::im2col(Tensor({4, 4}, 1.0f), w3); },
+                 "im2col on a 2D tensor throws");
+    check_throws([&] { (void)nn::im2col(img, nn::Window2d(5, 5, 1, 0)); },
                  "a kernel larger than the image throws");
-    check_throws([&] { nn::col2im(ones, {1, 1, 8, 8}, w3); },
+    check_throws([&] { (void)nn::col2im(ones, {1, 1, 8, 8}, w3); },
                  "col2im with inconsistently sized columns throws");
 }
 
@@ -87,10 +88,10 @@ void test_conv_layers() {
     check(strided(input).shape() == std::vector<size_t>({2, 2, 3, 3}),
           "Conv2d with stride 2 and no padding reduces 8 -> 3");
 
-    check_throws([&] { conv(Tensor({2, 8, 8}, 1.0f)); }, "Conv2d with a 3D input throws");
-    check_throws([&] { conv(Tensor::randn({2, 4, 8, 8})); },
+    check_throws([&] { (void)conv(Tensor({2, 8, 8}, 1.0f)); }, "Conv2d with a 3D input throws");
+    check_throws([&] { (void)conv(Tensor::randn({2, 4, 8, 8})); },
                  "Conv2d with the wrong channel count throws");
-    check_throws([&] { nn::Conv2d(0, 4, nn::Window2d(3)); },
+    check_throws([&] { (void)nn::Conv2d(0, 4, nn::Window2d(3)); },
                  "Conv2d with no input channels throws");
 
     // A 1x1 convolution with a known weight: the output is an exact rescaling
@@ -118,9 +119,9 @@ void test_conv_layers() {
     check_close(pooled.data()[1], 9.0f, "maximum of the upper-right block");
     check_close(pooled.data()[2], 14.0f, "maximum of the lower-left block");
     check_close(pooled.data()[3], 16.0f, "maximum of the lower-right block");
-    check_throws([&] { pool(Tensor({4, 4}, 1.0f)); }, "MaxPool2d with a 2D input throws");
+    check_throws([&] { (void)pool(Tensor({4, 4}, 1.0f)); }, "MaxPool2d with a 2D input throws");
     // With padding >= kernel there would be windows with no real value to maximise
-    check_throws([&] { nn::MaxPool2d(nn::Window2d(2, 2, 1, 2)); },
+    check_throws([&] { (void)nn::MaxPool2d(nn::Window2d(2, 2, 1, 2)); },
                  "MaxPool2d with padding greater than or equal to the kernel throws");
 
     // The gradient goes only to the winning position
@@ -135,7 +136,7 @@ void test_conv_layers() {
     nn::Flatten flat;
     check(flat(Tensor({2, 3, 4, 5}, 1.0f)).shape() == std::vector<size_t>({2, 60}),
           "Flatten keeps the batch and flattens the rest");
-    check_throws([&] { flat(Tensor({6}, 1.0f)); }, "Flatten with a 1D input throws");
+    check_throws([&] { (void)flat(Tensor({6}, 1.0f)); }, "Flatten with a 1D input throws");
 }
 
 void test_conv_gradients() {

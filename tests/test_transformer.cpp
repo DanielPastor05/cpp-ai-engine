@@ -39,9 +39,9 @@ void test_layernorm_and_embedding() {
     Tensor out2 = scaled(x);
     check_close(out2.data()[4], 5.0f, "beta shifts the output");
 
-    check_throws([&] { norm(Tensor({2, 3}, 1.0f)); },
+    check_throws([&] { (void)norm(Tensor({2, 3}, 1.0f)); },
                  "LayerNorm with a different last axis size throws");
-    check_throws([&] { nn::LayerNorm(0); }, "LayerNorm of size zero throws");
+    check_throws([&] { (void)nn::LayerNorm(0); }, "LayerNorm of size zero throws");
 
     Tensor gx = Tensor::randn({3, 4});
     Tensor w_norm = Tensor::randn({3, 4});
@@ -68,8 +68,8 @@ void test_layernorm_and_embedding() {
     check_close(vectors.data()[0], emb.weight().data()[0], "finds the right row for token 0");
     check_close(vectors.data()[9], emb.weight().data()[12], "finds the right row for token 4");
 
-    check_throws([&] { emb(Tensor({3}, 1.0f)); }, "Embedding with 1D indices throws");
-    check_throws([&] { emb(Tensor({1, 2}, {0.0f, 9.0f})); },
+    check_throws([&] { (void)emb(Tensor({3}, 1.0f)); }, "Embedding with 1D indices throws");
+    check_throws([&] { (void)emb(Tensor({1, 2}, {0.0f, 9.0f})); },
                  "a token outside the vocabulary throws");
 
     // Un token repetido acumula gradiente en su fila
@@ -113,7 +113,9 @@ void test_attention() {
     check_close(mw.data()[4] + mw.data()[5], 1.0f, "the second position splits across 2 tokens");
 
     check_throws(
-        [&] { nn::scaled_dot_product_attention(Tensor({3, 4}, 1.0f), Tensor({3, 5}, 1.0f), V); },
+        [&] {
+            (void)nn::scaled_dot_product_attention(Tensor({3, 4}, 1.0f), Tensor({3, 5}, 1.0f), V);
+        },
         "query and key with different d_k throw");
 
     // Gradient of attention
@@ -156,7 +158,7 @@ void test_positional_encoding() {
     check_close(pe2(2, 3), pe(2, 3), "positional_encoding es determinista");
     check(!pe.requires_grad(), "the positional encoding is not a trainable parameter");
 
-    check_throws([&] { nn::positional_encoding(0, 4); }, "a zero length throws");
+    check_throws([&] { (void)nn::positional_encoding(0, 4); }, "a zero length throws");
 }
 
 void test_multihead_and_block() {
@@ -181,11 +183,11 @@ void test_multihead_and_block() {
     check(quiet.last_attention().size() == 0,
           "without keep_attention the weight copy is not paid for");
 
-    check_throws([&] { nn::MultiHeadAttention(8, 3); },
+    check_throws([&] { (void)nn::MultiHeadAttention(8, 3); },
                  "a d_model not divisible by the heads throws");
-    check_throws([&] { nn::MultiHeadAttention(8, 0); }, "cero cabezas throws");
-    check_throws([&] { mha(Tensor::randn({2, 5, 4})); }, "MHA with the wrong d_model throws");
-    check_throws([&] { mha(Tensor::randn({5, 8})); }, "MHA with a 2D input throws");
+    check_throws([&] { (void)nn::MultiHeadAttention(8, 0); }, "cero cabezas throws");
+    check_throws([&] { (void)mha(Tensor::randn({2, 5, 4})); }, "MHA with the wrong d_model throws");
+    check_throws([&] { (void)mha(Tensor::randn({5, 8})); }, "MHA with a 2D input throws");
 
     // Each head attends separately: with 1 head the weights are (B,1,S,S)
     nn::MultiHeadAttention single(8, 1);
@@ -209,7 +211,7 @@ void test_multihead_and_block() {
                                         + (16 * 8 + 8),  // ff2
           "TransformerBlock sums attention, normalisations and the dense net");
 
-    check_throws([&] { nn::TransformerBlock(8, 2, 0); }, "a zero hidden layer throws");
+    check_throws([&] { (void)nn::TransformerBlock(8, 2, 0); }, "a zero hidden layer throws");
 
     Tensor gb = Tensor::randn({2, 3, 8});
     Tensor w_block = Tensor::randn({2, 3, 8});

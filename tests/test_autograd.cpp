@@ -106,8 +106,8 @@ void test_row_indexing_and_batches() {
     check_close(A(0, 0), 1.0f, "A(0, 0) is the first element");
     A(0, 1) = 99.0f;
     check_close(A({0, 1}), 99.0f, "A(fila, col) permite escritura");
-    check_throws([&] { A(2, 0); }, "A(fila, col) out of range throws");
-    check_throws([&] { Tensor({4}, 1.0f)(0, 0); }, "A(fila, col) on a 1D tensor throws");
+    check_throws([&] { (void)A(2, 0); }, "A(fila, col) out of range throws");
+    check_throws([&] { (void)Tensor({4}, 1.0f)(0, 0); }, "A(fila, col) on a 1D tensor throws");
 
     // Scalar on the left
     Tensor t({2}, {1.0f, 2.0f});
@@ -130,8 +130,8 @@ void test_row_indexing_and_batches() {
     check_close(X.grad()(1, 0), 0.0f, "an unselected row receives no gradient");
     check_close(X.grad()(2, 0), 1.0f, "a row selected once receives gradient 1");
 
-    check_throws([&] { X.select_rows({}); }, "select_rows with no indices throws");
-    check_throws([&] { X.select_rows({9}); }, "select_rows with an invalid index throws");
+    check_throws([&] { (void)X.select_rows({}); }, "select_rows with no indices throws");
+    check_throws([&] { (void)X.select_rows({9}); }, "select_rows with an invalid index throws");
 
     Tensor G({3, 4}, 0.0f);
     for (size_t i = 0; i < G.size(); ++i) G.data()[i] = 0.5f * static_cast<float>(i) - 2.25f;
@@ -154,15 +154,16 @@ void test_no_grad_and_errors() {
 
     Tensor c({2, 2}, 1.0f, true);
     Tensor d = c * 2.0f;
-    check_throws([&] { d.backward(); }, "an implicit backward on a non-scalar throws");
+    check_throws([&] { (void)d.backward(); }, "an implicit backward on a non-scalar throws");
 
     d.backward(Tensor({2, 2}, 1.0f));
     check_close(c.grad().data()[0], 2.0f, "backward(grad_output) explicito si funciona");
 
     Tensor e({2, 2}, 1.0f, true);
-    check_throws([&] { e.add_grad(Tensor({3, 3}, 1.0f)); },
+    check_throws([&] { (void)e.add_grad(Tensor({3, 3}, 1.0f)); },
                  "add_grad with an incompatible shape throws");
-    check_throws([&] { Tensor({2, 2}, 1.0f).grad(); }, "accessing a nonexistent gradient throws");
+    check_throws([&] { (void)Tensor({2, 2}, 1.0f).grad(); },
+                 "accessing a nonexistent gradient throws");
 }
 
 void test_graph_is_released() {
