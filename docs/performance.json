@@ -322,6 +322,28 @@
         "matmul-vectorized"
       ],
       "tolerance": 0.1
+    },
+    {
+      "id": "matmul-fp16",
+      "value": 9176,
+      "unit": "GFLOP/s",
+      "how": "bench_matmul --size=4096 --kernel=fp16, one process, operands resident. Against tensorcore's 5467 and vectorized's 7660 on the same shape.",
+      "cited_in": [
+        "README.md",
+        "docs/CUDA.md"
+      ],
+      "tolerance": 0.1
+    },
+    {
+      "id": "matmul-tf32",
+      "value": 5200,
+      "unit": "GFLOP/s",
+      "how": "the tf32 tensor-core kernel at the same shape. It does not beat the fp32 kernel, because consumer Ampere runs dense tf32 at the fp32 rate.",
+      "cited_in": [
+        "README.md",
+        "docs/CUDA.md"
+      ],
+      "tolerance": 0.1
     }
   ]
 }

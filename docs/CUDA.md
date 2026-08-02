@@ -242,6 +242,7 @@ is inside the timed region:
 | `register` | 6 871 | 41.7% | 1.35× |
 | **`vectorized`** | **7 660** | **46.5%** | **1.21×** |
 | `tensorcore` (tf32) | 5 200 | 31.5% | 1.78× |
+| **`tensorcore-fp16`** | **9 176** | **55.6%** | **1.01×** |
 | **cuBLAS** | **9 258** | **56.1%** | — |
 
 **46.5% of peak, 1.21× behind cuBLAS** for the best hand-written kernel. On a
@@ -470,9 +471,18 @@ stay on the device between steps once the optimiser updates them there.
   kernels**. What is left is host-side dispatch, and overlapping copies does not
   make dispatch cheaper. It needs a workload where the transfers are the cost,
   and this engine does not have one yet.
-- **fp16 mixed precision.** tf32 is implemented and gave nothing, because
-  consumer Ampere runs dense tf32 at the fp32 rate. fp16 really is 2×, but it is
-  a precision project — master weights, loss scaling — not a kernel.
+- **fp16 in training.** The *kernel* is implemented and measured — see the row
+  above — and it is not wired into the optimiser, which is a different decision
+  from not having written it.
+
+  Two reasons, and the second is the real one. fp16 keeps tf32's 10 mantissa bits
+  but only 5 exponent bits against fp32's 8, so gradients below about 6e-5 flush
+  to zero; managing that is what loss scaling exists for and this engine has
+  none. And the arithmetic does not pay: a training step spends **1.54 ms of
+  11.65 inside kernels**, so halving every multiply would return about 6% of a
+  step. The gain is real on a compute-bound GEMM and close to nothing on the
+  workload this engine actually runs, which is worth more as a measured statement
+  than as a feature.
 - **cuBLAS, as a backend.** For the same reason there is no BLAS on the CPU path:
   the goal is to implement it, not to call it. It *is* linked into
   `bench_matmul` as the reference row, and the engine's best kernel lands 1.21×

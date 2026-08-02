@@ -70,6 +70,10 @@ bool parse_kernel(const std::string& value, cuda::MatmulKernel& out) {
         out = cuda::MatmulKernel::TensorCore;
         return true;
     }
+    if (value == "tensorcore-fp16" || value == "fp16") {
+        out = cuda::MatmulKernel::TensorCoreFp16;
+        return true;
+    }
     return false;
 }
 
@@ -366,7 +370,10 @@ int main(int argc, char** argv) {
         cuda::MatmulKernel::RegisterTiled,
         cuda::MatmulKernel::Vectorized,
     };
-    if (cuda::tensor_cores_available()) variants.push_back(cuda::MatmulKernel::TensorCore);
+    if (cuda::tensor_cores_available()) {
+        variants.push_back(cuda::MatmulKernel::TensorCore);
+        variants.push_back(cuda::MatmulKernel::TensorCoreFp16);
+    }
 
     printf(
         "NOTE: rows within one sweep are NOT comparable to each other. A consumer\n"

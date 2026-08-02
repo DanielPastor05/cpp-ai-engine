@@ -1067,6 +1067,161 @@ __global__ void matmul_tensor_core(const float* __restrict__ A, const float* __r
 }
 
 // ---------------------------------------------------------
+// The same tile in fp16, which is the one the tensor cores were built for
+// ---------------------------------------------------------
+//
+// docs/CUDA.md records that the tf32 kernel above lands at 31.5% of peak against
+// the fp32 kernel's 46.5%, and that the reason is the card rather than the code:
+// on consumer Ampere, dense tf32 tensor throughput is *the same* 16.2 TFLOP/s as
+// fp32. The famous 2x needs fp16. This is that kernel, so the claim stops being
+// an argument and becomes a row in a table.
+//
+// Three things change and nothing else does. The fragments step **16** along K
+// rather than 8, so a 32-deep staging pass is two wmma steps instead of four.
+// Shared memory holds __half, which halves the tile's 32 KB to 16. And the
+// accumulator stays fp32 -- that is what "mixed precision" means, and dropping it
+// to fp16 would lose far more than the multiply gains.
+//
+// The conversion sits at staging time for the same reason it does above, and the
+// same 8% is at stake: one __float2half per staged value rather than one per
+// fragment load, where the conversions would outnumber the mma instructions
+// three to one.
+//
+// **The precision is genuinely worse and in a different way from tf32.** Both
+// keep 10 mantissa bits, so the rounding error per product is comparable. What
+// fp16 also loses is *range*: 5 exponent bits against fp32's 8, so values above
+// 65504 become infinity and values below about 6e-5 flush to zero, where tf32
+// keeps fp32's full exponent and cannot overflow anything fp32 could hold. For a
+// benchmark of unit-normal matrices that is invisible; for training it is the
+// entire reason loss scaling exists, and this engine has none. Hence: opt-in,
+// never selected by Auto, and documented as a measurement rather than wired into
+// the optimiser.
+constexpr int kHWmmaK = 16;                              // fp16 fragments step 16 along K
+constexpr int kHTcSmem = kTcBM * kTcBK + kTcBK * kTcBN;  // in halves: 16 KB
+
+__global__ void matmul_tensor_core_fp16(const float* __restrict__ A, const float* __restrict__ B,
+                                        float* __restrict__ C, int M, int K, int N,
+                                        long long a_stride, long long b_stride) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    using namespace nvcuda;
+
+    __shared__ __half smem[kHTcSmem];
+    __half* As = smem;
+    __half* Bs = smem + kTcBM * kTcBK;
+
+    const long long batch = blockIdx.z;
+    A += batch * a_stride;
+    B += batch * b_stride;
+    C += batch * (long long)M * N;
+
+    const int block_row = blockIdx.y * kTcBM;
+    const int block_col = blockIdx.x * kTcBN;
+
+    const int warp = threadIdx.x / 32;
+    const int warp_row = (warp / 2) * (kTcWarpM * kWmmaM);
+    const int warp_col = (warp % 2) * (kTcWarpN * kWmmaN);
+
+    wmma::fragment<wmma::accumulator, kWmmaM, kWmmaN, kHWmmaK, float> acc[kTcWarpM][kTcWarpN];
+#pragma unroll
+    for (int i = 0; i < kTcWarpM; ++i) {
+#pragma unroll
+        for (int j = 0; j < kTcWarpN; ++j) wmma::fill_fragment(acc[i][j], 0.0f);
+    }
+
+    for (int k_base = 0; k_base < K; k_base += kTcBK) {
+#pragma unroll
+        for (int t = 0; t < (kTcBM * kTcBK) / kTcBlock; ++t) {
+            const int idx = t * kTcBlock + threadIdx.x;
+            const int r = idx / kTcBK;
+            const int c = idx % kTcBK;
+            const int g_row = block_row + r;
+            const int g_col = k_base + c;
+            As[idx] = (g_row < M && g_col < K) ? __float2half(A[(long long)g_row * K + g_col])
+                                               : __float2half(0.0f);
+        }
+#pragma unroll
+        for (int t = 0; t < (kTcBK * kTcBN) / kTcBlock; ++t) {
+            const int idx = t * kTcBlock + threadIdx.x;
+            const int r = idx / kTcBN;
+            const int c = idx % kTcBN;
+            const int g_row = k_base + r;
+            const int g_col = block_col + c;
+            Bs[idx] = (g_row < K && g_col < N) ? __float2half(B[(long long)g_row * N + g_col])
+                                               : __float2half(0.0f);
+        }
+        __syncthreads();
+
+#pragma unroll
+        for (int kk = 0; kk < kTcBK; kk += kHWmmaK) {
+            wmma::fragment<wmma::matrix_a, kWmmaM, kWmmaN, kHWmmaK, __half, wmma::row_major>
+                a_frag[kTcWarpM];
+            wmma::fragment<wmma::matrix_b, kWmmaM, kWmmaN, kHWmmaK, __half, wmma::row_major>
+                b_frag[kTcWarpN];
+
+#pragma unroll
+            for (int i = 0; i < kTcWarpM; ++i) {
+                wmma::load_matrix_sync(a_frag[i], As + (warp_row + i * kWmmaM) * kTcBK + kk, kTcBK);
+            }
+#pragma unroll
+            for (int j = 0; j < kTcWarpN; ++j) {
+                wmma::load_matrix_sync(b_frag[j], Bs + kk * kTcBN + warp_col + j * kWmmaN, kTcBN);
+            }
+#pragma unroll
+            for (int i = 0; i < kTcWarpM; ++i) {
+#pragma unroll
+                for (int j = 0; j < kTcWarpN; ++j) {
+                    wmma::mma_sync(acc[i][j], a_frag[i], b_frag[j], acc[i][j]);
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    // Same store as the tf32 kernel, including the multiple-of-4 requirement on
+    // the leading dimension that the exact-integer parity case caught there. The
+    // edge buffer reinterprets the (now dead) half staging area: 8 warps x 256
+    // floats is 8 KB, inside the 16 KB it holds.
+    const bool direct_store_ok = (N % 4 == 0);
+    __syncthreads();
+    float* edge = reinterpret_cast<float*>(smem) + warp * (kWmmaM * kWmmaN);
+
+#pragma unroll
+    for (int i = 0; i < kTcWarpM; ++i) {
+#pragma unroll
+        for (int j = 0; j < kTcWarpN; ++j) {
+            const int row = block_row + warp_row + i * kWmmaM;
+            const int col = block_col + warp_col + j * kWmmaN;
+
+            if (direct_store_ok && row + kWmmaM <= M && col + kWmmaN <= N) {
+                wmma::store_matrix_sync(C + (long long)row * N + col, acc[i][j], N,
+                                        wmma::mem_row_major);
+                continue;
+            }
+            if (row >= M || col >= N) continue;
+
+            wmma::store_matrix_sync(edge, acc[i][j], kWmmaN, wmma::mem_row_major);
+            __syncwarp();
+            for (int idx = (int)(threadIdx.x % 32); idx < kWmmaM * kWmmaN; idx += 32) {
+                const int r = row + idx / kWmmaN;
+                const int c = col + idx % kWmmaN;
+                if (r < M && c < N) C[(long long)r * N + c] = edge[idx];
+            }
+            __syncwarp();
+        }
+    }
+#else
+    (void)A;
+    (void)B;
+    (void)C;
+    (void)M;
+    (void)K;
+    (void)N;
+    (void)a_stride;
+    (void)b_stride;
+#endif
+}
+
+// ---------------------------------------------------------
 // Whole-buffer reductions, in double
 // ---------------------------------------------------------
 //
@@ -1546,7 +1701,19 @@ bool matmul(const Storage& a, const Storage& b, Storage& out, size_t batch, size
     // three more digits of precision than the caller asked for. Silently better
     // is still silently different. Refusing sends the work to the CPU, which the
     // caller can see in the launch counters.
-    if (choice == MatmulKernel::TensorCore && !tensor_cores_available()) return false;
+    if ((choice == MatmulKernel::TensorCore || choice == MatmulKernel::TensorCoreFp16) &&
+        !tensor_cores_available()) {
+        return false;
+    }
+
+    if (choice == MatmulKernel::TensorCoreFp16) {
+        if ((rows + kTcBM - 1) / kTcBM > kMaxGridYZ) return false;
+        const dim3 grid((unsigned)((cols + kTcBN - 1) / kTcBN),
+                        (unsigned)((rows + kTcBM - 1) / kTcBM), (unsigned)batch);
+        matmul_tensor_core_fp16<<<grid, kTcBlock>>>(a.device(), b.device(), out.device_write(), M,
+                                                    K, N, a_stride, b_stride);
+        return launched_ok("matmul_tensor_core_fp16", out);
+    }
 
     if (choice == MatmulKernel::TensorCore) {
         if ((rows + kTcBM - 1) / kTcBM > kMaxGridYZ) return false;

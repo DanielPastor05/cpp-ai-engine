@@ -129,7 +129,8 @@ enum class MatmulKernel {
     Tiled,          // 32x32 tiles in shared memory, one result per thread
     RegisterTiled,  // 8x8 results per thread, held in registers
     Vectorized,     // the same, with float4 loads
-    TensorCore      // tf32 on the tensor cores; see the precision note below
+    TensorCore,     // tf32 on the tensor cores; see the precision note below
+    TensorCoreFp16  // fp16 in, fp32 accumulate: the one the tensor cores were built for
 };
 
 // Whether this build can run MatmulKernel::TensorCore: compiled for sm_80 or
@@ -152,6 +153,15 @@ bool tensor_cores_available();
 // own PyTorch reference tests, and the interesting part of this project is that
 // those tests agree to ~1e-7. Opting in is a decision the caller makes with the
 // error budget in front of them.
+//
+// `TensorCoreFp16` is the same bargain with a second cost on top. It keeps the
+// same 10 mantissa bits as tf32, so the rounding per product is comparable, and
+// it loses *range*: 5 exponent bits against fp32's 8, so anything above 65504
+// becomes infinity and anything below about 6e-5 flushes to zero. tf32 keeps
+// fp32's exponent and cannot overflow something fp32 could hold; fp16 can. That
+// is what loss scaling exists to manage in a training loop, and this engine has
+// none -- so this variant is a measurement of what the hardware can do, opt-in
+// and never automatic, not a mode to train in.
 // ---------------------------------------------------------
 
 MatmulKernel matmul_kernel();

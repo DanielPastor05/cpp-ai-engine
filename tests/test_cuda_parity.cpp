@@ -456,6 +456,61 @@ void run_cuda_parity_tests() {
         testing::check(tf32_err > fp32_err * 10.0,
                        "the tensor-core kernel really is running in tf32, not fp32");
 
+        // --- and the same in fp16, which is the one with the throughput ---
+        //
+        // Same 10 mantissa bits as tf32, so the same derived bound applies: the
+        // rounding per product is comparable and it is the *range* that differs,
+        // 5 exponent bits against fp32's 8. Unit-normal inputs never approach
+        // either end of that, which is exactly why a benchmark cannot stand in
+        // for a training loop here.
+        cuda::set_matmul_kernel(cuda::MatmulKernel::TensorCoreFp16);
+        for (const Case& c : cases) {
+            Tensor P = Tensor::randn({c.M, c.K});
+            Tensor Q = Tensor::randn({c.K, c.N});
+            compare(
+                "[fp16] tensor-core matmul " + std::to_string(c.M) + "x" + std::to_string(c.K) +
+                    "x" + std::to_string(c.N),
+                [&] { return P.matmul(Q); }, tf32_tolerance(c.K));
+        }
+
+        // The case that carries the weight, for the reason the tf32 one does:
+        // products of small integers are exact in fp16 too -- its mantissa holds
+        // integers up to 2048 exactly, and K of them accumulate in fp32 -- so a
+        // fragment index that is wrong cannot hide behind rounding. This is the
+        // test that caught store_matrix_sync's leading-dimension requirement in
+        // the tf32 kernel, and the fp16 kernel inherits that store verbatim.
+        {
+            // Same shapes as the tf32 exact case, redeclared because that one
+            // scoped them to its own block. 65x33x67 is the one that matters:
+            // an N of 67 is not a multiple of four, which is the store's
+            // requirement, so it exercises the edge path both kernels share.
+            struct ExactCase {
+                size_t M, K, N;
+            };
+            const ExactCase fp16_shapes[] = {
+                {16, 16, 16}, {64, 32, 64}, {65, 33, 67}, {129, 96, 130}};
+
+            bool exact = true;
+            for (const ExactCase& e : fp16_shapes) {
+                Tensor P(std::vector<size_t>{e.M, e.K}, 0.0f, false);
+                Tensor Q(std::vector<size_t>{e.K, e.N}, 0.0f, false);
+                for (size_t i = 0; i < P.size(); ++i) P.data()[i] = (float)((int)(i % 9) - 4);
+                for (size_t i = 0; i < Q.size(); ++i) Q.data()[i] = (float)((int)(i % 7) - 3);
+
+                cuda::set_enabled(false);
+                const std::vector<float> want_i = P.matmul(Q).data();
+                cuda::set_enabled(true);
+                cuda::set_matmul_kernel(cuda::MatmulKernel::TensorCoreFp16);
+                const std::vector<float> got_i = P.matmul(Q).data();
+                for (size_t i = 0; i < want_i.size() && exact; ++i) exact = want_i[i] == got_i[i];
+                if (!exact) break;
+            }
+            testing::check(exact, exact ? "fp16 matches fp32 exactly on integer inputs, so the "
+                                          "fragment indices and the store are right"
+                                        : "fp16 disagrees with fp32 on integer inputs: the "
+                                          "tolerance cases above were hiding an indexing error");
+        }
+
         cuda::set_matmul_kernel(cuda::MatmulKernel::Auto);
     }
 

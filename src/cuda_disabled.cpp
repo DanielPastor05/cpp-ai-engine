@@ -84,6 +84,8 @@ const char* matmul_kernel_name(MatmulKernel kernel) {
             return "vectorized";
         case MatmulKernel::TensorCore:
             return "tensorcore";
+        case MatmulKernel::TensorCoreFp16:
+            return "tensorcore-fp16";
     }
     return "unknown";
 }

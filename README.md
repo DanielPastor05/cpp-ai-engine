@@ -333,21 +333,32 @@ operands already resident, one process per kernel:
   <img alt="matmul 4096 cubed in GFLOP/s against the card's 16 489 fp32 peak: naive 898, tiled 1 178, tensorcore 5 200, register 6 871, vectorized 7 660, cuBLAS 9 258." src="docs/img/matmul-kernels.svg">
 </picture>
 
-| | `tiled` | `register` | `vectorized` | `tensorcore` | cuBLAS |
-|---|---|---|---|---|---|
-| GFLOP/s | 1 178 | 6 871 | **7 660** | 5 200 | **9 258** |
-| % of fp32 peak | 7.1% | 41.7% | **46.5%** | 31.5% | **56.1%** |
+| | `tiled` | `register` | `vectorized` | `tensorcore` (tf32) | **`tensorcore-fp16`** | cuBLAS |
+|---|---|---|---|---|---|---|
+| GFLOP/s | 1 178 | 6 871 | 7 660 | 5 200 | **9 176** | **9 258** |
+| % of fp32 peak | 7.1% | 41.7% | 46.5% | 31.5% | **55.6%** | **56.1%** |
 
 **46.5% of peak, 1.21× behind cuBLAS**, with the register tiling worth a factor
 of 5.8 over the textbook version. cuBLAS is linked into the benchmark as the
 reference row and nowhere else; the engine never calls it.
 
-**The tf32 tensor-core kernel is in there and it loses.** It is a real WMMA
-implementation — 128×128 tile, 8 warps, 2×4 fragments each — and it reaches 31.5%
-against fp32's 46.5%. The reason is the card, not the code: on consumer Ampere,
-dense tf32 tensor throughput is *the same* 16.2 TFLOP/s as fp32. The famous 2×
-needs fp16, or sparsity, or an A100. Knowing that before writing the kernel would
-have saved the kernel; writing it is how the number got measured.
+**The tf32 tensor-core kernel is in there and it loses**, and the fp16 one is in
+there and does not. Both are real WMMA implementations — 128×128 tile, 8 warps,
+2×4 fragments each — and tf32 reaches 31.5% against fp32's 46.5%. The reason is
+the card, not the code: on consumer Ampere, dense tf32 tensor throughput is *the
+same* 16.2 TFLOP/s as fp32.
+
+Changing one thing — `__half` fragments stepping 16 along K instead of tf32
+stepping 8 — takes the same tile to **9 176 GFLOP/s, 1.68× the tf32 kernel and
+within 1% of cuBLAS's fp32 row.** So the claim "the famous 2× needs fp16" stops
+being an argument and becomes two rows of a table.
+
+Neither is selected automatically and neither trains anything. fp16 keeps tf32's
+10 mantissa bits and loses *range* — 5 exponent bits against fp32's 8 — which is
+what loss scaling exists to manage, and this engine has none. It is a measurement
+of what the hardware does, not a mode to train in; [docs/CUDA.md](docs/CUDA.md)
+has the reasoning and the 6%-of-a-step arithmetic that says it would not pay
+here anyway.
 
 **And the benchmark was lying before that got sorted out.** Running five kernels
 back to back in one process measures temperature as much as code — the same
