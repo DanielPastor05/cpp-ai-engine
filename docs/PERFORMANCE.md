@@ -382,6 +382,86 @@ with one side on the host it would trade a download for an upload rather than
 avoid one. In a training loop both is the normal case, because the weights stay
 on the device between steps once the optimiser updates them there.
 
+### Against PyTorch, on the same card, which is the number that counts
+
+Everything above compares the engine to itself. "5.5× faster on the GPU than on
+the CPU" does not say the GPU path is fast — it says the CPU path is slow, and a
+reader has no way to calibrate it. So `tools/bench_pytorch.py` trains the same
+network on the same card: same subset read from the same IDX files, same two
+3×3 convolutions, same dropout, same Adam at 1e-3 with cosine annealing to 1e-4,
+same batch of 64, same twelve epochs, same 206 922 parameters.
+
+TF32 is switched **off** by default there, and that matters: Ampere routes fp32
+matmuls through the tensor cores at a 10-bit mantissa unless told not to, and the
+engine is fp32 everywhere. Leaving it on would be comparing precisions and
+calling the difference a speedup. The row is measured anyway, because it is what
+a PyTorch user actually gets.
+
+Best of three, alternating runs so thermal drift cannot favour either:
+
+| | training | GPU kernel time per step | behind PyTorch |
+|---|---|---|---|
+| engine, CPU (12 cores) | 24.1 s | — | **4.55×** |
+| PyTorch, CPU (6 threads) | 5.30 s | — | — |
+| engine, CUDA | 4.70 s | 1.53 ms | **2.24×** |
+| **PyTorch, fp32** | **2.10 s** | **0.65 ms** | — |
+| PyTorch, TF32 | 1.90 s | — | 2.47× |
+
+**The engine is 2.24× slower than PyTorch on the GPU**, and 2.47× slower than
+PyTorch as anyone would actually run it. That is the honest headline, and it is
+a better one than the CPU comparison because it can be checked.
+
+The CPU row is the more uncomfortable one — **4.55× behind** — and it is worth
+putting next to the other because of what the pair says. PyTorch's CPU path is
+oneDNN with hand-written AVX kernels; this engine has no BLAS by design and
+leans on the autovectoriser, and it pays 4.55× for that. Its CUDA path, written
+from nothing against the same cuDNN it is being measured against, pays 2.24×.
+**The hand-written kernels closed more of the gap than the hand-written CPU code
+did**, which is not the result I expected to be able to write down.
+
+Where the 2.24× goes, from `nsys` on both:
+
+**Roughly half of it is one algorithm the engine does not have.** PyTorch's
+profile is led by `_5x_cudnn_ampere_scudnn_winograd_128x128` — cuDNN picking a
+**Winograd** convolution for the 3×3 layers. Winograd F(2×2, 3×3) computes four
+outputs with 16 multiplications where the direct form needs 36, and the engine's
+im2col + GEMM is the direct form. It also never materialises the columns:
+`im2col_gather` and `col2im_scatter` write a matrix nine times the size of the
+input, twice per layer per direction, and cuDNN's implicit-GEMM and Winograd
+paths skip that entirely.
+
+**The other half is per-operation host cost, and both frameworks pay it.** The
+engine spends 1.53 ms of a 9.16 ms step inside kernels — **17%**. PyTorch spends
+0.65 ms of about 5.5 ms — **12%**. Neither is GPU-bound at this size; MNIST at
+batch 64 is a workload where dispatch overhead dominates arithmetic for
+*everybody*, and the framework with the leaner Python-to-kernel path wins. That
+the engine, written from scratch in a weekend's worth of sessions, sits within
+2.24× of that is the real result — not the 5.5×.
+
+One engine kernel stands out as addressable rather than algorithmic:
+`grad_accumulate` is 13.5% of GPU time across **1 501 launches per 100 steps**,
+because every gradient accumulation is its own kernel. PyTorch fuses that into
+the backward operations. That is a fusion problem, not a Winograd problem, and
+it is the cheapest of the remaining gaps.
+
+Peak device memory, PyTorch: 76.7 MiB. The engine does not track it, which is a
+gap in the instrumentation rather than a result.
+
+To reproduce the whole table:
+
+```bash
+python -m venv .torch
+.torch/bin/pip install torch --index-url https://download.pytorch.org/whl/cu128
+.torch/bin/python tools/bench_pytorch.py          # matched: fp32, no TF32, no cuDNN autotune
+.torch/bin/python tools/bench_pytorch.py --tf32   # what PyTorch gives you by default
+./build-cuda/mnist_demo                           # the engine, same model, same data
+```
+
+Alternate the two rather than running one three times: a sustained GPU load
+drifts by more than the difference being measured. That is not a hypothetical —
+it is written up under "The thresholds matter more than the parallelism" above,
+and it once made this project record a 3× regression that did not exist.
+
 ### What this cost to find
 
 Three measurements, in this order, each of which contradicted the plan:

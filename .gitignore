@@ -38,8 +38,9 @@ mnist_cnn.bin
 # Local compilation database for clang-tidy: machine-specific absolute paths.
 compile_commands.json
 
-# Lint tool venv, created by the CI lint job and reproducible locally.
+# The pinned lint tools, installed by the CI lint job and reproducible locally.
 .lint/
 
-# Pinned lint tools, installed by the CI lint job and reproducible locally.
-.lint/
+# PyTorch, for tools/bench_pytorch.py. 2.5 GB of wheels; the benchmark says how
+# to install it and CI never needs it.
+.torch/
