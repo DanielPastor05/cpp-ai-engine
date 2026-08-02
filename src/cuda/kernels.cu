@@ -1287,8 +1287,19 @@ int grid_for(long long n) {
     return (int)(want < cap ? want : cap);
 }
 
-bool elementwise_worth_it(size_t n) {
-    return enabled() && n > 0 && n >= min_elementwise_elements();
+// The size threshold answers one question: is this operation big enough to be
+// worth moving the data across PCIe? When the data is **already on the device**
+// that question does not apply -- there is nothing to move, and refusing is what
+// costs the round trip, because the CPU path then has to pull the buffer down.
+//
+// This is the same rule the optimiser kernels use, and it is what the thresholds
+// could not express. Tuned back when most of a step ran on the host, the default
+// of 2^20 elements meant that MNIST -- whose largest tensor is 802,816 -- never
+// dispatched a single elementwise operation, so the chain broke after every
+// matmul. Measured: 15.8 s against 3.4 s for the same binary.
+bool elementwise_worth_it(const Storage& input, size_t n) {
+    if (!enabled() || n == 0) return false;
+    return input.resident_on_device() || n >= min_elementwise_elements();
 }
 
 // Translates the geometry into the kernel's integers, or says it does not fit.
@@ -1334,7 +1345,7 @@ bool launch_binary(const Storage& a, const Storage& b, Storage& out, size_t inne
 
 bool binary(Binary op, const Storage& a, const Storage& b, Storage& out, size_t inner,
             size_t repeat) {
-    if (!elementwise_worth_it(a.size())) return false;
+    if (!elementwise_worth_it(a, a.size())) return false;
     if (inner == 0 || repeat == 0) return false;
     if (inner * repeat != a.size() || out.size() != a.size()) return false;
     if (b.size() < inner) return false;
@@ -1362,8 +1373,17 @@ bool matmul(const Storage& a, const Storage& b, Storage& out, size_t batch, size
 
     // The threshold is the batch's total work: a batch of small matrices can be
     // worth it even when none of them would be on its own.
+    //
+    // Unless both operands are already on the device, in which case there is no
+    // transfer for the threshold to weigh -- same rule as elementwise_worth_it().
+    // Both, not either: with one side on the host this would trade a download for
+    // an upload rather than avoiding one. In a training loop both is the normal
+    // case, because the weights stay resident between steps once the optimiser
+    // updates them there.
     const double flops = 2.0 * (double)batch * rows * inner_dim * cols;
-    if (flops < (double)min_matmul_flops()) return false;
+    if (flops < (double)min_matmul_flops() && !(a.resident_on_device() && b.resident_on_device())) {
+        return false;
+    }
 
     if (rows > kMaxInt || inner_dim > kMaxInt || cols > kMaxInt) return false;
     if (batch > kMaxGridYZ) return false;
@@ -1465,7 +1485,7 @@ bool matmul(const Storage& a, const Storage& b, Storage& out, size_t batch, size
 }
 
 bool scalar(const Storage& x, Storage& out, float mul, float add) {
-    if (!elementwise_worth_it(x.size())) return false;
+    if (!elementwise_worth_it(x, x.size())) return false;
     if (out.size() != x.size()) return false;
     const long long n = (long long)x.size();
     scalar_affine<<<grid_for(n), kBlock>>>(x.device(), out.device_write(), mul, add, n);
@@ -1474,7 +1494,7 @@ bool scalar(const Storage& x, Storage& out, float mul, float add) {
 
 bool permute(const Storage& x, Storage& out, const size_t* out_shape, const size_t* src_strides,
              size_t ndim) {
-    if (!elementwise_worth_it(x.size())) return false;
+    if (!elementwise_worth_it(x, x.size())) return false;
     if (ndim == 0 || ndim > (size_t)kMaxPermuteDims) return false;
     if (out.size() != x.size()) return false;
 
@@ -1520,7 +1540,7 @@ bool permute(const Storage& x, Storage& out, const size_t* out_shape, const size
 }
 
 bool sum_axis(const Storage& x, Storage& out, size_t outer, size_t axis_len, size_t inner) {
-    if (!elementwise_worth_it(x.size())) return false;
+    if (!elementwise_worth_it(x, x.size())) return false;
     if (outer == 0 || axis_len == 0 || inner == 0) return false;
     if (outer * axis_len * inner != x.size()) return false;
     if (out.size() != outer * inner) return false;
@@ -1542,7 +1562,7 @@ bool sum_axis(const Storage& x, Storage& out, size_t outer, size_t axis_len, siz
 }
 
 bool im2col(const Storage& input, Storage& cols, const WindowShape& s) {
-    if (!elementwise_worth_it(cols.size())) return false;
+    if (!elementwise_worth_it(input, cols.size())) return false;
 
     WindowDims d{};
     if (!window_dims(s, d)) return false;
@@ -1559,7 +1579,7 @@ bool im2col(const Storage& input, Storage& cols, const WindowShape& s) {
 bool col2im(const Storage& cols, Storage& input, const WindowShape& s) {
     // Work is measured by the columns, the big side, even though the grid walks
     // the input: with a 3x3 kernel that is nine times more values.
-    if (!elementwise_worth_it(cols.size())) return false;
+    if (!elementwise_worth_it(cols, cols.size())) return false;
 
     WindowDims d{};
     if (!window_dims(s, d)) return false;
@@ -1574,7 +1594,7 @@ bool col2im(const Storage& cols, Storage& input, const WindowShape& s) {
 }
 
 bool maxpool(const Storage& input, Storage& out, Storage& argmax, const WindowShape& s) {
-    if (!elementwise_worth_it(input.size())) return false;
+    if (!elementwise_worth_it(input, input.size())) return false;
 
     WindowDims d{};
     if (!window_dims(s, d)) return false;
@@ -1601,7 +1621,7 @@ bool maxpool(const Storage& input, Storage& out, Storage& argmax, const WindowSh
 
 bool maxpool_backward(const Storage& argmax, const Storage& grad_out, Storage& dx,
                       const WindowShape& s) {
-    if (!elementwise_worth_it(dx.size())) return false;
+    if (!elementwise_worth_it(grad_out, dx.size())) return false;
 
     WindowDims d{};
     if (!window_dims(s, d)) return false;
@@ -1724,7 +1744,7 @@ bool adam_step(Storage& param, const Storage& grad, Storage& m, Storage& v, floa
 }
 
 bool relu(const Storage& x, Storage& out) {
-    if (!elementwise_worth_it(x.size())) return false;
+    if (!elementwise_worth_it(x, x.size())) return false;
     if (out.size() != x.size()) return false;
     const long long n = (long long)x.size();
     relu_forward<<<grid_for(n), kBlock>>>(x.device(), out.device_write(), n);
@@ -1732,7 +1752,7 @@ bool relu(const Storage& x, Storage& out) {
 }
 
 bool relu_backward(const Storage& x, const Storage& grad_out, Storage& out) {
-    if (!elementwise_worth_it(x.size())) return false;
+    if (!elementwise_worth_it(x, x.size())) return false;
     if (grad_out.size() != x.size() || out.size() != x.size()) return false;
     const long long n = (long long)x.size();
     relu_grad<<<grid_for(n), kBlock>>>(x.device(), grad_out.device(), out.device_write(), n);
@@ -1740,7 +1760,7 @@ bool relu_backward(const Storage& x, const Storage& grad_out, Storage& out) {
 }
 
 bool accumulate_grad(Storage& grad, const Storage& g, bool initialize) {
-    if (!elementwise_worth_it(g.size())) return false;
+    if (!elementwise_worth_it(g, g.size())) return false;
     if (grad.size() != g.size()) return false;
     // Only if it costs no transfer at all. The gradient ends up being read on the
     // host -- the optimiser runs on the CPU -- so uploading something to add it here
@@ -1764,7 +1784,7 @@ bool accumulate_grad(Storage& grad, const Storage& g, bool initialize) {
 }
 
 bool softmax(const Storage& x, Storage& out, size_t rows, size_t cols) {
-    if (!elementwise_worth_it(x.size())) return false;
+    if (!elementwise_worth_it(x, x.size())) return false;
     if (rows == 0 || cols == 0 || cols > kMaxInt) return false;
     if (rows * cols != x.size() || out.size() != x.size()) return false;
     if (rows > (size_t)std::numeric_limits<int>::max()) return false;
@@ -1775,7 +1795,7 @@ bool softmax(const Storage& x, Storage& out, size_t rows, size_t cols) {
 
 bool softmax_backward(const Storage& y, const Storage& grad_out, Storage& out, size_t rows,
                       size_t cols) {
-    if (!elementwise_worth_it(y.size())) return false;
+    if (!elementwise_worth_it(y, y.size())) return false;
     if (rows == 0 || cols == 0 || cols > kMaxInt) return false;
     if (rows * cols != y.size() || grad_out.size() != y.size() || out.size() != y.size()) {
         return false;

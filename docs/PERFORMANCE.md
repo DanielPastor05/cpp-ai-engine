@@ -197,8 +197,8 @@ nothing but the shape: two of those five passes were pure metadata changes.
 
 **That table is the state before "Making the GPU actually win" below, kept
 because the retraction is the interesting part.** `reshape` is now a view, and
-after four further fixes the same subset trains in **3.8 s on the GPU against
-26.3 s on the CPU**. The composed convolution is no longer the slower one; what
+after five further fixes the same subset trains in **4.3 s on the GPU against
+23.5 s on the CPU**. The composed convolution is no longer the slower one; what
 was slow was never the composition.
 
 Two things measured along the way that did **not** work, recorded so nobody
@@ -273,10 +273,11 @@ For a long stretch this backend was well built and pointless: 620 parity checks,
 four matmul variants, gradients verified against the CPU bit for bit — and MNIST
 trained **slower with a card than without one**, 19.5 s against 18.4.
 
-It now trains in **3.8 s against 26.3 s: 6.9×**, on the same 2 000-image subset,
+It now trains in **4.3 s against 23.5 s: 5.5×**, on the same 2 000-image subset,
 same twelve epochs, same final accuracy (94.4% against 94.6%, and the loss curves
-agree to four decimals). One training step, batch 64, went from 40.2 ms to 9.99 ms
-while the CPU stayed at 69.9.
+agree to four decimals) — and with no environment variables set, which was not
+true of any measurement in this document before it. One training step, batch 64,
+went from 40.2 ms to 9.99 ms while the CPU stayed at 69.9.
 
 What is worth reading here is not the number, it is that **the first two things I
 was sure were the cause were not**.
@@ -349,6 +350,37 @@ no host memory at all.
 | GPU, before any of this | 40.2 ms |
 | + three kernel parallelism fixes | 32.2 ms |
 | + lazy host mirror | **9.99 ms** |
+
+### The thresholds could not express the thing that mattered
+
+One more measurement, and it undid a premise the engine had carried since the
+first kernel. `ENGINE_CUDA_MIN_ELEMENTS` defaults to 2^20 — and MNIST's largest
+tensor is 802 816 values, so **not one elementwise operation was dispatching**.
+The chain broke after every matmul. With the threshold forced down by hand the
+subset trained in 3.4 s; on stock settings, 15.8.
+
+Retuning the constant is the obvious answer and it is the wrong one, because a
+size threshold answers the question "is this worth moving the data across PCIe?"
+and that question does not apply when the data is **already there**. Then
+refusing is what costs the round trip, since the CPU path has to pull the buffer
+down. Lowering the number for MNIST also made `transformer_demo` worse — 28 s to
+39 — because its matmuls are small and genuinely not worth a launch.
+
+So the rule became residency, which is what the optimiser kernels had been using
+all along: dispatch if the input is already on the device, **or** if it is big
+enough to be worth the transfer. Both demos improved at once, from the same
+change, with no environment variables:
+
+| | before | after |
+|---|---|---|
+| MNIST, stock settings | 15.8 s | **4.3 s** |
+| `transformer_demo`, stock settings | 28.0 s | **26.0 s** |
+| `transformer_demo`, thresholds forced low | 39.0 s | — |
+
+For `matmul` the condition is that **both** operands are resident, not either:
+with one side on the host it would trade a download for an upload rather than
+avoid one. In a training loop both is the normal case, because the weights stay
+on the device between steps once the optimiser updates them there.
 
 ### What this cost to find
 

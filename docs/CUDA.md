@@ -403,6 +403,34 @@ crossover on a particular machine instead of inheriting mine. `ENGINE_CUDA=0`
 turns the whole backend off on the same binary, to compare both ways without
 recompiling anything.
 
+**A threshold is only half the rule, and the half that stops applying.** It
+answers "is this worth moving the data across PCIe?", which is the right question
+only while the data is on the host. Once the chain stays resident, refusing a
+small kernel is what costs the round trip — the CPU path has to pull the buffer
+down to run. So every dispatch takes the size threshold **or** device residency,
+whichever says yes:
+
+```cpp
+bool elementwise_worth_it(const Storage& input, size_t n) {
+    if (!enabled() || n == 0) return false;
+    return input.resident_on_device() || n >= min_elementwise_elements();
+}
+```
+
+This was not a refinement, it was a bug the numbers were hiding. MNIST's largest
+tensor is 802 816 values against a default of 2²⁰, so **no elementwise operation
+dispatched at all** and the chain broke after every matmul: 15.8 s on stock
+settings against 3.4 s with the threshold forced down by hand. Lowering the
+default instead would have traded one demo for another — the same change made
+`transformer_demo` go from 28 s to 39, because its matrices are small and
+genuinely are not worth a launch. The residency rule improved both at once
+(MNIST 15.8 → 4.3 s, transformer 28.0 → 26.0) and needs no tuning.
+
+`matmul` asks for **both** operands to be resident rather than either: with one
+side on the host, dispatching would trade a download for an upload instead of
+avoiding one. In a training loop both is the normal case, because the weights
+stay on the device between steps once the optimiser updates them there.
+
 ---
 
 ## What is deliberately not on the GPU
