@@ -33,6 +33,19 @@ No dependencies. No BLAS. The point is to implement it, not to call it.
 Each baseline is a control that *provably cannot* solve its task. If one ever
 starts succeeding, the experiment is broken — not the model.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/mnist-vs-pytorch-dark.svg">
+  <img alt="MNIST training time: this engine against PyTorch, on CPU and on CUDA. The engine takes 24.1 s on CPU against PyTorch's 5.30, and 4.70 s on CUDA against PyTorch's 2.10." src="docs/img/mnist-vs-pytorch.svg">
+</picture>
+
+**The engine loses to PyTorch, and that is the number worth publishing.** "5.5×
+faster on the GPU than on the CPU" does not say the GPU path is fast — it says
+the CPU path is slow. Measured against a framework anyone can install, on the
+same card and the same model: 2.24× behind, and
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md#against-pytorch-on-the-same-card-which-is-the-number-that-counts)
+takes the gap apart with a profiler. About half of it is cuDNN choosing Winograd
+for the 3×3 convolutions, which is an algorithm this engine does not implement.
+
 ---
 
 ## What makes this different
@@ -312,6 +325,11 @@ precisely on the shapes that are not a multiple of that.
 
 **And it is measured against cuBLAS, not against itself.** 4096³, RTX 3060 Ti,
 operands already resident, one process per kernel:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/matmul-kernels-dark.svg">
+  <img alt="matmul 4096 cubed in GFLOP/s against the card's 16 489 fp32 peak: naive 898, tiled 1 178, tensorcore 5 200, register 6 871, vectorized 7 660, cuBLAS 9 258." src="docs/img/matmul-kernels.svg">
+</picture>
 
 | | `tiled` | `register` | `vectorized` | `tensorcore` | cuBLAS |
 |---|---|---|---|---|---|

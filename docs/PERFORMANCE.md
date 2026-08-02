@@ -307,6 +307,11 @@ transfer-bound. Instrumenting the step per phase said so immediately: forward
 | `matmul_tiled` | 38.7% | 900 | 542 µs |
 | `permute_gather` | 12.4% | 800 | 195 µs |
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/kernel-fixes-dark.svg">
+  <img alt="Total time per kernel over 100 MNIST steps, before and after: sum_over_axis 534.3 ms to 5.9, matmul_tiled 487.9 to 62.3, permute_gather 155.7 to 9.8." src="img/kernel-fixes.svg">
+</picture>
+
 All three had the **same bug**, and it is not a bug you find by reading the
 kernels — each one is correct, and each looks reasonable in isolation. They all
 draw their parallelism from the size of the **output** rather than the amount of
@@ -343,6 +348,11 @@ Making the host allocation lazy — `count` and `fill` describe the buffer,
 `materialise()` builds it the first time anyone reads it — took the step to
 **9.99 ms**. A tensor that is only ever written and read by kernels now allocates
 no host memory at all.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/step-breakdown-dark.svg">
+  <img alt="One training step at batch 64, split into forward, backward and everything else: 69.9 ms on CPU; 40.2 on CUDA before this work; 32.2 after three kernel fixes; 10.0 after the lazy host mirror." src="img/step-breakdown.svg">
+</picture>
 
 | | step, batch 64 |
 |---|---|
@@ -461,6 +471,13 @@ Alternate the two rather than running one three times: a sustained GPU load
 drifts by more than the difference being measured. That is not a hypothetical —
 it is written up under "The thresholds matter more than the parallelism" above,
 and it once made this project record a 3× regression that did not exist.
+
+The charts in this document come from `python tools/plot_benchmarks.py`, which
+writes `docs/img/*.svg` — one light file and one dark file each, no dependencies
+beyond the standard library. The numbers live in that script as a data table
+with this document as their source; making them read from the benchmarks instead
+is what turns them from a copy into a check, and that is the next piece of work
+rather than something already done.
 
 ### What this cost to find
 
