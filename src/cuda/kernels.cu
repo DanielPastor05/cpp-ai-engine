@@ -249,6 +249,47 @@ struct PermutePlan {
     long long stride[kMaxPermuteDims];
 };
 
+// Swapping the last two axes, through shared memory.
+//
+// The general gather below reads x[i] at a stride the permutation decides, and
+// for the one permutation this engine actually leans on -- Conv2d turning
+// (N*oH*oW, C) into (N, C, oH*oW) after the matmul, twice per layer per
+// direction -- that stride is the channel count. Consecutive threads then land
+// 64 bytes apart, so every 32-byte sector fetched carries four useful bytes.
+// Measured on an MNIST step: 33 GB/s on a card that does around 400.
+//
+// A tile staged in shared memory makes both halves contiguous: the read walks
+// rows, the write walks the transposed rows, and neither is strided. The +1 on
+// the row length is the usual bank-conflict padding -- without it, column
+// threadIdx.x of the shared tile lands in one bank for all 32 threads.
+constexpr int kTrTile = 32;
+constexpr int kTrRows = 8;  // rows per pass, so a block is 32x8 rather than 32x32
+
+__global__ void transpose_tiled(const float* __restrict__ in, float* __restrict__ out, int rows,
+                                int cols, long long matrix) {
+    __shared__ float tile[kTrTile][kTrTile + 1];
+
+    in += (long long)blockIdx.z * matrix;
+    out += (long long)blockIdx.z * matrix;
+
+    int x = blockIdx.x * kTrTile + threadIdx.x;
+    int y = blockIdx.y * kTrTile + threadIdx.y;
+    for (int j = 0; j < kTrTile; j += kTrRows) {
+        if (x < cols && y + j < rows) {
+            tile[threadIdx.y + j][threadIdx.x] = in[(long long)(y + j) * cols + x];
+        }
+    }
+    __syncthreads();
+
+    x = blockIdx.y * kTrTile + threadIdx.x;
+    y = blockIdx.x * kTrTile + threadIdx.y;
+    for (int j = 0; j < kTrTile; j += kTrRows) {
+        if (x < rows && y + j < cols) {
+            out[(long long)(y + j) * rows + x] = tile[threadIdx.x][threadIdx.y + j];
+        }
+    }
+}
+
 __global__ void permute_gather(const float* __restrict__ x, float* __restrict__ out,
                                PermutePlan plan, int nd, long long n) {
     const long long grid_stride = (long long)blockDim.x * gridDim.x;
@@ -282,6 +323,40 @@ __global__ void sum_over_axis(const float* __restrict__ x, float* __restrict__ o
         for (long long a = 0; a < axis_len; ++a) acc += base[a * inner];
         out[i] = acc;
     }
+}
+
+// The same sum, one block per output instead of one thread.
+//
+// The kernel above parallelises over outer*inner, which is the **output** size,
+// not the work. For a convolution's bias gradient the output is the channel
+// count: sixteen threads looping fifty thousand times each, on a card with
+// thousands of cores. Measured on an MNIST step it was 42% of all GPU time,
+// more than every matmul in the model put together.
+//
+// The reduction order changes -- a fixed tree instead of a serial walk -- so
+// this does not match the CPU bit for bit. It is still deterministic, which is
+// what the engine actually promises: the block size is a compile-time constant,
+// so which thread reads which element and in what order the partials combine
+// are the same on every run.
+template <int kThreads>
+__global__ void sum_over_axis_blocked(const float* __restrict__ x, float* __restrict__ out,
+                                      long long axis_len, long long inner) {
+    __shared__ float partial[kThreads];
+    const long long i = blockIdx.x;
+    const long long o = i / inner;
+    const long long j = i % inner;
+    const float* base = x + o * axis_len * inner + j;
+
+    float acc = 0.0f;
+    for (long long a = threadIdx.x; a < axis_len; a += kThreads) acc += base[a * inner];
+    partial[threadIdx.x] = acc;
+    __syncthreads();
+
+    for (int s = kThreads / 2; s > 0; s >>= 1) {
+        if ((int)threadIdx.x < s) partial[threadIdx.x] += partial[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) out[i] = partial[0];
 }
 
 // ---------------------------------------------------------
@@ -523,6 +598,47 @@ __global__ void matmul_tiled(const float* __restrict__ A, const float* __restric
 
     if (row < M && col < N) {
         C[(long long)row * N + col] = acc;
+    }
+}
+
+// The same tiled product, but with the K axis cut into a fixed number of chunks
+// and one grid slice per chunk.
+//
+// Every variant above draws its parallelism from the **output**: one block per
+// output tile. A convolution's weight gradient is cols^T x dout, and for MNIST's
+// first layer that is (9 x 50176) x (50176 x 16) -- nine by sixteen outputs, so
+// a single block walking a K of fifty thousand while the rest of the card sits
+// idle. Measured, that one product was 4.5 ms.
+//
+// Each slice leaves its own partial in `partials`, and sum_over_axis adds them
+// up afterwards. The chunk boundaries come from a count fixed on the host, so
+// the split does not shift between runs and neither does the result.
+__global__ void matmul_tiled_split_k(const float* __restrict__ A, const float* __restrict__ B,
+                                     float* __restrict__ partials, int M, int K, int N, int chunk) {
+    __shared__ float As[kTile][kTile];
+    __shared__ float Bs[kTile][kTile];
+
+    const int row = blockIdx.y * kTile + threadIdx.y;
+    const int col = blockIdx.x * kTile + threadIdx.x;
+    const int k_begin = (int)blockIdx.z * chunk;
+    const int k_end = min(K, k_begin + chunk);
+
+    float acc = 0.0f;
+    for (int t = k_begin; t < k_end; t += kTile) {
+        const int a_col = t + threadIdx.x;
+        const int b_row = t + threadIdx.y;
+        As[threadIdx.y][threadIdx.x] =
+            (row < M && a_col < k_end) ? A[(long long)row * K + a_col] : 0.0f;
+        Bs[threadIdx.y][threadIdx.x] =
+            (b_row < k_end && col < N) ? B[(long long)b_row * N + col] : 0.0f;
+        __syncthreads();
+#pragma unroll
+        for (int k = 0; k < kTile; ++k) acc += As[threadIdx.y][k] * Bs[k][threadIdx.x];
+        __syncthreads();
+    }
+
+    if (row < M && col < N) {
+        partials[(long long)blockIdx.z * M * N + (long long)row * N + col] = acc;
     }
 }
 
@@ -979,6 +1095,24 @@ double* reduction_partials() {
     return buffer;
 }
 
+// Split-K's scratch, same reasoning, except the size depends on the shape. It
+// grows to the largest asked for and stays there, so a training loop pays one
+// allocation rather than one per step.
+constexpr int kMaxSplitK = 64;
+
+float* matmul_partials(size_t floats) {
+    static float* buffer = nullptr;
+    static size_t capacity = 0;
+    if (floats <= capacity) return buffer;
+
+    void* p = nullptr;
+    if (cudaMalloc(&p, floats * sizeof(float)) != cudaSuccess) return nullptr;
+    if (buffer != nullptr) cudaFree(buffer);
+    buffer = (float*)p;
+    capacity = floats;
+    return buffer;
+}
+
 template <bool Square>
 __global__ void reduce_stage1(const float* __restrict__ x, double* __restrict__ partials,
                               long long n) {
@@ -1297,6 +1431,34 @@ bool matmul(const Storage& a, const Storage& b, Storage& out, size_t batch, size
         return launched_ok("matmul_naive", out);
     }
 
+    // Split-K, when the output is too small to fill the card and K is long
+    // enough to be worth cutting. Only unbatched: a batch already supplies the
+    // blocks this exists to manufacture.
+    const int tiles_m = (M + kTile - 1) / kTile;
+    const int tiles_n = (N + kTile - 1) / kTile;
+    if (batch == 1 && choice == MatmulKernel::Tiled && tiles_m * tiles_n <= 8 && K >= 4096) {
+        // Aim for about 256 blocks: enough to fill the card, few enough that the
+        // partials stay scratch rather than an allocation worth worrying about.
+        int split = std::min(256 / (tiles_m * tiles_n), kMaxSplitK);
+        split = (int)std::min<long long>(split, (K + kTile - 1) / kTile);
+        float* partials = split > 1 ? matmul_partials((size_t)split * M * N) : nullptr;
+        if (partials != nullptr) {
+            // Chunks are a whole number of tiles so every slice starts on a tile
+            // boundary. Rounding up can leave the last slices with nothing to do,
+            // which costs a launch and contributes an exact zero.
+            const int chunk = ((K + split - 1) / split + kTile - 1) / kTile * kTile;
+            const dim3 split_grid((unsigned)tiles_n, (unsigned)tiles_m, (unsigned)split);
+            matmul_tiled_split_k<<<split_grid, block>>>(a.device(), b.device(), partials, M, K, N,
+                                                        chunk);
+            if (!launch_ok("matmul_tiled_split_k")) return false;
+
+            const long long mn = (long long)M * N;
+            sum_over_axis<<<grid_for(mn), kBlock>>>(partials, out.device_write(), (long long)split,
+                                                    mn, mn);
+            return launched_ok("matmul_split_k", out);
+        }
+    }
+
     matmul_tiled<<<grid, block>>>(a.device(), b.device(), out.device_write(), M, K, N, a_stride,
                                   b_stride);
     return launched_ok("matmul_tiled", out);
@@ -1328,6 +1490,30 @@ bool permute(const Storage& x, Storage& out, const size_t* out_shape, const size
     // kernel would read past the buffer rather than give a wrong result.
     if (total != x.size()) return false;
 
+    // Is this a swap of the last two axes over contiguous leading ones? Then it
+    // is a batch of plain transposes and the tiled kernel applies. Writing the
+    // output shape as (..., C, R) over a source of (..., R, C), the source
+    // strides the caller computed have to read 1 for the axis that was C and R
+    // for the one that was R, with every leading axis still packed.
+    if (ndim >= 2) {
+        const size_t rows = out_shape[ndim - 1], cols = out_shape[ndim - 2];
+        bool swap = src_strides[ndim - 2] == 1 && src_strides[ndim - 1] == (long long)cols;
+        size_t packed = rows * cols, batch = 1;
+        for (size_t d = ndim - 2; d-- > 0 && swap;) {
+            swap = src_strides[d] == (long long)packed;
+            batch *= out_shape[d];
+            packed *= out_shape[d];
+        }
+        // grid.y covers the source rows, so it is bounded like any other axis.
+        if (swap && batch <= (size_t)kMaxGridYZ && (rows + kTrTile - 1) / kTrTile <= kMaxGridYZ) {
+            const dim3 grid((unsigned)((cols + kTrTile - 1) / kTrTile),
+                            (unsigned)((rows + kTrTile - 1) / kTrTile), (unsigned)batch);
+            transpose_tiled<<<grid, dim3(kTrTile, kTrRows)>>>(
+                x.device(), out.device_write(), (int)rows, (int)cols, (long long)(rows * cols));
+            return launched_ok("transpose_tiled", out);
+        }
+    }
+
     const long long n = (long long)x.size();
     permute_gather<<<grid_for(n), kBlock>>>(x.device(), out.device_write(), plan, (int)ndim, n);
     return launched_ok("permute_gather", out);
@@ -1339,7 +1525,17 @@ bool sum_axis(const Storage& x, Storage& out, size_t outer, size_t axis_len, siz
     if (outer * axis_len * inner != x.size()) return false;
     if (out.size() != outer * inner) return false;
 
+    // Which of the two mappings wins is decided by the *output* size, because
+    // that is the flat kernel's whole parallelism. Few outputs over a long axis
+    // -- a bias gradient -- and it runs on a handful of threads; many outputs
+    // and it already fills the card while the blocked one would spend most of
+    // its tree reduction on nothing.
     const long long n = (long long)(outer * inner);
+    if (n <= 4096 && axis_len >= 64) {
+        sum_over_axis_blocked<kBlock><<<(unsigned)n, kBlock>>>(
+            x.device(), out.device_write(), (long long)axis_len, (long long)inner);
+        return launched_ok("sum_over_axis_blocked", out);
+    }
     sum_over_axis<<<grid_for(n), kBlock>>>(x.device(), out.device_write(), (long long)axis_len,
                                            (long long)inner, n);
     return launched_ok("sum_over_axis", out);
@@ -1436,7 +1632,8 @@ bool reduce_impl(const Storage& x, double& out) {
     if (partials == nullptr) return false;
 
     const long long n = (long long)x.size();
-    const int blocks = (int)std::min<long long>(kReduceBlocks, (n + kReduceBlock - 1) / kReduceBlock);
+    const int blocks =
+        (int)std::min<long long>(kReduceBlocks, (n + kReduceBlock - 1) / kReduceBlock);
 
     reduce_stage1<Square><<<blocks, kReduceBlock>>>(x.device(), partials, n);
     if (!launch_ok("reduce_stage1")) return false;

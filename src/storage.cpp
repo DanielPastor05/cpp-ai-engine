@@ -16,11 +16,15 @@ Storage::Buffer::~Buffer() {
 
 Storage::Storage() : buf_(std::make_shared<Buffer>()) {}
 
+// No allocation here on purpose: see Buffer's comment. The values are described,
+// not built, and materialise() builds them the first time anyone looks.
 Storage::Storage(size_t count, float fill) : buf_(std::make_shared<Buffer>()) {
-    buf_->host.assign(count, fill);
+    buf_->count = count;
+    buf_->fill = fill;
 }
 
 Storage::Storage(std::vector<float> values) : buf_(std::make_shared<Buffer>()) {
+    buf_->count = values.size();
     buf_->host = std::move(values);
 }
 
@@ -34,23 +38,32 @@ Storage::Storage(std::vector<float> values) : buf_(std::make_shared<Buffer>()) {
 // buffers, a backward_fn holding a captured input would see it change under it.
 // Sharing has to be asked for by name: share().
 Storage::Storage(const Storage& other) : buf_(std::make_shared<Buffer>()) {
-    buf_->host = other.host();
+    buf_->count = other.buf_->count;
+    buf_->fill = other.buf_->fill;
+    // An unmaterialised source has nothing to copy: the copy inherits the same
+    // description and allocates when it is read, exactly as the original would.
+    if (other.buf_->host.size() == other.buf_->count) buf_->host = other.host();
 }
 
 Storage& Storage::operator=(const Storage& other) {
     if (this != &other) {
-        buf_ = std::make_shared<Buffer>();
-        buf_->host = other.host();
+        const Storage copy(other);
+        buf_ = copy.buf_;
     }
     return *this;
 }
 
 Storage::~Storage() = default;
 
+void Storage::materialise() const {
+    if (buf_->host.size() != buf_->count) buf_->host.assign(buf_->count, buf_->fill);
+}
+
 const std::vector<float>& Storage::host() const {
 #ifdef ENGINE_CUDA
     sync_host();
 #endif
+    materialise();
     return buf_->host;
 }
 
@@ -60,26 +73,26 @@ std::vector<float>& Storage::host_mut() {
     // Anyone writing through this reference makes whatever is on the GPU stale.
     buf_->device_valid = false;
 #endif
+    materialise();
     return buf_->host;
 }
 
 Storage Storage::clone() const {
     Storage copy;
+    copy.buf_->count = buf_->count;
+    copy.buf_->fill = buf_->fill;
 #ifdef ENGINE_CUDA
     // Only when the device is the sole holder of the good data. If host is valid
     // too, copying it is free and allocates no GPU memory either.
     if (buf_->device_valid && !buf_->host_valid && buf_->device != nullptr) {
-        // The vector is sized but not filled: size() comes from it, and its
-        // contents are marked stale until somebody asks for the host side.
-        copy.buf_->host.resize(buf_->host.size());
         copy.ensure_device_buffer();
-        cuda::detail::copy_device_to_device(copy.buf_->device, buf_->device, buf_->host.size());
+        cuda::detail::copy_device_to_device(copy.buf_->device, buf_->device, buf_->count);
         copy.buf_->host_valid = false;
         copy.buf_->device_valid = true;
         return copy;
     }
 #endif
-    copy.buf_->host = host();
+    if (buf_->host.size() == buf_->count) copy.buf_->host = host();
     return copy;
 }
 
@@ -93,28 +106,37 @@ void Storage::assign(size_t count, float value) {
 #ifdef ENGINE_CUDA
     // A resize invalidates the device buffer's size, so it goes rather than
     // being reused at the wrong length.
-    if (count != buf_->host.size() && buf_->device != nullptr) {
+    if (count != buf_->count && buf_->device != nullptr) {
         cuda::detail::device_free(buf_->device);
         buf_->device = nullptr;
     }
     buf_->host_valid = true;
     buf_->device_valid = false;
 #endif
-    buf_->host.assign(count, value);
+    // Lazy for the same reason as the constructor: zero_grad() assigns every
+    // gradient in the model and on the device path a kernel overwrites each one.
+    buf_->count = count;
+    buf_->fill = value;
+    buf_->host.clear();
 }
 
 #ifdef ENGINE_CUDA
 
+// The whole point of splitting count out of the host vector: a tensor that is
+// only ever written and read by kernels never allocates a host mirror at all.
 void Storage::ensure_device_buffer() const {
-    if (buf_->device == nullptr && !buf_->host.empty()) {
-        buf_->device = cuda::detail::device_alloc(buf_->host.size());
+    if (buf_->device == nullptr && buf_->count != 0) {
+        buf_->device = cuda::detail::device_alloc(buf_->count);
     }
 }
 
 void Storage::sync_host() const {
     if (buf_->host_valid) return;
-    if (buf_->device != nullptr && !buf_->host.empty()) {
-        cuda::detail::copy_to_host(buf_->host.data(), buf_->device, buf_->host.size());
+    if (buf_->device != nullptr && buf_->count != 0) {
+        // resize and not materialise(): the download is about to overwrite every
+        // value, so filling them first would be the waste this change removes.
+        buf_->host.resize(buf_->count);
+        cuda::detail::copy_to_host(buf_->host.data(), buf_->device, buf_->count);
     }
     buf_->host_valid = true;
 }
@@ -122,8 +144,9 @@ void Storage::sync_host() const {
 void Storage::sync_device() const {
     ensure_device_buffer();
     if (buf_->device_valid) return;
-    if (buf_->device != nullptr && !buf_->host.empty()) {
-        cuda::detail::copy_to_device(buf_->device, buf_->host.data(), buf_->host.size());
+    if (buf_->device != nullptr && buf_->count != 0) {
+        materialise();
+        cuda::detail::copy_to_device(buf_->device, buf_->host.data(), buf_->count);
     }
     buf_->device_valid = true;
 }

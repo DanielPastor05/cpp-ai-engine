@@ -215,7 +215,7 @@ int main() {
         const double elapsed =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 
-        std::cout << "  Epoca " << std::setw(2) << epoch << " | Loss = " << std::fixed
+        std::cout << "  Epoch " << std::setw(2) << epoch << " | Loss = " << std::fixed
                   << std::setprecision(4) << (epoch_loss / static_cast<float>(batches))
                   << " | Test = " << std::setprecision(2) << (test_acc * 100.0f) << "%"
                   << " | lr = " << std::scientific << std::setprecision(1) << opt.learning_rate()

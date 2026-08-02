@@ -37,8 +37,8 @@ public:
     Storage& operator=(Storage&& other) noexcept = default;
     ~Storage();
 
-    size_t size() const { return buf_->host.size(); }
-    bool empty() const { return buf_->host.empty(); }
+    size_t size() const { return buf_->count; }
+    bool empty() const { return buf_->count == 0; }
 
     // ---- host side ----
     // The mutable version marks the device mirror stale: if the program writes
@@ -101,7 +101,19 @@ private:
     // would let two handles disagree about where the good copy is, which is the
     // one thing the invariant exists to prevent.
     struct Buffer {
+        // `count` is the size, not host.size(): the host vector is allocated on
+        // first host access, so until then it is empty while count is not.
+        //
+        // Every operation builds its output with Storage(n, 0.0f), and on the
+        // device path the very next thing is a kernel writing all n values.
+        // Allocating and zeroing the host mirror for that is pure waste, and it
+        // is not a rounding error: one MNIST step creates 89 MiB of mirrors, and
+        // filling them measured **20 ms of a 32 ms step** -- against 1.6 ms of
+        // actual kernel time. `fill` is kept so materialising later produces the
+        // values the constructor promised.
         std::vector<float> host;
+        size_t count = 0;
+        float fill = 0.0f;
 #ifdef ENGINE_CUDA
         float* device = nullptr;
         bool host_valid = true;
@@ -109,6 +121,10 @@ private:
 #endif
         ~Buffer();
     };
+
+    // Allocates the host mirror if it is not there yet. Const because asking for
+    // values is a read as far as the caller is concerned.
+    void materialise() const;
 
 #ifdef ENGINE_CUDA
     void ensure_device_buffer() const;

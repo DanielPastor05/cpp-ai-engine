@@ -407,28 +407,33 @@ recompiling anything.
 
 ## What is deliberately not on the GPU
 
-- **The loss and the optimisers.** `cross_entropy` and the SGD and Adam steps
-  are still on the CPU, and they are now the remaining break in MNIST: one
-  download of every gradient and one upload of every parameter per step. It is
-  the next thing to attack, because the chain ahead of it no longer breaks.
-- **`LayerNorm`.** It is the one that is left, and it breaks the chain twice per
-  block. The forward would have a kernel without difficulty; the one that
-  decides is the backward, because `dgamma` and `dbeta` accumulate **across**
-  rows and that cross-row reduction is a design problem of its own — the same
-  one that keeps the CPU version serial. An accelerated forward with the
-  backward on the host solves half of it, so it gets done whole or not at all.
-- **`Tensor::sum()` to a scalar.** The accumulator is `double` on purpose, and a
-  two-stage GPU reduction in `float` would lose exactly what that change fixed.
-  Doing it properly means accumulating in `double` on the device too, which is
-  not hard but is not free either.
+- **`cross_entropy`.** The last CPU-resident operation in MNIST's chain, and the
+  cheapest to leave there: it runs on a `(64, 10)` tensor, so the break costs one
+  download of 2.5 KB. The forward is a row softmax plus a gather and a mean, the
+  backward is `(softmax - one_hot)/N`; the class indices are host `size_t` and
+  would travel as floats, exact to 2^24, the way `MaxPool2d`'s argmax already
+  does. Worth doing, but it is not what the profiler points at.
+- **`LayerNorm`.** It breaks the chain twice per Transformer block. The forward
+  would have a kernel without difficulty; the one that decides is the backward,
+  because `dgamma` and `dbeta` accumulate **across** rows and that cross-row
+  reduction is a design problem of its own — the same one that keeps the CPU
+  version serial. An accelerated forward with the backward on the host solves
+  half of it, so it gets done whole or not at all.
+- **Dropout.** The mask comes from the host RNG, so the whole layer stays on the
+  CPU. Moving it means a device RNG and a decision about whether the mask has to
+  match the CPU's run for run, which is a reproducibility question rather than a
+  performance one.
 - **Kernel fusion.** Every operation is one kernel and one trip to global
   memory. A fused `LayerNorm` or a fused `attention` would save most of that
-  traffic. It is the next real optimisation.
+  traffic. With the parallelism bugs out of the way it is now the next real
+  optimisation.
 - **Streams and overlap.** Everything runs on the default stream and the copies
   are synchronising. Overlapping transfer and compute with pinned memory is what
-  would attack the PCIe cost directly.
-- **Tensor cores.** The engine is fp32 everywhere. Using them requires fp16 or
-  tf32 and a precision discussion this project has not had.
+  would attack the PCIe cost directly — though on MNIST that cost was measured
+  and found not to be the bottleneck, so it needs a workload that justifies it.
+- **fp16 mixed precision.** tf32 is implemented and gave nothing, because
+  consumer Ampere runs dense tf32 at the fp32 rate. fp16 really is 2×, but it is
+  a precision project — master weights, loss scaling — not a kernel.
 - **cuBLAS, as a backend.** For the same reason there is no BLAS on the CPU path:
   the goal is to implement it, not to call it. It *is* linked into
   `bench_matmul` as the reference row, and the engine's best kernel lands 1.94x

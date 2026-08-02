@@ -240,6 +240,80 @@ void run_cuda_parity_tests() {
         cuda::set_matmul_kernel(cuda::MatmulKernel::Auto);
     }
 
+    // --- split-K: a tall thin product, which is a convolution's weight gradient ---
+    //
+    // Auto picks the tiled kernel whenever either side is under 128, and when the
+    // output is also small enough to fit in a handful of tiles it cuts K into
+    // slices and sums the partials. That branch is invisible to the caller and
+    // fires on no other shape in this file, so without these cases it would be
+    // dead code that happens to run in the demos.
+    //
+    // The shapes are MNIST's, one per convolution: cols^T x dout for a 3x3 kernel
+    // over 28x28 and over 14x14 with a batch of 8. K has to clear 4096 and the
+    // output has to stay under eight 32x32 tiles for the path to be taken.
+    {
+        // The tolerance has to grow with K, and the reason is the **CPU** side:
+        // it sums K products serially in float, so its error walks as sqrt(K)
+        // steps of size u against a result of size sqrt(K), which lands at about
+        // K*u relative. The GPU is the more accurate of the two here -- tiles and
+        // slices are partial sums, which is shorter chains -- so this bound
+        // measures how far the reference has drifted, not the kernel.
+        //
+        // At 1e-5 flat, 144x1568x32 failed at 2.2e-05 and that shape does not even
+        // take the split-K branch. The bound was wrong, not the code.
+        auto long_k_tolerance = [](size_t k) {
+            return std::max(1e-5f, 2.0f * static_cast<float>(k) / 16777216.0f);
+        };
+
+        struct SplitCase {
+            size_t M, K, N;
+        };
+        const SplitCase cases[] = {
+            {9, 6272, 16},     // conv1: 3x3x1 columns, 16 channels out
+            {144, 1568, 32},   // conv2, K just under the threshold: the plain kernel
+            {144, 12544, 32},  // conv2 at a batch that crosses it
+            {7, 5000, 5},      // K not a multiple of the tile, output not either
+        };
+        for (const SplitCase& c : cases) {
+            Tensor A = Tensor::randn({c.M, c.K});
+            Tensor B = Tensor::randn({c.K, c.N});
+            compare(
+                "[auto] split-K " + std::to_string(c.M) + "x" + std::to_string(c.K) + "x" +
+                    std::to_string(c.N),
+                [&] { return A.matmul(B); }, long_k_tolerance(c.K));
+        }
+
+        // A loosened tolerance is a weaker test, so this is the one that carries
+        // the weight -- the same trick the tf32 section uses further down, and for
+        // the same reason: it is what catches an index that is wrong rather than
+        // a sum that is imprecise.
+        //
+        // Products of small integers are exact in fp32 and stay exact for K of
+        // them, so a split whose chunk boundaries are off, or whose partials are
+        // summed with one missing, cannot hide behind rounding. It has to match
+        // the CPU bit for bit.
+        {
+            bool exact = true;
+            for (const SplitCase& c : cases) {
+                Tensor A(std::vector<size_t>{c.M, c.K}, 0.0f, false);
+                Tensor B(std::vector<size_t>{c.K, c.N}, 0.0f, false);
+                for (size_t i = 0; i < A.size(); ++i) A.data()[i] = (float)((int)(i % 5) - 2);
+                for (size_t i = 0; i < B.size(); ++i) B.data()[i] = (float)((int)(i % 3) - 1);
+
+                cuda::set_enabled(false);
+                const std::vector<float> want = A.matmul(B).data();
+                cuda::set_enabled(true);
+                const std::vector<float> got = A.matmul(B).data();
+                for (size_t i = 0; i < want.size() && exact; ++i) exact = want[i] == got[i];
+                if (!exact) break;
+            }
+            testing::check(exact, exact ? "split-K matches the CPU exactly on integer inputs, so "
+                                          "the chunk boundaries and the partial sum are right"
+                                        : "split-K disagrees with the CPU on integer inputs: the "
+                                          "tolerance cases above were hiding an indexing error");
+        }
+    }
+
     // --- the tensor-core kernel, at a tolerance that says what it costs ---
     //
     // tf32 keeps fp32's exponent and cuts the mantissa from 23 bits to 10, so a

@@ -191,11 +191,15 @@ MNIST subset shipped in the repo (2 000 images, 12 epochs):
 | composed, CUDA, default thresholds | 24.3 s |
 | composed, CUDA, `ENGINE_CUDA_MIN_ELEMENTS=65536` | **19.5 s** |
 
-So the GPU build comes out slightly ahead and the CPU-only build pays 40%. The
-cost is concentrated in `reshape`, which still copies the whole buffer to change
-nothing but the shape: two of those five passes are pure metadata changes. A
-`Storage` with shared buffers and per-view shapes would remove them, and that is
-the next real piece of work rather than a micro-optimisation.
+So the GPU build came out slightly ahead and the CPU-only build paid 40%. The
+cost was concentrated in `reshape`, which copied the whole buffer to change
+nothing but the shape: two of those five passes were pure metadata changes.
+
+**That table is the state before "Making the GPU actually win" below, kept
+because the retraction is the interesting part.** `reshape` is now a view, and
+after four further fixes the same subset trains in **3.8 s on the GPU against
+26.3 s on the CPU**. The composed convolution is no longer the slower one; what
+was slow was never the composition.
 
 Two things measured along the way that did **not** work, recorded so nobody
 repeats them. Replacing that `permute({0,2,1})` with `transpose()` — identical
@@ -263,6 +267,108 @@ CNN, on one CPU core with no BLAS. That is the number Phase 6 has to beat.
 
 ---
 
+## Making the GPU actually win
+
+For a long stretch this backend was well built and pointless: 620 parity checks,
+four matmul variants, gradients verified against the CPU bit for bit — and MNIST
+trained **slower with a card than without one**, 19.5 s against 18.4.
+
+It now trains in **3.8 s against 26.3 s: 6.9×**, on the same 2 000-image subset,
+same twelve epochs, same final accuracy (94.4% against 94.6%, and the loss curves
+agree to four decimals). One training step, batch 64, went from 40.2 ms to 9.99 ms
+while the CPU stayed at 69.9.
+
+What is worth reading here is not the number, it is that **the first two things I
+was sure were the cause were not**.
+
+### The 606 MiB that did not matter
+
+The obvious culprit was PCIe traffic. `src/optim.cpp` dispatched to the backend
+zero times, so every step read `p.data()` and `grad.data()` for all 206 922
+parameters — a full download and upload each, **606 MiB per training run from the
+optimiser alone**. Adding `sgd_step`/`adam_step` kernels, device-side reductions
+for `clip_grad_norm`, and fixing a duplicated broadcast loop in `operator+` cut
+transfers per step from 6.22 MiB to 1.62.
+
+Training time fell **2%**.
+
+Transfers were real and worth removing, but MNIST at this size was never
+transfer-bound. Instrumenting the step per phase said so immediately: forward
+9.2 ms, backward 30.1, and 11 transfers totalling under 2 MiB between them.
+
+### The profiler disagreed with all of it
+
+`nsys` on 100 steps, and three kernels held **93.5%** of GPU time:
+
+| kernel | share | calls | mean |
+|---|---|---|---|
+| `sum_over_axis` | 42.4% | 200 | 2.67 ms |
+| `matmul_tiled` | 38.7% | 900 | 542 µs |
+| `permute_gather` | 12.4% | 800 | 195 µs |
+
+All three had the **same bug**, and it is not a bug you find by reading the
+kernels — each one is correct, and each looks reasonable in isolation. They all
+draw their parallelism from the size of the **output** rather than the amount of
+work:
+
+- `sum_over_axis` gives one thread per output. A convolution's bias gradient has
+  one output per channel: **16 threads** looping 50 176 times each. Fixed with a
+  block per output and a shared-memory tree — 534 ms to 5.9 ms, **90×**.
+- `matmul_tiled` gives one block per output tile. A convolution's weight gradient
+  is `(9 × 50176) × (50176 × 16)`: **one block** walking a K of fifty thousand.
+  Fixed with split-K, chunk count fixed on the host so the result does not shift
+  between runs — 488 ms to 62 ms, **7.9×**.
+- `permute_gather` reads at whatever stride the permutation implies. For the one
+  permutation this engine leans on — Conv2d turning `(N·oH·oW, C)` into
+  `(N, C, oH·oW)` — that stride is the channel count, so consecutive threads land
+  64 bytes apart and every 32-byte sector fetched carries four useful bytes.
+  33 GB/s on a card that does about 400. Fixed by detecting the last-two-axes
+  swap and staging a tile through shared memory — 154 ms to 9.8 ms, **15.7×**.
+
+Total GPU time across the run: 1 259 ms to 159 ms.
+
+The step went from 40.2 ms to 32.2.
+
+### Where it actually was
+
+159 ms over 100 steps is **1.6 ms of kernel time in a 32 ms step**. Ninety-five
+per cent of a "GPU-accelerated" step was the host, and not doing anything
+interesting: `Storage(count, 0.0f)` allocated and zeroed a host mirror for every
+tensor an operation produced, immediately before a kernel overwrote all of it.
+
+One MNIST step creates **89 MiB** of those mirrors. Timed on its own: **20.4 ms**.
+
+Making the host allocation lazy — `count` and `fill` describe the buffer,
+`materialise()` builds it the first time anyone reads it — took the step to
+**9.99 ms**. A tensor that is only ever written and read by kernels now allocates
+no host memory at all.
+
+| | step, batch 64 |
+|---|---|
+| CPU | 69.9 ms |
+| GPU, before any of this | 40.2 ms |
+| + three kernel parallelism fixes | 32.2 ms |
+| + lazy host mirror | **9.99 ms** |
+
+### What this cost to find
+
+Three measurements, in this order, each of which contradicted the plan:
+
+1. Transfer counters per phase — killed the PCIe hypothesis the plan was built on.
+2. `nsys` per-kernel times — found three unrelated-looking kernels with one shared
+   design mistake.
+3. A twelve-line micro-benchmark of `std::vector::assign` — found the thing that
+   was bigger than all three kernels put together.
+
+None of them needed a tool that was not already installed. The first two
+hypotheses were mine and both were wrong; what made the difference was measuring
+before each change rather than after.
+
+`ncu` wants administrator rights for its performance counters on Windows.
+`nsys profile -t cuda` does not, and per-kernel totals were all this needed.
+
+---
+
 ## A note on baselines
 
 An early benchmark showed a 4.4× speedup from `-O2` to `-O3` on `matmul`. Before
@@ -283,10 +389,9 @@ The CUDA backend, its design and how to reproduce its measurements are in
   On a real engine the PCIe link becomes the bottleneck long before arithmetic
   does, and a CPU/GPU table that folds that cost into the total says nothing
   about the engine — it says how big the matrix was.
-- `Conv2d` does **not** go through the GPU, for exactly the reason it did not
-  benefit from CPU threading either: it has its own hand-written loop and never
-  calls `Tensor::matmul`. In `mnist_demo` the dense layers dispatch to the
-  device and the convolutions do not, and the example says so on startup.
+- `Conv2d` **does** go through the GPU now. It used to have its own hand-written
+  loop and never called `Tensor::matmul`; it is now composed out of `im2col`,
+  `matmul` and `permute`, which is what let the whole CNN chain get kernels.
 
 ---
 
@@ -299,6 +404,7 @@ The CUDA backend, its design and how to reproduce its measurements are in
   dominate.
 - **No `-march=native`.** Worth another 1.4×, at the cost of a binary that will
   not run on a different CPU.
-- **Tensor views.** `reshape`, `transpose` and `permute` copy. Making them
-  share storage is the largest remaining optimisation and the natural companion
-  to a device abstraction — deferred deliberately, not overlooked.
+- **Views for `transpose` and `permute`.** `reshape` is a view now; those two
+  are not, and stay that way deliberately. They genuinely move data, and making
+  them views means non-contiguous strides through every kernel and every CPU
+  loop — a different project, with no payoff measured here.

@@ -25,6 +25,7 @@ No dependencies. No BLAS. The point is to implement it, not to call it.
 | "Token after the marker" | **99.3%** (Transformer) | 17.5% (mean pooling) | chance is 16.7% |
 | **Gradient agreement with PyTorch** | **~1e-7** | — | 23 fixtures, single ops to full blocks |
 | MNIST training on 4 cores | **1.78×** (329 s vs 587 s) | 1 core | identical loss to the last digit |
+| MNIST training on the GPU | **6.92×** (3.8 s vs 26.3 s) | same binary, CUDA off | RTX 3060, 2k subset, same loss curve |
 | matmul 512³ on 4 cores | **3.08×** | 1 core | bit-identical regardless of thread count |
 
 Each baseline is a control that *provably cannot* solve its task. If one ever
