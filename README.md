@@ -96,10 +96,14 @@ and each has a regression test.
 ## Quick start
 
 ```bash
-cmake -B build -S . && cmake --build build --parallel
-ctest --test-dir build --output-on-failure     # 524 checks
+cmake --preset default && cmake --build --preset default
+ctest --preset default                         # 530 checks
 ./build/mnist_demo                             # trains a CNN on real data
 ```
+
+`CMakePresets.json` also carries `cuda`, `debug`, `asan` and `tsan` — the five
+configurations CI builds, so reproducing a red job is one flag rather than a
+remembered command line. `cmake --list-presets` shows them.
 
 The repository ships a 2 000-image MNIST subset so this works straight after
 cloning. Run `tools/download_mnist.sh` for the full 60 000 — the example detects

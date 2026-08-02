@@ -1,0 +1,77 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Release, no CUDA",
+      "description": "What CI builds and what the checks are counted against: 530 of them, with no toolkit and no card required.",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "cuda",
+      "displayName": "Release with the CUDA backend",
+      "description": "Adds the GPU path. sm_86 by default; override with -DCMAKE_CUDA_ARCHITECTURES for another card, and see docs/CUDA.md if a kernel refuses to start.",
+      "binaryDir": "${sourceDir}/build-cuda",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ENGINE_CUDA": "ON"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug with bounds-checked containers",
+      "description": "_GLIBCXX_ASSERTIONS turns on the standard library's index checks, which Release does not have.",
+      "binaryDir": "${sourceDir}/build-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-D_GLIBCXX_ASSERTIONS"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "AddressSanitizer + UndefinedBehaviorSanitizer",
+      "description": "The configuration that found a heap overflow in the broadcast gradient which every test had missed.",
+      "binaryDir": "${sourceDir}/build-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer"
+      }
+    },
+    {
+      "name": "tsan",
+      "displayName": "ThreadSanitizer",
+      "description": "For the parallel_for split. Run the tests under it with ENGINE_NUM_THREADS=4.",
+      "binaryDir": "${sourceDir}/build-tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer"
+      }
+    }
+  ],
+
+  "buildPresets": [
+    { "name": "default", "configurePreset": "default", "configuration": "Release" },
+    { "name": "cuda", "configurePreset": "cuda", "configuration": "Release" },
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "asan", "configurePreset": "asan" },
+    { "name": "tsan", "configurePreset": "tsan" }
+  ],
+
+  "testPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "cuda",
+      "configurePreset": "cuda",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

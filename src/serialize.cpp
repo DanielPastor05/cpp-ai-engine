@@ -105,8 +105,24 @@ void save_parameters(nn::Module& model, const std::string& path) {
 }
 
 // ---------------------------------------------------------
-// Cargar
+// Loading
 // ---------------------------------------------------------
+//
+// Everything below treats the file as hostile, because it is the only input to
+// this engine that does not come from its own API. A checkpoint is a thing
+// people download.
+//
+// Three sizes in the header are attacker-controlled and used to allocate: the
+// tensor count, the dimension count, and the name length. All three are 32-bit,
+// so a crafted file can ask for four billion of anything. The defence is not a
+// magic constant -- it is the file's own length: a claim that cannot fit in the
+// bytes that exist is rejected before a byte is allocated for it.
+//
+// And the element count is a product of 64-bit dimensions accumulated into a
+// size_t, which **overflowed silently**. Two dimensions of 2^32 wrap to zero,
+// the tensor is allocated empty, and the shape it reports has nothing to do with
+// the data it holds. That one was found by reading the loop with a fuzzer in
+// mind rather than by the fuzzer, which is the argument for doing both.
 
 namespace {
 
@@ -118,10 +134,21 @@ struct StoredTensor {
 std::vector<std::pair<std::string, StoredTensor>> read_file(const std::string& path) {
     require_little_endian();
 
-    std::ifstream in(path, std::ios::binary);
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
     if (!in) {
         throw std::runtime_error("Could not open for reading: " + path);
     }
+    // The bound every size below is checked against. A declared length larger
+    // than the file cannot be honest, whatever else it is.
+    const std::streamoff file_bytes = in.tellg();
+    if (file_bytes < 0) {
+        throw std::runtime_error("Could not measure: " + path);
+    }
+    const auto remaining = [&in, file_bytes]() -> uint64_t {
+        const std::streamoff at = in.tellg();
+        return (at < 0 || at > file_bytes) ? 0 : (uint64_t)(file_bytes - at);
+    };
+    in.seekg(0, std::ios::beg);
 
     char magic[sizeof(kMagic)];
     in.read(magic, sizeof(magic));
@@ -137,24 +164,55 @@ std::vector<std::pair<std::string, StoredTensor>> read_file(const std::string& p
     }
 
     const uint32_t count = read_raw<uint32_t>(in, path);
+    // Each tensor costs at least its name length, its dimension count and one
+    // dimension: 16 bytes before any data. More than that many left is
+    // impossible, so refuse before reserving.
+    if ((uint64_t)count * 16u > remaining()) {
+        throw std::runtime_error("'" + path + "' declares " + std::to_string(count) +
+                                 " tensors, more than its " + std::to_string(file_bytes) +
+                                 " bytes can hold.");
+    }
     std::vector<std::pair<std::string, StoredTensor>> stored;
     stored.reserve(count);
 
     for (uint32_t t = 0; t < count; ++t) {
         const uint32_t name_len = read_raw<uint32_t>(in, path);
+        if (name_len > remaining()) {
+            throw std::runtime_error("'" + path + "' declares a " + std::to_string(name_len) +
+                                     "-byte tensor name with fewer bytes left than that.");
+        }
         const std::string name = read_string(in, name_len, path);
 
         const uint32_t ndim = read_raw<uint32_t>(in, path);
+        if ((uint64_t)ndim * sizeof(uint64_t) > remaining()) {
+            throw std::runtime_error("'" + path + "' declares " + std::to_string(ndim) +
+                                     " dimensions with fewer bytes left than that.");
+        }
         StoredTensor entry;
         entry.shape.reserve(ndim);
-        size_t total = 1;
+
+        // Overflow-checked, because the unchecked version wrapped: with
+        // dimensions of 2^32 the product became zero, the tensor came out empty,
+        // and its shape described data it did not have.
+        uint64_t total = 1;
         for (uint32_t d = 0; d < ndim; ++d) {
             const uint64_t dim = read_raw<uint64_t>(in, path);
+            if (dim != 0 && total > UINT64_MAX / dim) {
+                throw std::runtime_error("'" + path +
+                                         "' declares a shape whose element count "
+                                         "does not fit in 64 bits.");
+            }
             entry.shape.push_back(static_cast<size_t>(dim));
-            total *= static_cast<size_t>(dim);
+            total *= dim;
+        }
+        // And the values themselves have to be in the file.
+        if (total > remaining() / sizeof(float)) {
+            throw std::runtime_error("'" + path + "' declares a tensor of " +
+                                     std::to_string(total) + " values with only " +
+                                     std::to_string(remaining()) + " bytes left.");
         }
 
-        entry.data.resize(total);
+        entry.data.resize(static_cast<size_t>(total));
         if (total > 0) {
             in.read(reinterpret_cast<char*>(entry.data.data()),
                     static_cast<std::streamsize>(total * sizeof(float)));

@@ -397,7 +397,7 @@ void test_serialization() {
     }
     check_close(max_diff, 0.0f, "after loading, the model reproduces the exact output");
 
-    // Inspeccionar sin cargar
+    // Inspect without loading
     auto summary = engine::inspect_parameters(path);
     check(summary.size() == model.parameters().size(), "inspect lists every tensor");
     check(summary[0].second == std::vector<size_t>({4, 6}), "inspect returns the shapes");
@@ -412,6 +412,60 @@ void test_serialization() {
     // nothing.
     check(engine::load_parameters(wrong, path, false) == 0,
           "without strict, a different architecture loads nothing");
+
+    // --- hostile checkpoints ---
+    //
+    // A weight file is the only input to this engine that does not come from its
+    // own API, and it is a thing people download. Three of its header fields are
+    // 32-bit sizes used to allocate, and the element count was a product of
+    // 64-bit dimensions accumulated into a size_t with no overflow check.
+    //
+    // Each case below is a file that is structurally valid up to the field being
+    // attacked, so the parser has to reject it on the value rather than on the
+    // magic number.
+    {
+        const char magic[8] = {'C', 'P', 'P', 'A', 'I', 'E', 'N', 'G'};
+        auto craft = [&](const std::string& name, const std::vector<uint32_t>& u32s,
+                         const std::vector<uint64_t>& u64s) {
+            const std::string p = name;
+            std::ofstream f(p, std::ios::binary);
+            f.write(magic, sizeof(magic));
+            const uint32_t version = 1;
+            f.write(reinterpret_cast<const char*>(&version), sizeof(version));
+            for (uint32_t v : u32s) f.write(reinterpret_cast<const char*>(&v), sizeof(v));
+            for (uint64_t v : u64s) f.write(reinterpret_cast<const char*>(&v), sizeof(v));
+            return p;
+        };
+
+        // Four billion tensors in a twenty-byte file.
+        const std::string huge_count = craft("hostile_count.bin", {0xFFFFFFFFu}, {});
+        check_throws([&] { engine::inspect_parameters(huge_count); },
+                     "a tensor count larger than the file is rejected");
+
+        // One tensor, a name four gigabytes long.
+        const std::string huge_name = craft("hostile_name.bin", {1u, 0xFFFFFFFFu}, {});
+        check_throws([&] { engine::inspect_parameters(huge_name); },
+                     "a name length larger than the file is rejected");
+
+        // One tensor, one short name, four billion dimensions.
+        const std::string huge_ndim = craft("hostile_ndim.bin", {1u, 0u, 0xFFFFFFFFu}, {});
+        check_throws([&] { engine::inspect_parameters(huge_ndim); },
+                     "a dimension count larger than the file is rejected");
+
+        // The one that used to pass. Two dimensions of 2^32: their product
+        // overflows size_t to exactly zero, so the tensor came out empty while
+        // its shape claimed 2^64 elements. Nothing crashed and nothing was
+        // reported -- the file simply loaded as something it was not.
+        const std::string overflow =
+            craft("hostile_overflow.bin", {1u, 0u, 2u}, {uint64_t(1) << 32, uint64_t(1) << 32});
+        check_throws([&] { engine::inspect_parameters(overflow); },
+                     "a shape whose element count overflows is rejected, not silently wrapped");
+
+        for (const char* f : {"hostile_count.bin", "hostile_name.bin", "hostile_ndim.bin",
+                              "hostile_overflow.bin"}) {
+            std::remove(f);
+        }
+    }
 
     // The shape check fires when the name DOES match but the shape does not: that is
     // the case that would leave a silently broken model.
