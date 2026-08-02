@@ -132,13 +132,20 @@ def gridlines(x0, plot_w, y0, y1, vmax, ticks, p, unit=""):
 
 def chart_vs_pytorch(p):
     """Grouped bars: two implementations, two devices. The headline comparison."""
-    rows = [("CPU  (12 cores / 6 threads)", 24.1, 5.30),
-            ("CUDA (RTX 3060 Ti)", 4.70, 2.10)]
+    # The thread counts are each side's own default and they differ: the engine
+    # takes hardware_concurrency (12 logical), PyTorch takes the physical core
+    # count (6). Measured both ways before publishing this, because a chart that
+    # handicapped the engine would be worthless -- 12 threads is genuinely its
+    # better configuration here, 23.9 s against 27.0 at six. So it ran on twice
+    # the threads and still lost by 4.55x, and the label should say so.
+    rows = [("CPU", "engine 12 threads, PyTorch 6", 24.1, 5.30),
+            ("CUDA", "RTX 3060 Ti", 4.70, 2.10)]
     w, x0, plot_w = 760, 210, 460
     y = PLOT_TOP + 14
     body = [gridlines(x0, plot_w, PLOT_TOP, y + len(rows) * 74 - 10, 25, [0, 5, 10, 15, 20, 25], p, " s")]
-    for label, engine, torch in rows:
+    for label, note, engine, torch in rows:
         body.append(text(20, y + 16, label, p["secondary"], 12))
+        body.append(text(20, y + 33, note, p["muted"], 11))
         for i, v in enumerate((engine, torch)):
             by = y + i * (BAR + GAP)
             bw = plot_w * v / 25
@@ -149,7 +156,8 @@ def chart_vs_pytorch(p):
     body.append(legend(x0, LEGEND_Y, ["this engine", "PyTorch 2.11 + cuDNN"], p))
     return frame(w, y + 20, "".join(body), p,
                  "MNIST, same model and data, same machine",
-                 "2 000-image subset, 12 epochs, 206 922 parameters, fp32 both sides. Lower is better.")
+                 "Ryzen 5 5500 (6 cores / 12 threads) + RTX 3060 Ti. 2 000 images, 12 epochs, "
+                 "fp32. Lower is better.")
 
 
 def chart_step(p):

@@ -409,9 +409,17 @@ a PyTorch user actually gets.
 
 Best of three, alternating runs so thermal drift cannot favour either:
 
+Machine: Ryzen 5 5500 — **6 physical cores, 12 logical** — and an RTX 3060 Ti.
+The two CPU rows use different thread counts because each side takes its own
+default: the engine asks for `hardware_concurrency` and gets 12, PyTorch asks for
+the physical core count and gets 6. That asymmetry was checked rather than
+assumed — at six threads the engine takes 27.0 s against 23.9 at twelve, so
+twelve is genuinely its better configuration and the row is its best number.
+**It ran on twice the threads and still lost by 4.55×.**
+
 | | training | GPU kernel time per step | behind PyTorch |
 |---|---|---|---|
-| engine, CPU (12 cores) | 24.1 s | — | **4.55×** |
+| engine, CPU (12 threads) | 24.1 s | — | **4.55×** |
 | PyTorch, CPU (6 threads) | 5.30 s | — | — |
 | engine, CUDA | 4.70 s | 1.53 ms | **2.24×** |
 | **PyTorch, fp32** | **2.10 s** | **0.65 ms** | — |
