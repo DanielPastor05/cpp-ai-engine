@@ -174,8 +174,8 @@ jobs:
       - name: Run the tests
         run: ctest --test-dir build --output-on-failure
 
-  language:
-    name: Linux / English only
+  docs:
+    name: Linux / docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -190,6 +190,26 @@ jobs:
       # across 15 files, including the job names on this very tab.
       - name: No Spanish outside README.es.md
         run: bash tools/check_english.sh
+
+      # Every performance number this repository leads with lived in four files
+      # and was copied between them by hand. Both failure modes had already
+      # happened: a stale 6.92x survived in the README for several commits after
+      # the honest number became 5.47x, and docs/CUDA.md said the best kernel was
+      # "1.94x behind cuBLAS" in one paragraph and 1.21x in its own table, forty
+      # lines apart, for weeks.
+      #
+      # docs/performance.json is now the source. This checks that every citation
+      # matches it, that no retired number has crept back in, and that a ratio
+      # equals the two numbers it comes from.
+      #
+      # It measures nothing, on purpose. A runner here is shared, virtualised and
+      # has no GPU; a timing threshold on one drifts further than the effects
+      # being measured, and a performance test that fails at random teaches
+      # people to ignore a red CI. So the blocking half is the half that cannot
+      # flake, and tools/check_perf.py does the re-measuring where the numbers
+      # were taken.
+      - name: Published numbers match docs/performance.json
+        run: python3 tools/check_claims.py
 
   lint:
     name: Linux / clang-format + clang-tidy

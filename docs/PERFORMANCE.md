@@ -480,12 +480,43 @@ drifts by more than the difference being measured. That is not a hypothetical �
 it is written up under "The thresholds matter more than the parallelism" above,
 and it once made this project record a 3× regression that did not exist.
 
-The charts in this document come from `python tools/plot_benchmarks.py`, which
-writes `docs/img/*.svg` — one light file and one dark file each, no dependencies
-beyond the standard library. The numbers live in that script as a data table
-with this document as their source; making them read from the benchmarks instead
-is what turns them from a copy into a check, and that is the next piece of work
-rather than something already done.
+The charts come from `python tools/plot_benchmarks.py`, which writes
+`docs/img/*.svg` — one light file and one dark file each, no dependencies beyond
+the standard library.
+
+### The numbers check themselves
+
+Everything above was, until recently, asserted by the person who measured it and
+verified by nobody — and the numbers lived in four files, copied between them by
+hand. Both ways that fails had already happened here: a stale `6.92×` survived in
+the README for several commits after the honest number became 5.47×, and
+`docs/CUDA.md` said the best kernel was "1.94× behind cuBLAS" in one paragraph
+and 1.21× in its own table, forty lines apart, for weeks.
+
+`docs/performance.json` is now the source, and two checks read it.
+
+**`tools/check_claims.py` runs in CI and blocks.** Every claim must appear in each
+file that cites it; no retired number may appear anywhere except where the
+retraction is deliberate and registered; and a ratio must equal the two numbers
+it comes from. It measures nothing — text against data on a checkout, so there is
+nothing in it to flake.
+
+**`tools/check_perf.py` re-runs the benchmarks** and compares them against the
+same file. It is deliberately *not* in CI: a shared virtualised runner with no
+GPU cannot hold a timing threshold, and a performance test that fails at random
+teaches people to ignore a red CI, which is worse than not having one.
+
+Its tolerances come from spreads this document already records rather than from
+whatever makes a run pass — 30% on GPU wall clock, because the sweep above is
+thermally biased by up to 1.6× and the tf32 row measured 1.9 s cold and 2.5 s
+warm on the same build the same afternoon; 25% on CPU wall clock; 10% on the
+isolated matmul rows, which is what the one-process-per-kernel harness buys.
+
+And it will not fail on **uniform** drift. A regression in one of this engine's
+kernels cannot also slow PyTorch down, so when every row moves the same way the
+finding is about the machine, not the code, and it says so instead. What still
+fails is one row moving while its neighbours do not, which is what a real
+regression looks like.
 
 ### What this cost to find
 

@@ -244,7 +244,12 @@ is inside the timed region:
 | `tensorcore` (tf32) | 5 200 | 31.5% | 1.78× |
 | **cuBLAS** | **9 258** | **56.1%** | — |
 
-**46.5% of peak, 1.21× behind cuBLAS** for the best hand-written kernel. The
+**46.5% of peak, 1.21× behind cuBLAS** for the best hand-written kernel. On a
+single matrix product, which is the flattering comparison — end to end on MNIST
+the engine is **2.24× behind PyTorch**, and
+[docs/PERFORMANCE.md](PERFORMANCE.md#against-pytorch-on-the-same-card-which-is-the-number-that-counts)
+takes that gap apart. A kernel close to cuBLAS does not make a framework close
+to PyTorch, and saying only the first would be choosing the number. The
 register tiling is where the jump lives: 1 178 → 6 871 GFLOP/s, a factor of
 **5.8**, for a change that touches no memory hierarchy at all — only how many
 results each thread keeps in registers.
@@ -464,7 +469,7 @@ stay on the device between steps once the optimiser updates them there.
   a precision project — master weights, loss scaling — not a kernel.
 - **cuBLAS, as a backend.** For the same reason there is no BLAS on the CPU path:
   the goal is to implement it, not to call it. It *is* linked into
-  `bench_matmul` as the reference row, and the engine's best kernel lands 1.94x
+  `bench_matmul` as the reference row, and the engine's best kernel lands 1.21×
   behind it at 4096³ — measured above rather than asserted.
 
 ---

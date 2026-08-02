@@ -1,0 +1,293 @@
+{
+  "_comment": [
+    "The numbers this repository publishes, in one place, with how each was taken.",
+    "",
+    "Before this file they lived in four: README.md, docs/PERFORMANCE.md,",
+    "docs/CUDA.md and tools/plot_benchmarks.py, copied by hand between them and",
+    "checked by nobody. Nothing stopped one from being updated and the others left",
+    "behind, and both failure modes had already happened: a stale 6.92x survived",
+    "in the README for several commits after the honest number became 5.47x, and",
+    "docs/CUDA.md said the best kernel was '1.94x behind cuBLAS' in one paragraph",
+    "and 1.21x in its own table, forty lines apart, for weeks.",
+    "",
+    "Two checks read this file:",
+    "",
+    "  tools/check_claims.py  runs in CI. Every claim must appear in each file",
+    "                         that cites it; no retired value may appear anywhere;",
+    "                         a ratio must equal the two numbers it comes from.",
+    "                         Text against data on a checkout: no GPU, no timing,",
+    "                         nothing to flake, so it can block a merge.",
+    "",
+    "  tools/check_perf.py    runs locally on the machine below. Re-runs the",
+    "                         benchmarks and compares within each tolerance. Not in",
+    "                         CI on purpose: a shared virtualised runner cannot hold",
+    "                         a timing threshold, and a perf test that fails at",
+    "                         random teaches people to ignore a red CI, which is",
+    "                         worse than not having one."
+  ],
+  "machine": {
+    "cpu": "AMD Ryzen 5 5500",
+    "cores": 6,
+    "threads": 12,
+    "gpu": "NVIDIA GeForce RTX 3060 Ti",
+    "compute_capability": "8.6",
+    "fp32_peak_gflops": 16489,
+    "os": "Windows 11",
+    "compiler": "MSVC 19.4x, Release",
+    "cuda": "toolkit 13.3, driver 13.2",
+    "pytorch": "2.11.0+cu128, cuDNN 9.19"
+  },
+  "_tolerance_comment": [
+    "Tolerances are per kind of measurement and each comes from a spread this",
+    "repository has already measured, not from whatever makes the run pass.",
+    "",
+    "  GPU wall clock      30%.  docs/PERFORMANCE.md records a benchmark sweep",
+    "                            biased up to 1.6x by the card heating up inside",
+    "                            one process. Taken cold and taken after an hour",
+    "                            of work these differ by roughly a third: the",
+    "                            tf32 row measured 1.9 s cold and 2.5 s warm on",
+    "                            the same build the same afternoon.",
+    "  CPU wall clock      25%.  Runs against whatever else the machine is doing;",
+    "                            the PyTorch CPU row spanned 5.3-6.3 within its",
+    "                            own three runs.",
+    "  matmul GFLOP/s      10%.  tools/bench_matmul_isolated.* gives one process",
+    "                            per kernel with a settling pause, which is what",
+    "                            the tighter band buys.",
+    "  ratios              10%.  Numerator and denominator are measured in the",
+    "                            same session and drift together, so the ratio is",
+    "                            steadier than either side of it.",
+    "",
+    "A tolerance wider than the effect being measured would make this check",
+    "decorative. These are wide because the measurements are, and the honest",
+    "response to that is a stated band, not a tighter one that fails for being",
+    "right."
+  ],
+  "_retired_comment": [
+    "Numbers this repository used to publish and must not publish again. The",
+    "citation check only proves a value is present somewhere in a file, so a file",
+    "holding both the new number and the old one would pass it. This is the other",
+    "half: every one of these was true once, is not now, and appearing anywhere",
+    "in the tree fails the build.",
+    "",
+    "Each says what replaced it, because a bare list of forbidden numbers becomes",
+    "unmaintainable the moment somebody wonders whether it still applies."
+  ],
+  "retired": [
+    {
+      "value": 6.92,
+      "was": "MNIST GPU speedup, measured with the thresholds overridden by hand",
+      "replaced_by": "mnist-engine-cuda, on stock settings",
+      "documented_in": [
+        {
+          "file": "docs/PERFORMANCE.md",
+          "context": "survived in"
+        }
+      ]
+    },
+    {
+      "value": 1.94,
+      "was": "how far the best kernel sat behind cuBLAS, before the register tiling",
+      "replaced_by": "matmul-behind-cublas",
+      "documented_in": [
+        {
+          "file": "docs/CUDA.md",
+          "context": "An earlier draft of this document reported"
+        },
+        {
+          "file": "docs/PERFORMANCE.md",
+          "context": "said the best kernel was"
+        }
+      ]
+    },
+    {
+      "value": 4663,
+      "was": "GFLOP/s of the best kernel in an earlier draft",
+      "replaced_by": "matmul-vectorized",
+      "documented_in": [
+        {
+          "file": "docs/CUDA.md",
+          "context": "An earlier draft of this document reported"
+        }
+      ]
+    },
+    {
+      "value": 19.5,
+      "was": "MNIST on CUDA, back when the GPU lost to the CPU",
+      "replaced_by": "mnist-engine-cuda",
+      "documented_in": [
+        {
+          "file": "docs/PERFORMANCE.md",
+          "context": "ENGINE_CUDA_MIN_ELEMENTS=65536"
+        },
+        {
+          "file": "docs/PERFORMANCE.md",
+          "context": "slower with a card than without one"
+        }
+      ]
+    }
+  ],
+  "claims": [
+    {
+      "id": "mnist-engine-cpu",
+      "value": 24.1,
+      "unit": "s",
+      "how": "mnist_demo, 2000-image subset, 12 epochs, 12 threads, best of 3 alternating with PyTorch. Observed 23.9-25.7 across sessions.",
+      "cited_in": [
+        "README.md",
+        "docs/PERFORMANCE.md",
+        "tools/plot_benchmarks.py"
+      ],
+      "tolerance": 0.25,
+      "_tolerance_note": "Wider than the GPU rows because it is. The CPU rows run against whatever else the machine is doing, and the original three runs of the PyTorch one spanned 5.3-6.3 by themselves. Holding a number to a band tighter than the spread it was drawn from is a test that fails for being right."
+    },
+    {
+      "id": "mnist-engine-cuda",
+      "value": 4.7,
+      "unit": "s",
+      "how": "mnist_demo from build-cuda, stock thresholds, best of 3 alternating",
+      "cited_in": [
+        "README.md",
+        "docs/PERFORMANCE.md",
+        "tools/plot_benchmarks.py"
+      ],
+      "tolerance": 0.3
+    },
+    {
+      "id": "mnist-pytorch-cpu",
+      "value": 5.3,
+      "unit": "s",
+      "how": "tools/bench_pytorch.py --device cpu, 6 threads by PyTorch's own default. Observed 5.3-6.3 across runs.",
+      "cited_in": [
+        "README.md",
+        "docs/PERFORMANCE.md",
+        "tools/plot_benchmarks.py"
+      ],
+      "tolerance": 0.25
+    },
+    {
+      "id": "mnist-pytorch-cuda",
+      "value": 2.1,
+      "unit": "s",
+      "how": "tools/bench_pytorch.py, TF32 off so both sides are fp32",
+      "cited_in": [
+        "README.md",
+        "docs/PERFORMANCE.md",
+        "tools/plot_benchmarks.py"
+      ],
+      "tolerance": 0.3
+    },
+    {
+      "id": "mnist-pytorch-cuda-tf32",
+      "value": 1.9,
+      "unit": "s",
+      "how": "tools/bench_pytorch.py --tf32, what a PyTorch user gets by default",
+      "cited_in": [
+        "docs/PERFORMANCE.md"
+      ],
+      "tolerance": 0.3
+    },
+    {
+      "id": "behind-pytorch-cuda",
+      "value": 2.24,
+      "unit": "x",
+      "how": "mnist-engine-cuda / mnist-pytorch-cuda",
+      "cited_in": [
+        "README.md",
+        "docs/PERFORMANCE.md",
+        "docs/CUDA.md"
+      ],
+      "derived_from": [
+        "mnist-engine-cuda",
+        "mnist-pytorch-cuda"
+      ],
+      "tolerance": 0.1
+    },
+    {
+      "id": "behind-pytorch-cpu",
+      "value": 4.55,
+      "unit": "x",
+      "how": "mnist-engine-cpu / mnist-pytorch-cpu",
+      "cited_in": [
+        "README.md",
+        "docs/PERFORMANCE.md",
+        "tools/plot_benchmarks.py"
+      ],
+      "derived_from": [
+        "mnist-engine-cpu",
+        "mnist-pytorch-cpu"
+      ],
+      "tolerance": 0.1
+    },
+    {
+      "id": "mnist-accuracy",
+      "value": 94.4,
+      "unit": "%",
+      "how": "mnist_demo final test accuracy, seed 42. Deterministic for a given build; across compilers it moves in the last digit, so check_perf.py holds it to a floor of 92 rather than to this value.",
+      "cited_in": [
+        "docs/PERFORMANCE.md"
+      ],
+      "floor": 92.0,
+      "tolerance": 0.02
+    },
+    {
+      "id": "step-cpu",
+      "value": 69.9,
+      "unit": "ms",
+      "how": "one training step, batch 64, mean of 50 after 50 warm-up steps",
+      "cited_in": [
+        "docs/PERFORMANCE.md",
+        "tools/plot_benchmarks.py"
+      ],
+      "tolerance": 0.25
+    },
+    {
+      "id": "step-cuda",
+      "value": 9.99,
+      "unit": "ms",
+      "how": "the same, with the backend on. 1.53 ms of it is kernel time.",
+      "cited_in": [
+        "docs/PERFORMANCE.md"
+      ],
+      "tolerance": 0.3
+    },
+    {
+      "id": "matmul-vectorized",
+      "value": 7660,
+      "unit": "GFLOP/s",
+      "how": "bench_matmul 4096 cubed, one process per kernel, operands resident",
+      "cited_in": [
+        "README.md",
+        "docs/CUDA.md",
+        "tools/plot_benchmarks.py"
+      ],
+      "tolerance": 0.1
+    },
+    {
+      "id": "matmul-cublas",
+      "value": 9258,
+      "unit": "GFLOP/s",
+      "how": "the same shape through cuBLAS, the benchmark's reference row",
+      "cited_in": [
+        "README.md",
+        "docs/CUDA.md",
+        "tools/plot_benchmarks.py"
+      ],
+      "tolerance": 0.1
+    },
+    {
+      "id": "matmul-behind-cublas",
+      "value": 1.21,
+      "unit": "x",
+      "how": "matmul-cublas / matmul-vectorized",
+      "cited_in": [
+        "README.md",
+        "docs/CUDA.md"
+      ],
+      "derived_from": [
+        "matmul-cublas",
+        "matmul-vectorized"
+      ],
+      "tolerance": 0.1
+    }
+  ]
+}
