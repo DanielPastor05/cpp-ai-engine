@@ -361,6 +361,38 @@ no host memory at all.
 | + three kernel parallelism fixes | 32.2 ms |
 | + lazy host mirror | **9.99 ms** |
 
+### What every kernel costs the scheduler
+
+`bench/bench_kernels.cpp`, RTX 3060 Ti. Occupancy is the ceiling, not what a
+launch achieves — how many blocks *fit* on an SM, which is how much latency the
+hardware can hide. From `cudaFuncGetAttributes` and
+`cudaOccupancyMaxActiveBlocksPerMultiprocessor`, which are plain runtime calls;
+`ncu` reports the same numbers and wants administrator rights for its counters,
+which is why this project had none of this until now.
+
+| kernel | threads | registers | shared | blocks/SM | occupancy | limited by |
+|---|---|---|---|---|---|---|
+| `matmul_tiled` | 1024 | 40 | 8 KB | 1 | 67% | registers |
+| `matmul_register_tiled` | 256 | 120 | 8 KB | 2 | **33%** | registers |
+| `matmul_tensor_core` | 256 | 200 | 32 KB | 1 | 17% | registers |
+| `transpose_tiled` | 256 | 26 | 4 KB | 6 | 100% | threads per SM |
+| `sum_over_axis_blocked` | 256 | 37 | 1 KB | 6 | 100% | registers |
+| `col2im_scatter` | 256 | 56 | — | 4 | 67% | registers |
+| element-wise | 256 | 30–36 | — | 6 | 100% | threads per SM |
+
+**The 33% row is the interesting one, and it is not a defect.** The register-tiled
+GEMM holds an 8×8 block of outputs per thread — that is the whole optimisation,
+64 FMAs per 16 shared-memory reads instead of 1 per 2 — and 120 registers is what
+that costs. Two blocks per SM is the price of the arithmetic intensity that makes
+it 5.8× faster than the tiled version. Low occupancy chosen deliberately is a
+different thing from low occupancy discovered afterwards, and until this table
+existed there was no way to tell which one this was.
+
+The `limiter` column is a deduction rather than a reported field: the runtime
+says how many blocks fit, not what stopped it there, so each candidate ceiling is
+computed and whichever binds first is named. "33% occupancy" is not actionable;
+"33%, limited by registers" names the knob.
+
 ### The allocator was giving the memory back
 
 Extending the roofline from the one matrix product to the other twenty-five

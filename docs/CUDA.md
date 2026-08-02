@@ -440,30 +440,36 @@ stay on the device between steps once the optimiser updates them there.
 
 ## What is deliberately not on the GPU
 
-- **`cross_entropy`.** The last CPU-resident operation in MNIST's chain, and the
-  cheapest to leave there: it runs on a `(64, 10)` tensor, so the break costs one
-  download of 2.5 KB. The forward is a row softmax plus a gather and a mean, the
-  backward is `(softmax - one_hot)/N`; the class indices are host `size_t` and
-  would travel as floats, exact to 2^24, the way `MaxPool2d`'s argmax already
-  does. Worth doing, but it is not what the profiler points at.
-- **`LayerNorm`.** It breaks the chain twice per Transformer block. The forward
-  would have a kernel without difficulty; the one that decides is the backward,
-  because `dgamma` and `dbeta` accumulate **across** rows and that cross-row
-  reduction is a design problem of its own — the same one that keeps the CPU
-  version serial. An accelerated forward with the backward on the host solves
-  half of it, so it gets done whole or not at all.
+- **`cross_entropy`.** Still on the host, and now for a measured reason rather
+  than an unexamined one. On an MNIST step it runs on `(64, 10)` and costs
+  **0.02 ms of an 11.65 ms step, moving zero bytes** — the logits are already
+  where it needs them. A kernel would replace two hundredths of a millisecond
+  with a launch. It gets one when a model makes it matter, and the LayerNorm
+  floor below is the shape that argument takes.
 - **Dropout.** The mask comes from the host RNG, so the whole layer stays on the
   CPU. Moving it means a device RNG and a decision about whether the mask has to
   match the CPU's run for run, which is a reproducibility question rather than a
   performance one.
 - **Kernel fusion.** Every operation is one kernel and one trip to global
-  memory. A fused `LayerNorm` or a fused `attention` would save most of that
-  traffic. With the parallelism bugs out of the way it is now the next real
-  optimisation.
+  memory, and the profiler now says exactly where that costs most:
+  `grad_accumulate` runs **twenty times per training step** and holds 13.5% of
+  GPU time, because every gradient accumulation is its own launch. PyTorch folds
+  it into the backward operation that produced the gradient.
+  `transpose_tiled` is another twelve launches per step.
+
+  Doing the same here is not a kernel, it is a change to the dispatch contract:
+  every backward operation would need an "accumulate into this instead of
+  returning a new tensor" variant, and `cuda::ops::*` currently returns a `bool`
+  and writes one output. That is the next real piece of work and it is a
+  refactor, not an optimisation, which is why it is named here rather than
+  half-started.
 - **Streams and overlap.** Everything runs on the default stream and the copies
-  are synchronising. Overlapping transfer and compute with pinned memory is what
-  would attack the PCIe cost directly — though on MNIST that cost was measured
-  and found not to be the bottleneck, so it needs a workload that justifies it.
+  are synchronising. Overlapping transfer with compute is the textbook next step
+  and it is deliberately not taken, because the measurement does not support it:
+  one MNIST step moves under 5 MiB in total and spends **1.54 ms of 11.65 inside
+  kernels**. What is left is host-side dispatch, and overlapping copies does not
+  make dispatch cheaper. It needs a workload where the transfers are the cost,
+  and this engine does not have one yet.
 - **fp16 mixed precision.** tf32 is implemented and gave nothing, because
   consumer Ampere runs dense tf32 at the fp32 rate. fp16 really is 2×, but it is
   a precision project — master weights, loss scaling — not a kernel.
