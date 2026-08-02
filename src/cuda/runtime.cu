@@ -121,9 +121,15 @@ struct Context {
         // bandwidth; the other 3 ms was the allocator handing 64 MiB back and
         // asking for it again, twenty times a second.
         //
-        // UINT64_MAX means never release. The pool still bounds itself -- it
-        // reuses rather than grows -- and freeing the context at exit returns
-        // everything. An earlier note here recorded that raising this to 512 MiB
+        // UINT64_MAX means never release, and it is not a guess: PyTorch's
+        // c10/cuda/CUDAMallocAsyncAllocator.cpp sets the same attribute to the
+        // same value, citing the same NVIDIA note on retaining memory in the
+        // pool. Finding that afterwards is the only external corroboration any
+        // decision in this engine has, so it is worth the two lines.
+        //
+        // The pool still bounds itself -- it reuses rather than grows -- and
+        // freeing the context at exit returns everything. An earlier note here
+        // recorded that raising this to 512 MiB
         // was worth only 6%; that measurement did not synchronise between
         // iterations, so the block was never released and there was nothing for
         // the threshold to change.

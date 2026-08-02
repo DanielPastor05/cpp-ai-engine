@@ -423,6 +423,17 @@ The engine's share of the operation went from 3 ms to **23 µs**, and the
 element-wise rows went from 40 GB/s to 400 — 89% of peak. MNIST went from 4.7 s
 to 4.0.
 
+**PyTorch does the same thing.** `c10/cuda/CUDAMallocAsyncAllocator.cpp` sets
+`cudaMemPoolAttrReleaseThreshold` to `UINT64_MAX`, citing the same NVIDIA note on
+retaining memory in the pool. That was found afterwards, looking for somewhere to
+report the finding as a bug, and it is the only place in this document where a
+decision is corroborated by an implementation nobody here wrote. It also closes
+the question the finding raises: the reference framework has known for years, and
+the default is still zero.
+
+(There was no bug to report. `ggml` and `llama.cpp` do not use `cudaMallocAsync`
+at all — they carry their own pool over the virtual-memory API.)
+
 Two things about this are worth more than the speedup. The first is that a
 comment in `src/cuda/runtime.cu` had already tried this and recorded it as worth
 6% and not worth setting; that measurement never synchronised between
