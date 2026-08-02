@@ -37,7 +37,7 @@ const std::string kCheckpoint = "mnist_cnn.bin";
 void print_digit(const Tensor& images, size_t index, size_t label) {
     std::cout << "  Label " << label << ":\n";
     const float* img = images.data().data() + index * 28 * 28;
-    for (size_t r = 0; r < 28; r += 2) {  // una fila de cada dos: las celdas son altas
+    for (size_t r = 0; r < 28; r += 2) {  // every other row: terminal cells are tall
         std::cout << "    ";
         for (size_t c = 0; c < 28; ++c) {
             const float v = img[r * 28 + c];
@@ -116,7 +116,7 @@ int main() {
     if (engine::cuda::available()) {
         const engine::cuda::DeviceInfo gpu = engine::cuda::device_info();
         std::cout << "Backend: CUDA on " << gpu.name << " (cc " << gpu.compute_major << "."
-                  << gpu.compute_minor << "), convoluciones incluidas.\n";
+                  << gpu.compute_minor << "), convolutions included.\n";
     } else {
         std::cout << "Backend: CPU, " << engine::parallel::num_threads() << " thread(s).\n";
     }
@@ -125,7 +125,7 @@ int main() {
     engine::manual_seed(42);
 
     // ---------------------------------------------------------
-    // 1. Datos
+    // 1. Data
     // ---------------------------------------------------------
     data::MnistPaths paths;
     try {
@@ -150,7 +150,7 @@ int main() {
     std::cout << "\n";
 
     // ---------------------------------------------------------
-    // 2. Modelo
+    // 2. Model
     // ---------------------------------------------------------
     nn::Sequential model{
         nn::make<nn::Conv2d>(1, 16, nn::Window2d(3, 3, 1, 1)),  // (N,1,28,28) -> (N,16,28,28)
@@ -170,7 +170,7 @@ int main() {
     std::cout << "\n";
 
     // ---------------------------------------------------------
-    // 3. Entrenamiento
+    // 3. Training
     // ---------------------------------------------------------
     const int epochs = paths.full ? 6 : 12;
     const size_t batch_size = 64;
@@ -225,9 +225,9 @@ int main() {
     std::cout << "\n";
 
     // ---------------------------------------------------------
-    // 4. Resultados
+    // 4. Results
     // ---------------------------------------------------------
-    std::cout << "--- 4. Resultados ---\n";
+    std::cout << "--- 4. Results ---\n";
     const float final_acc = evaluate(model, test);
     std::cout << std::fixed << std::setprecision(2)
               << "Final accuracy on the test set: " << (final_acc * 100.0f) << "%\n\n";

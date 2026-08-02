@@ -5,13 +5,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-    set(CMAKE_BUILD_TYPE Release CACHE STRING "Tipo de compilacion" FORCE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# Incluir la carpeta de cabeceras (headers)
+# The public headers
 include_directories(include)
 
-# Archivos de código fuente de la librería
+# The library's translation units
 set(SOURCES
     src/tensor.cpp
     src/autograd.cpp
@@ -27,31 +27,31 @@ set(SOURCES
 )
 
 # ---------------------------------------------------------
-# Fase 6: backend CUDA.
+# The CUDA backend.
 #
-# Está apagado por defecto a propósito. El motor tiene que seguir compilando y
-# pasando las pruebas en una máquina sin toolkit ni GPU, que es lo que hay en
-# CI; el backend es una aceleración opcional, no un requisito.
+# Off by default on purpose. The engine has to keep building and keep passing
+# its tests on a machine with neither toolkit nor GPU, which is what CI runs on;
+# the backend is an optional acceleration, not a requirement.
 #
 #   cmake -B build-cuda -S . -DENGINE_CUDA=ON
 # ---------------------------------------------------------
-option(ENGINE_CUDA "Compilar el backend CUDA (Fase 6)" OFF)
+option(ENGINE_CUDA "Build the CUDA backend" OFF)
 
 if(ENGINE_CUDA)
-    # El valor por defecto tiene que fijarse ANTES de enable_language(CUDA).
+    # The default has to be set BEFORE enable_language(CUDA).
     #
-    # Desde CMake 3.18, enable_language(CUDA) ya inicializa
-    # CMAKE_CUDA_ARCHITECTURES con el valor por defecto del compilador, asi que
-    # un if(NOT DEFINED ...) posterior no se cumple nunca y el valor de aqui se
-    # ignora en silencio. El sintoma no es un error de compilacion: el binario
-    # sale con cubins de otra arquitectura, el driver no los puede usar, cae a
-    # compilar el PTX en tiempo de ejecucion, y ahi falla con
-    # "the provided PTX was compiled with an unsupported toolchain".
+    # Since CMake 3.18, enable_language(CUDA) already initialises
+    # CMAKE_CUDA_ARCHITECTURES from the compiler's own default, so an
+    # if(NOT DEFINED ...) placed after it is never true and the value here is
+    # ignored in silence. The symptom is not a build error: the binary comes out
+    # with cubins for another architecture, the driver cannot use them, it falls
+    # back to compiling the PTX at run time, and fails there with "the provided
+    # PTX was compiled with an unsupported toolchain".
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-        # 86 es la capacidad de computo de Ampere GA104 (RTX 30xx), que es la
-        # maquina donde se desarrollo. Se puede cambiar con
-        # -DCMAKE_CUDA_ARCHITECTURES=<xx>, o poner varias separadas por ';'
-        # para generar un binario que valga en mas tarjetas.
+        # 86 is the compute capability of Ampere GA104 (RTX 30xx), which is the
+        # machine this was developed on. Override with
+        # -DCMAKE_CUDA_ARCHITECTURES=<xx>, or list several separated by
+        # semicolons to produce a binary that works on more cards.
         set(CMAKE_CUDA_ARCHITECTURES 86)
     endif()
 
@@ -60,86 +60,86 @@ if(ENGINE_CUDA)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
     list(APPEND SOURCES src/cuda/runtime.cu src/cuda/kernels.cu)
-    message(STATUS "Backend CUDA activado (arquitecturas: ${CMAKE_CUDA_ARCHITECTURES})")
+    message(STATUS "CUDA backend enabled (architectures: ${CMAKE_CUDA_ARCHITECTURES})")
 endif()
 
-# Librería del motor, compartida por los ejemplos y las pruebas
+# The engine library, shared by the examples and the tests
 find_package(Threads REQUIRED)
 add_library(engine STATIC ${SOURCES})
 
 if(ENGINE_CUDA)
-    # PUBLIC, y no PRIVATE, porque la macro cambia la disposición de Storage:
-    # con CUDA lleva puntero de dispositivo y banderas de validez. Si la
-    # librería y quien la usa no coincidieran en esto, el desajuste de tamaño
-    # daría corrupción de memoria en lugar de un error de compilación.
+    # PUBLIC and not PRIVATE, because the macro changes Storage's layout: with
+    # CUDA it carries a device pointer and two validity flags. If the library
+    # and whoever uses it disagreed about that, the size mismatch would give
+    # memory corruption rather than a compile error.
     target_compile_definitions(engine PUBLIC ENGINE_CUDA)
-    # Static, y no Shared: nvcc 13 marca obsoleto el '-cudart shared' que genera
-    # CMake para Shared, y avisa en cada fichero compilado. CMake no expone el
-    # 'hybrid' que sugiere el aviso, asi que la salida limpia es enlazar el
-    # runtime estatico. De paso el binario deja de depender de que el cudart
-    # correcto este en el PATH.
+    # Static and not Shared: nvcc 13 deprecates the '-cudart shared' that CMake
+    # generates for Shared, and warns once per compiled file. CMake does not
+    # expose the 'hybrid' the warning suggests, so linking the static runtime is
+    # what gives clean output. It also stops the binary depending on the right
+    # cudart being on PATH.
     set_target_properties(engine PROPERTIES CUDA_RUNTIME_LIBRARY Static)
 endif()
 
-# Los avisos son para el compilador de host: nvcc no entiende estas banderas.
+# The warnings are for the host compiler: nvcc does not understand these flags.
 if(MSVC)
     target_compile_options(engine PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4>)
 else()
     target_compile_options(engine PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra>)
 endif()
 
-# Ejecutable de la Fase 1 (Tensores)
+# Tensors
 add_executable(cpp_ai_engine examples/main.cpp)
 target_link_libraries(cpp_ai_engine PRIVATE engine)
 
-# Ejecutable de la Fase 2 (Autograd)
+# Autograd
 add_executable(autograd_demo examples/autograd_demo.cpp)
 target_link_libraries(autograd_demo PRIVATE engine)
 
-# Ejecutable de la Fase 3 (Capas y Optimizadores)
+# Layers and optimisers
 add_executable(nn_demo examples/nn_demo.cpp)
 target_link_libraries(nn_demo PRIVATE engine)
 
-# Ejecutable de la Fase 4 (Redes Convolucionales)
+# Convolutional networks
 add_executable(cnn_demo examples/cnn_demo.cpp)
 target_link_libraries(cnn_demo PRIVATE engine)
 
-# Ejecutable de la Fase 5 (Transformer)
+# Transformer
 add_executable(transformer_demo examples/transformer_demo.cpp)
 target_link_libraries(transformer_demo PRIVATE engine)
 
-# Ejemplo con datos reales (MNIST)
+# Real data
 add_executable(mnist_demo examples/mnist_demo.cpp)
 target_link_libraries(mnist_demo PRIVATE engine)
 
-# Banco de pruebas de rendimiento (no se ejecuta en CI: mide, no verifica)
+# The performance benchmark. Not run in CI: it measures, it does not verify.
 add_executable(bench bench/bench.cpp)
 target_link_libraries(bench PRIVATE engine)
 
-# Banco del producto de matrices, aislado para poder pasarselo a Nsight Compute:
-# un kernel, una forma, sin nada mas alrededor que perfilar.
+# The matrix-product benchmark, kept separate so it can be handed to a profiler:
+# one kernel, one shape, nothing else around it to measure.
 add_executable(bench_matmul bench/bench_matmul.cpp)
 target_link_libraries(bench_matmul PRIVATE engine)
 
-# cuBLAS entra SOLO aqui, y solo como fila de referencia del banco. El motor no
-# la llama nunca: el objetivo del proyecto es escribir el kernel. Pero medirse
-# contra la biblioteca de NVIDIA es la unica forma de que el numero signifique
-# algo, y no medirse se lee como esquivar la comparacion.
+# cuBLAS is linked HERE ONLY, and only as the benchmark's reference row. The
+# engine never calls it: the point of the project is to write the kernel. But
+# measuring against NVIDIA's own library is the only way the number means
+# anything, and not measuring reads as dodging the comparison.
 #
-# Si el toolkit no trae cuBLAS, la fila simplemente no aparece y el resto del
-# banco funciona igual.
+# If the toolkit does not ship cuBLAS the row simply does not appear and the
+# rest of the benchmark works unchanged.
 if(ENGINE_CUDA)
     find_package(CUDAToolkit QUIET)
     if(TARGET CUDA::cublas)
         target_link_libraries(bench_matmul PRIVATE CUDA::cublas)
         target_compile_definitions(bench_matmul PRIVATE ENGINE_BENCH_CUBLAS)
-        message(STATUS "bench_matmul: fila de referencia de cuBLAS activada")
+        message(STATUS "bench_matmul: cuBLAS reference row enabled")
     else()
-        message(STATUS "bench_matmul: cuBLAS no encontrada; se omite su fila")
+        message(STATUS "bench_matmul: cuBLAS not found; its row is skipped")
     endif()
 endif()
 
-# Suite de pruebas
+# The test suite
 enable_testing()
 add_executable(test_engine
     tests/test_main.cpp
@@ -152,7 +152,7 @@ add_executable(test_engine
     tests/test_cuda_indexing.cpp
     tests/test_cuda_parity.cpp)
 target_include_directories(test_engine PRIVATE tests)
-# Los ficheros de referencia se leen del arbol de fuentes, no del de compilacion
+# The fixtures are read from the source tree, not the build tree
 target_compile_definitions(test_engine PRIVATE
     ENGINE_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
     ENGINE_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
@@ -160,7 +160,7 @@ target_link_libraries(test_engine PRIVATE engine)
 add_test(NAME engine_tests COMMAND test_engine)
 
 # ---------------------------------------------------------
-# Instalación: permite consumir la librería desde otro proyecto con
+# Installation: lets another project consume the library with
 #   find_package(cpp_ai_engine) ; target_link_libraries(app PRIVATE engine::engine)
 # ---------------------------------------------------------
 include(GNUInstallDirs)

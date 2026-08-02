@@ -224,7 +224,7 @@ void test_multihead_and_block() {
 }
 
 void test_transformer_training() {
-    section("transformer: entrenamiento");
+    section("transformer: training");
 
     engine::manual_seed(41);
 

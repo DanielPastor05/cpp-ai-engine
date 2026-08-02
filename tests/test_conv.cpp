@@ -291,7 +291,7 @@ void test_conv_determinism() {
                              " es identical bit for bit with 1 and with 4 threads");
     }
 
-    // im2col y col2im tambien
+    // im2col and col2im as well
     par::set_num_threads(1);
     Tensor cols_serial = nn::im2col(x, nn::Window2d(3, 3, 1, 1));
     Tensor back_serial = nn::col2im(cols_serial, x.shape(), nn::Window2d(3, 3, 1, 1));

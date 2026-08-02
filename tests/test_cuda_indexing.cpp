@@ -177,15 +177,15 @@ void run_cuda_indexing_tests() {
     // the step over K is 8, so the failures live precisely in the remainders.
     const Case cases[] = {
         {1, 1, 1},                       // degenerado
-        {17, 23, 31},                    // mucho menor que un bloque
-        {32, 32, 32},    {33, 65, 129},  // resto en los tres ejes
-        {127, 128, 129},                 // uno por debajo y uno por encima del bloque
+        {17, 23, 31},                    // far smaller than one block
+        {32, 32, 32},    {33, 65, 129},  // remainders on all three axes
+        {127, 128, 129},                 // one below and one above the block
         {128, 128, 128},                 // exactamente un bloque
         {129, 256, 257},                 // more than one block, with a remainder
         {256, 260, 256},                 // K a multiple of 4 but not 8: last tile partial
         {131, 133, 135},                 // nada alineado
-        {200, 8, 200},                   // una sola tesela de K
-        {130, 4, 130},                   // K menor que el paso
+        {200, 8, 200},                   // a single tile of K
+        {130, 4, 130},                   // K smaller than the step
     };
 
     for (const Case& c : cases) {

@@ -195,10 +195,10 @@ void run_cuda_parity_tests() {
         };
         const Case cases[] = {
             {1, 1, 1},        // el caso degenerado
-            {17, 23, 31},     // por debajo de una sola tesela
-            {32, 32, 32},     // justo una tesela de 32
-            {33, 65, 129},    // restos en los tres ejes
-            {127, 128, 129},  // alrededor del bloque de 128
+            {17, 23, 31},     // below a single tile
+            {32, 32, 32},     // exactly one 32-wide tile
+            {33, 65, 129},    // remainders on all three axes
+            {127, 128, 129},  // around the 128 block
             {128, 128, 128},  // exactamente un bloque
             {129, 256, 257},  // more than one block, with a remainder
             {256, 260, 256},  // K a multiple of 4 but not 8: partial K tile

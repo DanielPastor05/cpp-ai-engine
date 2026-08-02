@@ -1,4 +1,4 @@
-# Archivos de compilación de CMake y binarios
+# CMake build directories and binaries
 build*/
 bin/
 out/
@@ -24,12 +24,12 @@ Makefile
 *.user
 *.suo
 
-# Los ficheros de referencia de PyTorch SI se commitean: la CI los necesita
-# y solo ocupan 120 KB. tools/generate_reference.py los regenera.
+# The PyTorch fixtures ARE committed: CI needs them and they are only 120 KB.
+# tools/generate_reference.py regenerates them.
 !tests/fixtures/*.bin
 
-# MNIST completo: se descarga con tools/download_mnist.sh, no se commitea.
-# El subconjunto (subset-*) SI va en el repositorio para que los ejemplos
+# Full MNIST: downloaded with tools/download_mnist.sh, never committed.
+# The subset (subset-*) IS in the repository so that the examples
 # funcionen recien clonado.
 data/mnist/train-*
 data/mnist/t10k-*

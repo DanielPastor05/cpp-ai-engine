@@ -68,8 +68,8 @@ void SGD::step() {
         // no reduction, so splitting does not change the result.
         const float* ENGINE_RESTRICT gp = g.data();
         float* ENGINE_RESTRICT wp = w.data();
-        float* ENGINE_RESTRICT vp = (vel != nullptr && momentum_ != 0.0f) ? vel->host_mut().data()
-                                                                          : nullptr;
+        float* ENGINE_RESTRICT vp =
+            (vel != nullptr && momentum_ != 0.0f) ? vel->host_mut().data() : nullptr;
         parallel::parallel_for(w.size(), parallel::kElementsPerThread, [&](size_t from, size_t to) {
             for (size_t j = from; j < to; ++j) {
                 float grad = gp[j];

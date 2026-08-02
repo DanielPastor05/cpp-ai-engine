@@ -15,7 +15,7 @@ uint32_t read_be_uint32(std::istream& in, const std::string& path) {
     unsigned char bytes[4];
     in.read(reinterpret_cast<char*>(bytes), 4);
     if (!in) {
-        throw std::runtime_error("Fichero IDX truncado: " + path);
+        throw std::runtime_error("Truncated IDX file: " + path);
     }
     return (static_cast<uint32_t>(bytes[0]) << 24) | (static_cast<uint32_t>(bytes[1]) << 16) |
            (static_cast<uint32_t>(bytes[2]) << 8) | static_cast<uint32_t>(bytes[3]);
@@ -100,8 +100,8 @@ std::vector<size_t> load_idx_labels(const std::string& path, size_t max_samples)
         unsigned char value = 0;
         in.read(reinterpret_cast<char*>(&value), 1);
         if (!in) {
-            throw std::runtime_error("Fichero de etiquetas truncado en la muestra " +
-                                     std::to_string(i) + ": " + path);
+            throw std::runtime_error("Truncated label file at sample " + std::to_string(i) + ": " +
+                                     path);
         }
         labels.push_back(static_cast<size_t>(value));
     }

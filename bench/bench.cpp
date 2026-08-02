@@ -3,7 +3,7 @@
 // It verifies nothing: it measures. It is in the repository so the figures in the
 // README's performance notes are reproducible, and to catch regressions when the
 // kernels are touched. It does not run in CI, because a shared runner's timings
-// un runner compartido no son comparables entre ejecuciones.
+// a shared runner are not comparable between runs.
 //
 //   cmake --build build --target bench && ./build/bench
 
@@ -65,7 +65,7 @@ std::string gflops(double seconds, double flops) {
 
 int main() {
     engine::manual_seed(1);
-    printf("Banco de pruebas de cpp-ai-engine\n");
+    printf("cpp-ai-engine benchmark\n");
 
     section("matmul");
     {
@@ -87,7 +87,7 @@ int main() {
         row("batched (32, 4, 16, 16)", t, gflops(t, 2.0 * 32 * 4 * 16 * 16 * 16));
     }
 
-    section("operaciones elemento a elemento (1M valores)");
+    section("element-wise operations (1M values)");
     {
         Tensor A = Tensor::randn({1000, 1000});
         Tensor B = Tensor::randn({1000, 1000});
@@ -144,7 +144,7 @@ int main() {
             }));
     }
 
-    section("iteracion de entrenamiento completa");
+    section("a full training iteration");
     {
         nn::Sequential mlp{nn::make<nn::Linear>(128, 256), nn::make<nn::ReLU>(),
                            nn::make<nn::Linear>(256, 10)};
@@ -159,7 +159,7 @@ int main() {
             }));
     }
 
-    section("inferencia frente a entrenamiento");
+    section("inference against training");
     {
         nn::TransformerBlock block(128, 4, 256);
         Tensor tokens = Tensor::randn({16, 32, 128}, 0.0f, 1.0f, true);
@@ -216,7 +216,7 @@ int main() {
                 "  Rebuild with: cmake -B build-cuda -S . -DENGINE_CUDA=ON\n");
         } else {
             const cuda::DeviceInfo info = cuda::device_info();
-            printf("  Dispositivo: %s (cc %d.%d, %d SM, %zu MiB)\n\n", info.name.c_str(),
+            printf("  Device: %s (cc %d.%d, %d SM, %zu MiB)\n\n", info.name.c_str(),
                    info.compute_major, info.compute_minor, info.multiprocessors,
                    info.total_memory >> 20);
 
@@ -226,7 +226,7 @@ int main() {
             cuda::set_thresholds(0, 0);
 
             printf("  matmul NxNxN, with the operands already resident on the device:\n");
-            printf("  %-10s %12s %12s %10s %14s\n", "N", "CPU (ms)", "GPU (ms)", "ganancia",
+            printf("  %-10s %12s %12s %10s %14s\n", "N", "CPU (ms)", "GPU (ms)", "speedup",
                    "GPU GFLOP/s");
 
             const size_t sizes[] = {64, 128, 256, 512, 1024, 2048};
@@ -277,33 +277,29 @@ int main() {
                 // a subir y a bajar.
                 cuda::reset_transfer_stats();
                 const double round_trip = time_op([&] {
-                    A.data()[0] = A.data()[0];  // invalida el espejo del dispositivo
+                    A.data()[0] = A.data()[0];  // invalidates the device mirror
                     B.data()[0] = B.data()[0];
                     Tensor C = A.matmul(B);
-                    (void)C.data()[0];  // fuerza la bajada del resultado
+                    (void)C.data()[0];  // forces the result back down
                 });
                 const cuda::TransferStats trip_stats = cuda::transfer_stats();
 
                 const double mib = (double)(n * n * sizeof(float)) / (1024.0 * 1024.0);
-                printf(
-                    "    matmul 1024^3, datos residentes      %8.3f ms  (%zu subidas, %zu "
-                    "bajadas)\n",
-                    resident * 1000.0, resident_stats.to_device_count,
-                    resident_stats.to_host_count);
-                printf(
-                    "    matmul 1024^3, ida y vuelta completa %8.3f ms  (%zu subidas, %zu "
-                    "bajadas)\n",
-                    round_trip * 1000.0, trip_stats.to_device_count, trip_stats.to_host_count);
+                printf("    matmul 1024^3, data resident         %8.3f ms  (%zu up, %zu down)\n",
+                       resident * 1000.0, resident_stats.to_device_count,
+                       resident_stats.to_host_count);
+                printf("    matmul 1024^3, full round trip       %8.3f ms  (%zu up, %zu down)\n",
+                       round_trip * 1000.0, trip_stats.to_device_count, trip_stats.to_host_count);
                 printf("    round-trip penalty                   %8.2fx\n", round_trip / resident);
                 if (trip_stats.to_device_seconds > 0.0) {
                     printf(
                         "    H2D bandwidth                        %8.2f GB/s (%.1f MiB per "
-                        "matriz)\n",
+                        "matrix)\n",
                         (double)trip_stats.to_device_bytes / trip_stats.to_device_seconds / 1e9,
                         mib);
                 }
                 if (trip_stats.to_host_seconds > 0.0) {
-                    printf("    ancho de banda D2H                   %8.2f GB/s\n",
+                    printf("    D2H bandwidth                        %8.2f GB/s\n",
                            (double)trip_stats.to_host_bytes / trip_stats.to_host_seconds / 1e9);
                 }
                 printf(
@@ -311,7 +307,7 @@ int main() {
                     "    That is what should be measured: the real cost of reading a result.\n");
             }
 
-            printf("\n  Operaciones elemento a elemento (residentes):\n");
+            printf("\n  Element-wise operations (resident):\n");
             for (size_t n : {size_t{1} << 18, size_t{1} << 22, size_t{1} << 24}) {
                 Tensor A = Tensor::randn({n});
                 Tensor B = Tensor::randn({n});
@@ -322,7 +318,7 @@ int main() {
                     Tensor C = A + B;
                     cuda::synchronize();
                 });
-                printf("    suma de %10zu valores   CPU %8.3f ms   GPU %8.3f ms   %5.2fx\n", n,
+                printf("    sum of %10zu values    CPU %8.3f ms   GPU %8.3f ms   %5.2fx\n", n,
                        cpu * 1000.0, gpu * 1000.0, cpu / gpu);
             }
 

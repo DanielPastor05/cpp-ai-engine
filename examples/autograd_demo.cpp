@@ -15,7 +15,7 @@ int main() {
     // ---------------------------------------------------------
     std::cout << "--- 1. Derivacion Automatica de Funcion Escalar ---\n";
     std::cout << "Funcion: L = a * b + ReLU(a)\n";
-    std::cout << "Valores: a = 2.0, b = 3.0\n\n";
+    std::cout << "Values: a = 2.0, b = 3.0\n\n";
 
     Tensor a({1}, std::vector<float>{2.0f}, true);
     Tensor b({1}, std::vector<float>{3.0f}, true);
@@ -24,7 +24,7 @@ int main() {
     Tensor relu_a = a.relu();
     Tensor L = prod + relu_a;
 
-    // Ejecutar Backpropagation
+    // Run backpropagation
     L.backward();
 
     std::cout << "Resultado L = " << L.data()[0] << " (Esperado: 2*3 + 2 = 8.0000)\n";
@@ -55,7 +55,7 @@ int main() {
     // 3. Training a linear regression by gradient descent
     // ---------------------------------------------------------
     std::cout << "--- 3. Gradient-descent optimisation (linear regression) ---\n";
-    std::cout << "Objetivo: Aprender y = W * x + b donde W_real = 2.5, b_real = 1.0\n\n";
+    std::cout << "Goal: learn y = W * x + b where W_true = 2.5, b_true = 1.0\n\n";
 
     // The parameters to optimise. W is (1, 1) so it can go through matmul, and bias
     // is a (1, 1) row vector broadcast over the batch's 4 rows.

@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Genera los ficheros de referencia que validan el motor contra PyTorch.
+"""Generates the fixtures that validate the engine against PyTorch.
 
-La verificación numérica de gradientes por diferencias centradas demuestra que
-el motor es coherente consigo mismo. Esto demuestra algo más fuerte: que
-coincide con la implementación de referencia del sector.
+Checking gradients numerically by central differences proves the engine is
+consistent with itself. This proves something stronger: that it agrees with the
+industry's reference implementation.
 
-Para cada caso se construye el mismo cálculo en PyTorch, se ejecuta hacia
-delante y hacia atrás, y se vuelcan entradas, pesos, salida y gradientes al
-formato binario del propio motor (engine/serialize.hpp). Los ficheros
-resultantes se commitean en tests/fixtures/, de modo que la CI los comprueba
-sin necesitar Python ni PyTorch: este script solo hace falta para regenerarlos.
+For each case the same computation is built in PyTorch, run forward and
+backward, and the inputs, weights, output and gradients are dumped in the
+engine's own binary format (engine/serialize.hpp). The resulting files are
+committed under tests/fixtures/, so CI checks them without needing Python or
+PyTorch: this script is only needed to regenerate them.
 
-Uso:
+Usage:
     pip install torch
     python3 tools/generate_reference.py
 
-Las semillas son fijas, así que regenerar produce exactamente los mismos
-ficheros salvo que cambie la versión de PyTorch.
+The seeds are fixed, so regenerating produces exactly the same files unless the
+PyTorch version changes.
 """
 
 import math
@@ -36,12 +36,12 @@ VERSION = 1
 
 
 # ---------------------------------------------------------------------------
-# Escritor del formato de engine/serialize.hpp
+# Writer for the engine/serialize.hpp format
 #
 #   "CPPAIENG" | version u32 | n_tensores u32
-#   por tensor: len_nombre u32 | nombre | ndim u32 | dims u64[] | float32[]
+#   per tensor: name_len u32 | name | ndim u32 | dims u64[] | float32[]
 #
-# Todo little-endian, como exige el motor.
+# All little-endian, as the engine requires.
 # ---------------------------------------------------------------------------
 def write_fixture(name, tensors):
     os.makedirs(FIXTURES, exist_ok=True)
@@ -73,9 +73,9 @@ def randn(*shape, seed=None, requires_grad=False):
 
 
 def backward_with(output, grad_output):
-    """Propaga hacia atrás con un gradiente concreto en vez de con unos.
+    """Backpropagates a specific gradient rather than a tensor of ones.
 
-    Un gradiente de salida de puros unos puede ocultar errores de indexación:
+    An output gradient of all ones can hide indexing errors:
     varias posiciones equivocadas dan la misma suma.
     """
     output.backward(grad_output)
@@ -107,7 +107,7 @@ def case_matmul_batched():
 
 
 def case_matmul_shared():
-    """(B, M, K) x (K, N): la misma matriz aplicada a todo el lote."""
+    """(B, M, K) x (K, N): the same matrix applied to the whole batch."""
     torch.manual_seed(3)
     a = randn(3, 4, 5, requires_grad=True)
     b = randn(5, 2, requires_grad=True)
@@ -141,7 +141,8 @@ def case_activations():
     for name, fn in [("relu", F.relu), ("sigmoid", torch.sigmoid),
                      ("tanh", torch.tanh), ("gelu", lambda t: F.gelu(t, approximate="tanh"))]:
         torch.manual_seed(6)
-        # Se evita el 0 exacto: ReLU no es derivable ahí y el fixture sería ambiguo
+        # Exact 0 is avoided: ReLU is not differentiable there and the fixture
+        # would be ambiguous
         x = (randn(4, 5) + 0.37).requires_grad_(True)
         out = fn(x)
         g = randn(4, 5)
@@ -171,8 +172,8 @@ def case_linear():
     out = layer(x)
     g = randn(4, 3)
     backward_with(out, g)
-    # PyTorch guarda el peso como (out, in) y calcula x @ W.T; el motor lo
-    # guarda como (in, out) y calcula x @ W. Se transpone al volcarlo.
+    # PyTorch stores the weight as (out, in) and computes x @ W.T; the engine
+    # stores it as (in, out) and computes x @ W. It is transposed on dump.
     write_fixture("linear", {
         "input": x, "weight": layer.weight.T, "bias": layer.bias.reshape(1, 3),
         "grad_output": g, "output": out,
@@ -212,8 +213,8 @@ def case_conv2d(name, in_c, out_c, kernel, stride, padding, shape, seed):
 
 def case_maxpool():
     torch.manual_seed(12)
-    # Valores bien separados: con empates el argmax es ambiguo y PyTorch y el
-    # motor podrían elegir posiciones distintas, ambas correctas.
+    # Well-separated values: on a tie the argmax is ambiguous and PyTorch and
+    # the engine could pick different positions, both correct.
     x = (torch.arange(2 * 3 * 8 * 8, dtype=torch.float32).reshape(2, 3, 8, 8) * 0.37)
     x = (x % 19.0).requires_grad_(True)
     out = F.max_pool2d(x, kernel_size=2, stride=2)
@@ -265,11 +266,11 @@ def case_attention(name, causal, seed):
 
 
 def case_multihead_attention():
-    """Se compone con las mismas piezas que el motor.
+    """Composed from the same pieces the engine uses.
 
-    No se usa nn.MultiheadAttention porque empaqueta q/k/v en una sola matriz
-    y la correspondencia de pesos sería otra. Lo que se valida es el cálculo,
-    y cada primitiva sigue siendo la de PyTorch.
+    nn.MultiheadAttention is not used because it packs q/k/v into one matrix
+    and the weight correspondence would be different. What is validated is the
+    computation, and every primitive is still PyTorch's.
     """
     torch.manual_seed(20)
     d_model, heads, seq, batch = 8, 2, 5, 2
@@ -303,7 +304,7 @@ def case_multihead_attention():
 
 
 def case_transformer_block():
-    """Bloque pre-norm, igual que nn::TransformerBlock del motor:
+    """Pre-norm block, the same as the engine's nn::TransformerBlock:
 
         h = x + Attention(LayerNorm(x))
         y = h + FF2(ReLU(FF1(LayerNorm(h))))
@@ -319,7 +320,7 @@ def case_transformer_block():
     wv, wo = torch.nn.Linear(d_model, d_model), torch.nn.Linear(d_model, d_model)
     ff1, ff2 = torch.nn.Linear(d_model, ff), torch.nn.Linear(ff, d_model)
 
-    # gamma y beta distintos de la identidad, para que se note si se ignoran
+    # gamma and beta away from the identity, so that ignoring them shows up
     with torch.no_grad():
         norm1.weight.copy_(randn(d_model, seed=31))
         norm1.bias.copy_(randn(d_model, seed=32))
@@ -369,7 +370,7 @@ def case_reductions():
         tensors[f"grad_output.{tag}"] = g
         tensors[f"output.{tag}"] = out
         tensors[f"grad.{tag}"] = xi.grad
-    # El maximo con valores bien separados, para que el argmax no sea ambiguo
+    # The maximum over well-separated values, so the argmax is not ambiguous
     xm = ((torch.arange(24, dtype=torch.float32) * 7.0) % 23.0).reshape(2, 3, 4)
     xm = xm.requires_grad_(True)
     out = xm.max(dim=1).values
@@ -383,10 +384,10 @@ def case_reductions():
 
 
 def case_adam():
-    """Trayectoria de 10 pasos, para validar el optimizador entero y no solo uno.
+    """A 10-step trajectory, to validate the whole optimiser and not one step.
 
-    Un error en la corrección de sesgo solo se nota al comparar la trayectoria:
-    el primer paso puede coincidir por casualidad.
+    An error in the bias correction only shows up by comparing the trajectory:
+    the first step can match by chance.
     """
     torch.manual_seed(50)
     w = randn(3, 4, requires_grad=True)
@@ -446,7 +447,7 @@ def main():
     case_adam()
     case_sgd_momentum()
 
-    print("\nListo. Los ficheros se commitean: la CI los comprueba sin PyTorch.")
+    print("\nDone. The files are committed: CI checks them without PyTorch.")
 
 
 if __name__ == "__main__":

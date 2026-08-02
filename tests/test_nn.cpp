@@ -207,7 +207,7 @@ void test_activations() {
     Tensor g = gelu(x);
     check_close(g.data()[2], 0.0f, "gelu(0) == 0");
     check(g.data()[0] < 0.0f, "gelu deja pasar algo de senal negativa");
-    check(g.data()[0] > -0.2f, "pero muy atenuada");
+    check(g.data()[0] > -0.2f, "but heavily damped");
     check(g.data()[4] > 1.9f, "gelu is nearly the identity for large positives");
 
     // Gradientes
@@ -356,7 +356,7 @@ void test_clip_and_schedulers() {
     warm.step();
     check_close(opt3.learning_rate(), 1.0f, "when the warm-up ends it reaches the base", 1e-3f);
     for (int i = 0; i < 7; ++i) warm.step();
-    check(opt3.learning_rate() < 0.01f, "despues desciende en coseno");
+    check(opt3.learning_rate() < 0.01f, "then decays as a cosine");
 
     check_throws([&] { optim::StepLR(opt, 0); }, "a zero step throws");
     check_throws([&] { optim::WarmupCosineLR(opt, 10, 5); },
@@ -448,7 +448,7 @@ void test_serialization() {
     check_throws([&] { engine::load_parameters(model, "not_weights.bin"); },
                  "a file with a wrong signature is rejected");
 
-    // Un transformer completo tambien va y vuelve
+    // A whole transformer round-trips too
     engine::manual_seed(3);
     nn::TransformerBlock block(8, 2, 16);
     Tensor seq = Tensor::randn({2, 4, 8});

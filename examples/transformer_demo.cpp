@@ -28,11 +28,11 @@ namespace optim = engine::optim;
 // to chance (1/6). The only information is in the order, and extracting it means
 // relating two positions.
 // ---------------------------------------------------------
-constexpr size_t kNumValues = 6;            // valores 0..5
+constexpr size_t kNumValues = 6;            // values 0..5
 constexpr size_t kMarker = kNumValues;      // id 6
 constexpr size_t kCls = kNumValues + 1;     // id 7
 constexpr size_t kVocab = kNumValues + 2;   // 8 tokens
-constexpr size_t kSeqLen = kNumValues + 2;  // [CLS] + 6 valores + MARCA
+constexpr size_t kSeqLen = kNumValues + 2;  // [CLS] + 6 values + MARKER
 
 void make_dataset(size_t num_samples, Tensor& ids, std::vector<size_t>& labels,
                   std::vector<size_t>* marker_positions = nullptr) {
@@ -271,7 +271,7 @@ int main() {
     make_dataset(1500, X, y, &markers);
     make_dataset(400, X_test, y_test);
 
-    std::cout << "Vocabulario: valores 0-5, MARCA=" << kMarker << ", [CLS]=" << kCls << "\n";
+    std::cout << "Vocabulary: values 0-5, MARKER=" << kMarker << ", [CLS]=" << kCls << "\n";
     std::cout << "Train: " << X.shape_str() << "   Test: " << X_test.shape_str() << "\n\n";
     for (size_t n = 0; n < 3; ++n) {
         std::cout << "  Secuencia " << n << ": [";
@@ -290,7 +290,7 @@ int main() {
     std::cout << "\n";
 
     // ---------------------------------------------------------
-    // 5. Entrenamiento
+    // 5. Training
     // ---------------------------------------------------------
     engine::manual_seed(2024);
     TransformerClassifier transformer(32, 4, 64);
@@ -342,7 +342,7 @@ int main() {
     std::cout << "  Transformer                : " << t_acc * 100.0f << "% on test\n";
     std::cout << "  Promedio de embeddings     : " << b_acc * 100.0f << "% on test\n";
     std::cout << "  Azar (1 de " << kNumValues
-              << " valores)        : " << 100.0f / static_cast<float>(kNumValues) << "%\n\n";
+              << " values)         : " << 100.0f / static_cast<float>(kNumValues) << "%\n\n";
     std::cout << "Every sequence contains exactly the same tokens, so\n"
               << "averaging them leaves no information at all: the baseline stays at\n"
               << "chance by construction. Attention, on the other hand, relates the\n"

@@ -141,7 +141,7 @@ int main() {
 
     nn::Window2d w3(3, 3, 1, 0);
     Tensor cols = nn::im2col(small, w3);
-    std::cout << "Entrada " << small.shape_str() << " with a 3x3 kernel, stride 1, no padding\n";
+    std::cout << "Input " << small.shape_str() << " with a 3x3 kernel, stride 1, no padding\n";
     std::cout << "im2col -> " << cols.shape_str()
               << ": 4 windows (2x2 positions) flattened into rows of 9 values\n";
     cols.print("columns");
@@ -191,7 +191,7 @@ int main() {
     std::cout << "\n";
 
     // ---------------------------------------------------------
-    // 4. Entrenamiento
+    // 4. Training
     // ---------------------------------------------------------
     engine::manual_seed(7);
     optim::Adam cnn_opt(cnn.parameters(), 0.01f);

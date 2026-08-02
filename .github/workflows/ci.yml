@@ -32,28 +32,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configurar CMake
+      - name: Configure CMake
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
         run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 
-      - name: Compilar
+      - name: Build
         run: cmake --build build --config Release --parallel
 
-      - name: Ejecutar las pruebas
+      - name: Run the tests
         run: ctest --test-dir build --build-config Release --output-on-failure
 
-      - name: Ejecutar los ejemplos
+      - name: Run the examples
         shell: bash
         run: |
-          # Los generadores multi-configuración (MSVC) anidan los binarios en Release/
+          # Multi-configuration generators (MSVC) nest the binaries under Release/
           BIN=build
           [ -d build/Release ] && BIN=build/Release
           for demo in cpp_ai_engine autograd_demo nn_demo cnn_demo transformer_demo mnist_demo; do
             "$BIN/$demo" > /dev/null
           done
-          echo "Los seis ejemplos terminaron correctamente."
+          echo "All six examples finished successfully."
 
   sanitizers:
     name: Linux / ASan + UBSan
@@ -61,23 +61,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Fue AddressSanitizer quien encontró un desbordamiento de heap en el
-      # gradiente de la difusión, así que se ejecuta en cada cambio.
-      - name: Configurar con sanitizers
+      # AddressSanitizer is what found a heap overflow in the broadcast
+      # gradient, so it runs on every change.
+      - name: Configure with sanitizers
         run: >
           cmake -B build -S . -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
 
-      - name: Compilar
+      - name: Build
         run: cmake --build build --parallel
 
-      - name: Pruebas bajo sanitizers
+      - name: Tests under the sanitizers
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           ASAN_OPTIONS: detect_leaks=1
         run: ctest --test-dir build --output-on-failure
 
-      - name: Ejemplos bajo sanitizers
+      - name: Examples under the sanitizers
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
@@ -91,45 +91,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # El motor reparte matmul y las operaciones elemento a elemento entre
-      # varios hilos, asi que conviene comprobar que no hay carreras de datos.
-      - name: Configurar con ThreadSanitizer
+      # The engine splits matmul and the element-wise operations across several
+      # threads, so it is worth checking that there are no data races.
+      - name: Configure with ThreadSanitizer
         run: >
           cmake -B build -S . -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
 
-      - name: Compilar
+      - name: Build
         run: cmake --build build --parallel
 
-      - name: Pruebas bajo ThreadSanitizer
+      - name: Tests under ThreadSanitizer
         env:
           ENGINE_NUM_THREADS: 4
           TSAN_OPTIONS: halt_on_error=1
         run: ctest --test-dir build --output-on-failure
 
   cuda:
-    name: Linux / CUDA (compilacion y pruebas sin GPU)
-    # ubuntu-22.04 trae gcc-11, que es un compilador de host que nvcc acepta.
-    # En 24.04 el gcc por defecto es mas nuevo de lo que soporta y la
-    # compilacion falla antes de empezar.
+    name: Linux / CUDA (build and tests without a GPU)
+    # ubuntu-22.04 ships gcc-11, which is a host compiler nvcc accepts. On 24.04
+    # the default gcc is newer than it supports and the build fails before it
+    # starts.
     runs-on: ubuntu-22.04
-    # Sin limite, un mirror de apt colgado deja el trabajo corriendo horas. Ha
-    # pasado: la primera version de este job usaba el paquete monolitico de los
-    # repositorios de Ubuntu y se quedaba clavado descargando.
+    # Without a limit, a stalled apt mirror leaves the job running for hours. It
+    # has happened: the first version of this job used the monolithic package
+    # from the Ubuntu repositories and got stuck downloading.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      # El runner no tiene GPU, asi que la paridad no se puede ejecutar aqui.
-      # Compilar si: es lo que detecta un error de sintaxis en un kernel antes
-      # de que llegue a la maquina que si tiene tarjeta. Los indices, que es el
-      # otro fallo probable, los cubre tests/test_cuda_indexing.cpp en CPU.
+      # The runner has no GPU, so the parity suite cannot run here. Building
+      # does: it is what catches a syntax error in a kernel before it reaches
+      # the machine that does have a card. The indices, which are the other
+      # likely failure, are covered on the CPU by tests/test_cuda_indexing.cpp.
       #
-      # Del toolkit solo hacen falta dos paquetes: el compilador y las
-      # cabeceras del runtime. El metapaquete nvidia-cuda-toolkit de Ubuntu son
-      # dos o tres gigas de perfilador, ejemplos y bibliotecas que aqui no se
-      # usan para nada.
-      - name: Instalar nvcc
+      # Only two packages from the toolkit are needed: the compiler and the
+      # runtime headers. Ubuntu's nvidia-cuda-toolkit metapackage is two or
+      # three gigabytes of profiler, samples and libraries none of which are
+      # used here.
+      - name: Install nvcc
         run: |
           wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i cuda-keyring_1.1-1_all.deb
@@ -137,21 +137,22 @@ jobs:
           sudo apt-get install -y --no-install-recommends cuda-nvcc-12-4 cuda-cudart-dev-12-4
           echo "/usr/local/cuda-12.4/bin" >> "$GITHUB_PATH"
 
-      - name: Configurar con el backend CUDA
+      - name: Configure with the CUDA backend
         run: >
           cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
           -DENGINE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86
           -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.4/bin/nvcc
 
-      - name: Compilar
+      - name: Build
         run: cmake --build build --parallel
 
-      # La paridad se omite sola cuando cuda::available() es falso, asi que lo
-      # que queda es justo lo que si tiene sentido aqui: la suite entera contra
-      # una biblioteca compilada con ENGINE_CUDA=ON, comprobando que el camino
-      # de respaldo sin tarjeta da los mismos numeros que la version sin CUDA, y
-      # test_cuda_indexing, que replica los indices de los kernels en CPU.
-      - name: Ejecutar las pruebas (sin GPU, la paridad se omite)
+      # The parity suite skips itself when cuda::available() is false, so what
+      # is left is exactly what does make sense here: the whole suite against a
+      # library compiled with ENGINE_CUDA=ON, checking that the no-card fallback
+      # path gives the same numbers as the non-CUDA build, plus
+      # test_cuda_indexing, which replays the kernels' index arithmetic on the
+      # CPU.
+      - name: Run the tests (no GPU, so parity is skipped)
         run: ctest --test-dir build --output-on-failure
 
   debug:
@@ -160,18 +161,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # En Debug la biblioteca estándar comprueba los índices de los
-      # contenedores, cosa que la compilación Release no hace.
-      - name: Configurar en Debug
+      # In Debug the standard library bounds-checks container indices, which the
+      # Release build does not.
+      - name: Configure in Debug
         run: >
           cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug
           -DCMAKE_CXX_FLAGS="-D_GLIBCXX_ASSERTIONS"
 
-      - name: Compilar
+      - name: Build
         run: cmake --build build --parallel
 
-      - name: Ejecutar las pruebas
+      - name: Run the tests
         run: ctest --test-dir build --output-on-failure
+
+  language:
+    name: Linux / English only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The check lives in tools/check_english.sh rather than inline, for two
+      # reasons: it is runnable locally before committing, which is the whole
+      # point of a check that blocks, and a word list written in this file would
+      # match itself.
+      #
+      # Why the job exists at all is in the script's header. Short version: the
+      # commit that claimed the English pass was finished left 64 Spanish lines
+      # across 15 files, including the job names on this very tab.
+      - name: No Spanish outside README.es.md
+        run: bash tools/check_english.sh
 
   lint:
     name: Linux / clang-format + clang-tidy
@@ -192,7 +210,8 @@ jobs:
       # clean" only means something next to a version number.
       #
       # This job first went red for exactly that reason -- validated against 20
-      # locally, run against apt's 18 in CI.
+      # locally, run against apt's 18 in CI. The second time was plainer: a
+      # commit that edited src/optim.cpp without running the check first.
       - name: Install the tooling
         run: |
           python3 -m venv .lint

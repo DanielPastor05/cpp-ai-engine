@@ -212,7 +212,7 @@ void test_linear_cases() {
 }
 
 void test_conv_cases() {
-    section("PyTorch: convolucion y submuestreo");
+    section("PyTorch: convolution and pooling");
 
     const std::tuple<std::string, size_t, size_t, size_t, size_t> cases[] = {
         {"conv2d_pad1", 3, 4, 1, 1},  // in, out, stride, padding

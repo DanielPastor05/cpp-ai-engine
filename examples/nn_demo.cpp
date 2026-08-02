@@ -144,7 +144,7 @@ int main() {
 
     Tensor dense_out = dense(batch);
     std::cout << dense.name() << " -> " << dense.num_parameters() << " parametros\n";
-    std::cout << "Entrada " << batch.shape_str() << " -> Salida " << dense_out.shape_str()
+    std::cout << "Input " << batch.shape_str() << " -> Output " << dense_out.shape_str()
               << " (the bias broadcasts over the batch's 4 rows)\n\n";
 
     // ---------------------------------------------------------

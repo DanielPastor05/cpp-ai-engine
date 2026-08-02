@@ -37,7 +37,7 @@ T read_raw(std::istream& in, const std::string& path) {
     T value{};
     in.read(reinterpret_cast<char*>(&value), sizeof(T));
     if (!in) {
-        throw std::runtime_error("Fichero de pesos truncado o corrupto: " + path);
+        throw std::runtime_error("Truncated or corrupt weight file: " + path);
     }
     return value;
 }
@@ -46,7 +46,7 @@ std::string read_string(std::istream& in, uint32_t length, const std::string& pa
     std::string s(length, '\0');
     in.read(&s[0], static_cast<std::streamsize>(length));
     if (!in) {
-        throw std::runtime_error("Fichero de pesos truncado o corrupto: " + path);
+        throw std::runtime_error("Truncated or corrupt weight file: " + path);
     }
     return s;
 }
@@ -126,7 +126,7 @@ std::vector<std::pair<std::string, StoredTensor>> read_file(const std::string& p
     char magic[sizeof(kMagic)];
     in.read(magic, sizeof(magic));
     if (!in || std::memcmp(magic, kMagic, sizeof(kMagic)) != 0) {
-        throw std::runtime_error("'" + path + "' no es un fichero de pesos de este motor.");
+        throw std::runtime_error("'" + path + "' is not a weight file from this engine.");
     }
 
     const uint32_t version = read_raw<uint32_t>(in, path);
@@ -159,7 +159,7 @@ std::vector<std::pair<std::string, StoredTensor>> read_file(const std::string& p
             in.read(reinterpret_cast<char*>(entry.data.data()),
                     static_cast<std::streamsize>(total * sizeof(float)));
             if (!in) {
-                std::string message = "Fichero de pesos truncado en '";
+                std::string message = "Weight file truncated at '";
                 message += name;
                 message += "': ";
                 message += path;
