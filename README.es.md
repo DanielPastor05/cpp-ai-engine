@@ -7,6 +7,8 @@
 
 Un motor de Inteligencia Artificial y Aprendizaje Profundo (Deep Learning) avanzado construido desde cero en **C++17**, sin dependencias externas, con backend opcional de aceleración GPU en **CUDA** (apagado por defecto: sin toolkit ni tarjeta el motor compila y pasa las pruebas igual).
 
+*Construido con ayuda intensiva de IA — [qué significa eso y qué fue mío](#-cómo-se-construyó-esto).*
+
 ## 🚀 Hoja de Ruta del Proyecto
 
 - [x] **Fase 1: Librería de Tensores (CPU)**
@@ -483,11 +485,15 @@ motor.
 
 ## 🤖 Cómo se construyó esto
 
-Este motor se escribió con ayuda intensiva de IA: la mayoría de los commits
-llevan un trailer `Co-Authored-By: Claude`, y el historial es corto y denso
-precisamente por eso. Esos trailers están puestos a propósito y nunca se
-borraron. Decirlo aquí, en vez de dejar que se deduzca del `git log`, parece la
-única opción honesta. Así que: esto es lo que fue mío y lo que no.
+**Este motor se escribió con ayuda intensiva de IA — Claude, de Anthropic — y el
+historial es corto y denso precisamente por eso.** Todos los commits van a mi
+nombre, así que el `git log` no te lo va a decir: te enteras aquí, y esta sección
+existe justamente para eso. Esto es lo que fue mío y lo que no.
+
+Revisiones anteriores llevaban un trailer `Co-Authored-By: Claude` en la mayoría
+de los commits y este párrafo apuntaba a él. Los trailers se quitaron el 2 de
+agosto de 2026; la divulgación no, y trasladarla aquí en lugar de eliminarla es
+justamente el motivo de que siga estando.
 
 **Mío.** La arquitectura y cada decisión que la condiciona: `Tensor` como asa
 sobre un `TensorImpl` compartido; sacar el búfer a un `Storage` con banderas de

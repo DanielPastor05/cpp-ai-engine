@@ -11,6 +11,8 @@ PyTorch**.
 
 No dependencies. No BLAS. The point is to implement it, not to call it.
 
+*Built with heavy AI assistance — [what that means, and what was mine](#how-this-was-built).*
+
 *[Versión en español](README.es.md)*
 
 ---
@@ -425,11 +427,17 @@ target_link_libraries(my_app PRIVATE engine::engine)
 
 ## How this was built
 
-This engine was written with heavy AI assistance — most commits carry a
-`Co-Authored-By: Claude` trailer, and the history is short and dense because of
-it. Those trailers are deliberate and were never stripped. Saying so here rather
-than letting a reader work it out from `git log` seems like the only honest
-option, so: what follows is what was mine and what was not.
+**This engine was written with heavy AI assistance — Claude (Anthropic) — and
+the history is short and dense because of it.** Every commit is authored under
+my name, so `git log` will not tell you; this section is where you find out, and
+it is here for exactly that reason. What follows is what was mine and what was
+not.
+
+Earlier revisions carried a `Co-Authored-By: Claude` trailer on most commits and
+this paragraph pointed at it. The trailers were removed on 2 August 2026; the
+disclosure was not, and moving it here rather than dropping it is the whole
+point. A reader who wants the machine-readable version has this paragraph
+instead.
 
 **Mine.** The architecture and every decision that constrains it: `Tensor` as a
 handle over a shared `TensorImpl`; splitting the buffer into a `Storage` with
