@@ -45,10 +45,13 @@ Storage::Storage(const Storage& other) : buf_(std::make_shared<Buffer>()) {
     if (other.buf_->host.size() == other.buf_->count) buf_->host = other.host();
 }
 
+// Copy and move: the copy constructor already knows how to duplicate a buffer,
+// including the case where the source has not been materialised, so this builds
+// one and takes its buffer rather than repeating the logic.
 Storage& Storage::operator=(const Storage& other) {
     if (this != &other) {
-        const Storage copy(other);
-        buf_ = copy.buf_;
+        Storage copy(other);
+        buf_ = std::move(copy.buf_);
     }
     return *this;
 }

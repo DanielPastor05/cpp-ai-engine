@@ -41,7 +41,15 @@ export LC_ALL=C.UTF-8
 
 # README.es.md is the point of the exercise. README.md links to it by name, in
 # Spanish, and that line is deliberate.
-readonly EXCLUDE='^README\.es\.md$'
+#
+# This file excludes itself, and that is not laziness: the word list below is
+# Spanish by construction, so a check that scanned itself would always fail. It
+# already did. The list was moved out of .github/workflows/ci.yml precisely to
+# stop it matching itself there, and landed in a tracked file with the same
+# problem -- which passed locally, because the script was still untracked when it
+# was tested and `git ls-files` only lists what is committed. Committing it was
+# what broke it.
+readonly EXCLUDE='^(README\.es\.md|tools/check_english\.sh)$'
 readonly ALLOW='README\.md:[0-9]+:\*\[Versión en español\]'
 
 readonly WORDS='[áéíóúñÁÉÍÓÚÑ¿¡]|\b(que|para|porque|cuando|donde|esto|esta|estos|estas|los|las|del|una|unos|unas|con|por|pero|como|desde|hasta|entre|sobre|cada|todo|toda|todos|todas|otro|otra|aunque|entonces|siempre|nunca|entrada|salida|fichero|ficheros|cadena|cadenas|pruebas|compilar|ejecutar|configurar|instalar|memoria|hilos|puntero|valores|datos|modelo|entrenamiento|dispositivo|convoluciones|iteracion|inferencia|resultados|ejemplos|calculo|tambien|ademas|despues|verificar|comprobar|devuelve)\b'
