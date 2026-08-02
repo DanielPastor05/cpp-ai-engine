@@ -506,8 +506,11 @@ Tensor Tensor::operator+(const Tensor& other) const {
         Tensor self_copy = *this;
         Tensor other_copy = other;
 
-        res.impl_->backward_fn = [self_copy, other_copy, broadcast,
-                                  plan](const Tensor& grad_out) mutable {
+        // `plan` is deliberately not captured: the broadcast backward used to walk
+        // it by hand and now calls fold_leading, which recomputes the decomposition
+        // from the shapes. Clang catches the leftover capture, MSVC does not.
+        res.impl_->backward_fn = [self_copy, other_copy,
+                                  broadcast](const Tensor& grad_out) mutable {
             if (self_copy.requires_grad()) self_copy.add_grad(grad_out);
             if (!other_copy.requires_grad()) return;
             if (!broadcast) {
