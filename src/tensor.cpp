@@ -1193,7 +1193,7 @@ std::vector<size_t> reduced_shape(const std::vector<size_t>& shape, size_t axis,
         out[axis] = 1;
     } else {
         out.erase(out.begin() + static_cast<long>(axis));
-        if (out.empty()) out.push_back(1);  // reducir un tensor 1D deja un escalar {1}
+        if (out.empty()) out.push_back(1);  // reducing a 1D tensor leaves a scalar {1}
     }
     return out;
 }

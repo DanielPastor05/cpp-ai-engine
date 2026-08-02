@@ -254,12 +254,12 @@ int main() {
     // ---------------------------------------------------------
     // 3. Positional encoding
     // ---------------------------------------------------------
-    std::cout << "--- 3. Codificacion posicional sinusoidal ---\n";
+    std::cout << "--- 3. Sinusoidal positional encoding ---\n";
     Tensor pe = nn::positional_encoding(6, 8);
     std::cout << "positional_encoding(6, 8) -> " << pe.shape_str() << "\n";
     std::cout << "Each row encodes a position with sines and cosines of\n"
               << "different frequencies, so nearby positions have\n"
-              << "codificaciones parecidas:\n";
+              << "similar encodings:\n";
     pe.print("PE");
 
     // ---------------------------------------------------------

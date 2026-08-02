@@ -238,7 +238,7 @@ void test_reductions() {
     check(mx.shape() == std::vector<size_t>({3}), "max(0) drops the first axis");
     check_close(mx.data()[1], 5.0f, "max(0) takes the largest in each column");
 
-    // Reducir un tensor 1D deja un escalar
+    // Reducing a 1D tensor leaves a scalar
     Tensor v({4}, {1, 7, 3, 2});
     check(v.sum(0).shape() == std::vector<size_t>({1}), "reducing a 1D tensor gives a {1} scalar");
     check_close(v.max(0).data()[0], 7.0f, "max of a vector");
@@ -324,7 +324,7 @@ void test_slice_concat_stack() {
     check_gradient("gradient of concat() (second part)", other,
                    [&](Tensor& t) { return (Tensor::concat({G, t}, 0) * w_cc).sum(); });
 
-    // Concatenar un tensor consigo mismo acumula en ambas franjas
+    // Concatenating a tensor with itself accumulates into both slices
     Tensor twice({1, 2}, {1.0f, 2.0f}, true);
     Tensor::concat({twice, twice}, 0).sum().backward();
     check_close(twice.grad().data()[0], 2.0f, "concatenating a tensor with itself accumulates");

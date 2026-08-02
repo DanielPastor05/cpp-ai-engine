@@ -58,7 +58,7 @@ void test_softmax_and_losses() {
     float row1 = probs({1, 0}) + probs({1, 1}) + probs({1, 2});
     check_close(row0, 1.0f, "each softmax row sums to 1");
     check_close(row1, 1.0f, "the uniform row also sums to 1");
-    check_close(probs({1, 0}), 1.0f / 3.0f, "logits iguales dan probabilidades iguales");
+    check_close(probs({1, 0}), 1.0f / 3.0f, "equal logits give equal probabilities");
     check(probs({0, 2}) > probs({0, 1}), "softmax preserves the order of the logits");
 
     // Numerical stability: without subtracting the maximum, exp(1000) would overflow
@@ -206,7 +206,7 @@ void test_activations() {
     nn::GELU gelu;
     Tensor g = gelu(x);
     check_close(g.data()[2], 0.0f, "gelu(0) == 0");
-    check(g.data()[0] < 0.0f, "gelu deja pasar algo de senal negativa");
+    check(g.data()[0] < 0.0f, "gelu lets some negative signal through");
     check(g.data()[0] > -0.2f, "but heavily damped");
     check(g.data()[4] > 1.9f, "gelu is nearly the identity for large positives");
 

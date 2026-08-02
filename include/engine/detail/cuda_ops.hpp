@@ -156,6 +156,35 @@ bool sgd_step(Storage& param, const Storage& grad, Storage* velocity, float lr, 
 bool adam_step(Storage& param, const Storage& grad, Storage& m, Storage& v, float lr, float beta1,
                float beta2, float eps, float weight_decay, float bias_c1, float bias_c2);
 
+// Layer normalisation over the last axis, and its derivative.
+//
+// The forward is row-local and unremarkable: one block per row, a shared-memory
+// tree for the mean and another for the variance. `xhat` and `inv_std` come back
+// out because the backward needs both, exactly as the CPU path saves them.
+//
+// The backward is the one with a design problem, and it is why this pair was
+// deferred twice. `dx` is row-local like the forward, but **dgamma and dbeta
+// accumulate across rows** -- every row contributes to the same `cols` values.
+// Doing that with atomicAdd would be four lines and would make the result depend
+// on the order blocks happen to finish in, which this engine promises it does
+// not: `tests/test_transformer.cpp` compares against PyTorch fixtures, and the
+// parity suite compares against the CPU.
+//
+// So a fixed number of blocks each own a private partial in `dgamma`/`dbeta`
+// scratch and accumulate the rows they are given, and a second pass sums the
+// partials in index order. The second pass is sum_over_axis with outer=1: the
+// reduction kernel that already exists, doing what it was written for.
+//
+// Splitting the pair is not an option worth having. A forward on the device
+// whose backward reads xhat on the host pulls everything down anyway, so the
+// chain breaks in the same place and the only thing gained is a second copy of
+// the formula.
+bool layernorm(const Storage& x, const Storage& gamma, const Storage& beta, Storage& out,
+               Storage& xhat, Storage& inv_std, size_t rows, size_t cols, float eps);
+bool layernorm_backward(const Storage& grad_out, const Storage& xhat, const Storage& gamma,
+                        const Storage& inv_std, Storage& dx, Storage& dgamma, Storage& dbeta,
+                        size_t rows, size_t cols);
+
 // Softmax over the last axis: `rows` rows of `cols` contiguous values.
 bool softmax(const Storage& x, Storage& out, size_t rows, size_t cols);
 // y is the saved forward output, not the input.

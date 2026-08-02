@@ -21,7 +21,7 @@ void test_im2col() {
 
     Tensor cols = nn::im2col(img, w3);
     check(cols.shape() == std::vector<size_t>({4, 9}), "im2col da (N*oH*oW, C*kH*kW)");
-    // Primera ventana: esquina superior izquierda 3x3
+    // First window: the top-left 3x3 corner
     check_close(cols(0, 0), 1.0f, "the first window starts at pixel (0,0)");
     check_close(cols(0, 8), 11.0f, "the first window ends at pixel (2,2)");
     // Last window: shifted one pixel along both axes
@@ -170,7 +170,7 @@ void test_conv_gradients() {
 
         check_gradient("gradient of Conv2d with respect to the weights", conv.weight(),
                        [&](Tensor&) { return (conv(x) * w).sum(); });
-        check_gradient("gradient of Conv2d respecto to sesgo", conv.bias(),
+        check_gradient("gradient of Conv2d with respect to the bias", conv.bias(),
                        [&](Tensor&) { return (conv(x) * w).sum(); });
     }
 

@@ -63,11 +63,11 @@ void check_matches(const Tensor& actual, const Tensor& expected, const std::stri
     }
     ++g_checks;
     if (max_diff <= tolerance) {
-        std::cout << "  [ ok ] " << what << " (desviacion maxima " << std::scientific
+        std::cout << "  [ ok ] " << what << " (largest deviation " << std::scientific
                   << std::setprecision(2) << max_diff << std::defaultfloat << ")\n";
     } else {
         ++g_failures;
-        std::cout << "  [FAIL] " << what << " (desviacion maxima " << max_diff << " > " << tolerance
+        std::cout << "  [FAIL] " << what << " (largest deviation " << max_diff << " > " << tolerance
                   << ")\n";
     }
 }

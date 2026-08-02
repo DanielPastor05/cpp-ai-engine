@@ -1096,12 +1096,17 @@ double* reduction_partials() {
     return buffer;
 }
 
-// Split-K's scratch, same reasoning, except the size depends on the shape. It
-// grows to the largest asked for and stays there, so a training loop pays one
-// allocation rather than one per step.
+// Scratch shared by the passes that need somewhere to put per-block partials:
+// split-K's matmul and LayerNorm's cross-row dgamma/dbeta. Same reasoning as the
+// reduction buffer above, except the size depends on the shape, so it grows to
+// the largest asked for and stays there -- a training loop pays one allocation
+// rather than one per step.
+//
+// One buffer for both is safe because the engine dispatches from a single
+// thread and neither user holds it across a call.
 constexpr int kMaxSplitK = 64;
 
-float* matmul_partials(size_t floats) {
+float* scratch_buffer(size_t floats) {
     static float* buffer = nullptr;
     static size_t capacity = 0;
     if (floats <= capacity) return buffer;
@@ -1214,6 +1219,131 @@ __global__ void adam_update(float* __restrict__ w, const float* __restrict__ g,
 // expf is used rather than __expf: the fast version saves a few cycles but loses
 // precision, and these values are compared against PyTorch in the reference
 // test. The exponential is not the bottleneck here.
+// ---------------------------------------------------------
+// Layer normalisation
+// ---------------------------------------------------------
+//
+// One block per row, two shared-memory trees: one for the mean, one for the
+// variance around it. Two passes and not the one-pass sum-of-squares identity
+// (var = E[x^2] - E[x]^2), which is algebraically the same and numerically much
+// worse: it subtracts two large nearly-equal numbers, and for an activation with
+// a large mean relative to its spread the result loses most of its digits. The
+// CPU path takes two passes for the same reason and these have to agree.
+__global__ void layernorm_rows(const float* __restrict__ x, const float* __restrict__ gamma,
+                               const float* __restrict__ beta, float* __restrict__ out,
+                               float* __restrict__ xhat, float* __restrict__ inv_std, int cols,
+                               float eps) {
+    __shared__ float shared[kReduceBlock];
+
+    const long long row = blockIdx.x;
+    const float* xr = x + row * cols;
+    float* out_r = out + row * cols;
+    float* xhat_r = xhat + row * cols;
+    const int tid = threadIdx.x;
+    const float inv_cols = 1.0f / (float)cols;
+
+    float acc = 0.0f;
+    for (int j = tid; j < cols; j += blockDim.x) acc += xr[j];
+    shared[tid] = acc;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) shared[tid] += shared[tid + s];
+        __syncthreads();
+    }
+    const float mean = shared[0] * inv_cols;
+    __syncthreads();
+
+    float var_acc = 0.0f;
+    for (int j = tid; j < cols; j += blockDim.x) {
+        const float d = xr[j] - mean;
+        var_acc += d * d;
+    }
+    shared[tid] = var_acc;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) shared[tid] += shared[tid + s];
+        __syncthreads();
+    }
+    const float inv = rsqrtf(shared[0] * inv_cols + eps);
+    __syncthreads();
+
+    if (tid == 0) inv_std[row] = inv;
+    for (int j = tid; j < cols; j += blockDim.x) {
+        const float h = (xr[j] - mean) * inv;
+        xhat_r[j] = h;
+        out_r[j] = gamma[j] * h + beta[j];
+    }
+}
+
+// The backward, with the cross-row reduction that made this the last pair of
+// operations left on the host.
+//
+// dx is row-local: the mean and the variance depend on the whole row, so each
+// component drags two correction terms along, and both are row sums. That part
+// is the forward's shape again.
+//
+// dgamma and dbeta are not. Every row contributes to the same `cols` values, so
+// a grid of one block per row would need atomics -- and an atomicAdd makes the
+// sum depend on which block finishes first, which is exactly the reproducibility
+// this engine tests for. Instead a **fixed** number of blocks walk the rows in a
+// grid-stride loop, each accumulating into a private slice of scratch that
+// nothing else writes. layernorm_backward() then sums those slices in index
+// order with sum_over_axis, so the accumulation order is a property of the shape
+// and not of the scheduler.
+__global__ void layernorm_backward_rows(
+    const float* __restrict__ dy, const float* __restrict__ xhat, const float* __restrict__ gamma,
+    const float* __restrict__ inv_std, float* __restrict__ dx, float* __restrict__ dgamma_partial,
+    float* __restrict__ dbeta_partial, long long rows, int cols) {
+    __shared__ float shared[kReduceBlock];
+
+    const int tid = threadIdx.x;
+    const float inv_cols = 1.0f / (float)cols;
+    float* dg = dgamma_partial + (long long)blockIdx.x * cols;
+    float* db = dbeta_partial + (long long)blockIdx.x * cols;
+
+    for (long long row = blockIdx.x; row < rows; row += gridDim.x) {
+        const float* dy_r = dy + row * cols;
+        const float* h_r = xhat + row * cols;
+        float* dx_r = dx + row * cols;
+
+        float s_dxhat = 0.0f, s_dxhat_h = 0.0f;
+        for (int j = tid; j < cols; j += blockDim.x) {
+            const float dxhat = dy_r[j] * gamma[j];
+            s_dxhat += dxhat;
+            s_dxhat_h += dxhat * h_r[j];
+        }
+
+        // Both sums in one tree each, back to back rather than interleaved: two
+        // reductions over kReduceBlock floats cost less than the register
+        // pressure of carrying a pair through one.
+        shared[tid] = s_dxhat;
+        __syncthreads();
+        for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+            if (tid < s) shared[tid] += shared[tid + s];
+            __syncthreads();
+        }
+        const float sum_dxhat = shared[0];
+        __syncthreads();
+
+        shared[tid] = s_dxhat_h;
+        __syncthreads();
+        for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+            if (tid < s) shared[tid] += shared[tid + s];
+            __syncthreads();
+        }
+        const float sum_dxhat_h = shared[0];
+        __syncthreads();
+
+        const float inv = inv_std[row];
+        for (int j = tid; j < cols; j += blockDim.x) {
+            const float dxhat = dy_r[j] * gamma[j];
+            dx_r[j] = inv * (dxhat - inv_cols * sum_dxhat - h_r[j] * inv_cols * sum_dxhat_h);
+            dg[j] += dy_r[j] * h_r[j];
+            db[j] += dy_r[j];
+        }
+    }
+}
+
 __global__ void softmax_rows(const float* __restrict__ x, float* __restrict__ y, int cols) {
     __shared__ float shared[kReduceBlock];
 
@@ -1462,7 +1592,7 @@ bool matmul(const Storage& a, const Storage& b, Storage& out, size_t batch, size
         // partials stay scratch rather than an allocation worth worrying about.
         int split = std::min(256 / (tiles_m * tiles_n), kMaxSplitK);
         split = (int)std::min<long long>(split, (K + kTile - 1) / kTile);
-        float* partials = split > 1 ? matmul_partials((size_t)split * M * N) : nullptr;
+        float* partials = split > 1 ? scratch_buffer((size_t)split * M * N) : nullptr;
         if (partials != nullptr) {
             // Chunks are a whole number of tiles so every slice starts on a tile
             // boundary. Rounding up can leave the last slices with nothing to do,
@@ -1782,6 +1912,104 @@ bool accumulate_grad(Storage& grad, const Storage& g, bool initialize) {
     // intact. Reverting there would promote a host copy that is not valid.
     if (initialize) grad.revert_device_write();
     return false;
+}
+
+// LayerNorm is the one operation with a size floor that residency does not
+// override, and the exception is measured rather than assumed.
+//
+// The residency rule -- dispatch if the data is already on the device, because
+// refusing is what costs the round trip -- holds for one kernel replacing one
+// pass over the host. LayerNorm's backward is four calls: a memset, the row
+// kernel, and two reductions over the per-block partials. That fixed cost has to
+// be earned.
+//
+// Measured, forward plus backward, CPU against device (scratchpad sweep, RTX
+// 3060 Ti):
+//
+//     rows x cols      elements     speedup
+//        64 x 32          2 048       0.18x
+//       256 x 32          8 192       0.54x
+//        64 x 128         8 192       0.58x
+//        64 x 512        32 768       2.26x
+//       256 x 128        32 768       2.05x
+//      1024 x 512       524 288       3.96x
+//
+// The crossover sits at about 2^15 elements, so that is the floor. Note that
+// 1024x32 and 64x512 are the same element count and give 1.31x against 2.26x:
+// a 256-thread block on 32 columns wastes seven eighths of itself, so the count
+// is a single-parameter approximation to a two-parameter shape. It is the right
+// approximation for the one decision being made here.
+//
+// This is why examples/transformer_demo.cpp did not get faster when these
+// kernels were written: its rows x d_model lands at 8 192, in the losing half of
+// that table. The kernels are for the models this engine cannot run yet, not for
+// the demo that fits in a terminal.
+constexpr size_t kMinLayerNormElements = 1u << 15;
+
+bool layernorm(const Storage& x, const Storage& gamma, const Storage& beta, Storage& out,
+               Storage& xhat, Storage& inv_std, size_t rows, size_t cols, float eps) {
+    if (!enabled() || x.size() < kMinLayerNormElements) return false;
+    if (rows == 0 || cols == 0 || cols > kMaxInt) return false;
+    if (rows * cols != x.size() || out.size() != x.size() || xhat.size() != x.size()) return false;
+    if (gamma.size() != cols || beta.size() != cols || inv_std.size() != rows) return false;
+    if (rows > kMaxInt) return false;
+
+    layernorm_rows<<<(unsigned)rows, kReduceBlock>>>(x.device(), gamma.device(), beta.device(),
+                                                     out.device_write(), xhat.device_write(),
+                                                     inv_std.device_write(), (int)cols, eps);
+    if (!launch_ok("layernorm_rows")) {
+        out.revert_device_write();
+        xhat.revert_device_write();
+        inv_std.revert_device_write();
+        return false;
+    }
+    detail::note_kernel_launched();
+    return true;
+}
+
+bool layernorm_backward(const Storage& grad_out, const Storage& xhat, const Storage& gamma,
+                        const Storage& inv_std, Storage& dx, Storage& dgamma, Storage& dbeta,
+                        size_t rows, size_t cols) {
+    if (!enabled() || grad_out.size() < kMinLayerNormElements) return false;
+    if (rows == 0 || cols == 0 || cols > kMaxInt) return false;
+    if (rows * cols != grad_out.size() || xhat.size() != grad_out.size()) return false;
+    if (dx.size() != grad_out.size() || gamma.size() != cols) return false;
+    if (dgamma.size() != cols || dbeta.size() != cols || inv_std.size() != rows) return false;
+
+    // Fixed by the shape and nothing else, so two runs reduce in the same order.
+    // Capped at 64 because the scratch is blocks x cols and the whole point is
+    // that it stays small enough to sum in one pass afterwards.
+    const size_t blocks = std::min<size_t>(rows, 64);
+    float* scratch = scratch_buffer(2 * blocks * cols);
+    if (scratch == nullptr) return false;
+    float* dg_partial = scratch;
+    float* db_partial = scratch + blocks * cols;
+    if (cudaMemset(scratch, 0, 2 * blocks * cols * sizeof(float)) != cudaSuccess) return false;
+
+    layernorm_backward_rows<<<(unsigned)blocks, kReduceBlock>>>(
+        grad_out.device(), xhat.device(), gamma.device(), inv_std.device(), dx.device_write(),
+        dg_partial, db_partial, (long long)rows, (int)cols);
+    if (!launch_ok("layernorm_backward_rows")) {
+        dx.revert_device_write();
+        return false;
+    }
+    detail::note_kernel_launched();
+
+    // Stage two: sum the per-block partials in index order. This is exactly
+    // sum_over_axis with outer=1 over `blocks` slices of `cols`, which is the
+    // reduction kernel that already exists.
+    const long long n = (long long)cols;
+    sum_over_axis<<<grid_for(n), kBlock>>>(dg_partial, dgamma.device_write(), (long long)blocks, n,
+                                           n);
+    if (!launch_ok("sum_over_axis")) {
+        dgamma.revert_device_write();
+        return false;
+    }
+    detail::note_kernel_launched();
+
+    sum_over_axis<<<grid_for(n), kBlock>>>(db_partial, dbeta.device_write(), (long long)blocks, n,
+                                           n);
+    return launched_ok("sum_over_axis", dbeta);
 }
 
 bool softmax(const Storage& x, Storage& out, size_t rows, size_t cols) {

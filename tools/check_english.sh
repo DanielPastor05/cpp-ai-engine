@@ -52,7 +52,13 @@ export LC_ALL=C.UTF-8
 readonly EXCLUDE='^(README\.es\.md|tools/check_english\.sh)$'
 readonly ALLOW='README\.md:[0-9]+:\*\[Versión en español\]'
 
-readonly WORDS='[áéíóúñÁÉÍÓÚÑ¿¡]|\b(que|para|porque|cuando|donde|esto|esta|estos|estas|los|las|del|una|unos|unas|con|por|pero|como|desde|hasta|entre|sobre|cada|todo|toda|todos|todas|otro|otra|aunque|entonces|siempre|nunca|entrada|salida|fichero|ficheros|cadena|cadenas|pruebas|compilar|ejecutar|configurar|instalar|memoria|hilos|puntero|valores|datos|modelo|entrenamiento|dispositivo|convoluciones|iteracion|inferencia|resultados|ejemplos|calculo|tambien|ademas|despues|verificar|comprobar|devuelve)\b'
+# Two groups. The first is function words, which cannot appear in English prose
+# by accident. The second is content words, and it exists because the first was
+# not enough: "LayerNorm deja media 0", "gradient of LayerNorm respecto a gamma"
+# and "desviacion maxima" all survived the original list and were printed by the
+# test suite for weeks, because a short label has no function words in it. Every
+# entry below was added after being found, not guessed at.
+readonly WORDS='[áéíóúñÁÉÍÓÚÑ¿¡]|\b(que|para|porque|cuando|donde|esto|esta|estos|estas|los|las|del|una|unos|unas|con|por|pero|como|desde|hasta|entre|sobre|cada|todo|toda|todos|todas|otro|otra|aunque|entonces|siempre|nunca|entrada|salida|fichero|ficheros|cadena|cadenas|pruebas|compilar|ejecutar|configurar|instalar|memoria|hilos|puntero|valores|datos|modelo|entrenamiento|dispositivo|convoluciones|iteracion|inferencia|resultados|ejemplos|calculo|tambien|ademas|despues|verificar|comprobar|devuelve|deja|dejan|varianza|respecto|desviacion|maxima|minima|codificacion|codificaciones|posicional|parecidas|iguales|distintos|distinta|senal|reducir|concatenar|consigo|misma|mismo|cambia|cambian|queda|quedan|falla|fallan|primera|segunda|ultima)\b'
 
 hits=$(git ls-files | grep -vE "$EXCLUDE" | xargs grep -IinE "$WORDS" 2>/dev/null \
        | grep -vE "$ALLOW" || true)

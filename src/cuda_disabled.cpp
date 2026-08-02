@@ -179,6 +179,14 @@ bool relu_backward(const Storage&, const Storage&, Storage&) {
 bool accumulate_grad(Storage&, const Storage&, bool) {
     return false;
 }
+bool layernorm(const Storage&, const Storage&, const Storage&, Storage&, Storage&, Storage&, size_t,
+               size_t, float) {
+    return false;
+}
+bool layernorm_backward(const Storage&, const Storage&, const Storage&, const Storage&, Storage&,
+                        Storage&, Storage&, size_t, size_t) {
+    return false;
+}
 bool softmax(const Storage&, Storage&, size_t, size_t) {
     return false;
 }

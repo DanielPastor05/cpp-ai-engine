@@ -17,6 +17,7 @@
 #include "test_support.hpp"
 
 #include "engine/cuda.hpp"
+#include "engine/transformer.hpp"
 
 #ifdef ENGINE_CUDA
 
@@ -558,9 +559,86 @@ void run_cuda_parity_tests() {
             return S.grad();
         });
 
+        // --- LayerNorm, at shapes that actually reach the kernels ---
+        //
+        // These are the only cases in this file that have to be *large*. Every
+        // other dispatch takes small shapes because tile edges are where kernels
+        // fail; LayerNorm carries a measured floor of 2^15 elements, below which
+        // its four-call backward loses to one pass on the host, so a 17x23 case
+        // would test the CPU path twice and pass at exactly zero error.
+        //
+        // The first version of this suite did precisely that: the kernels were
+        // written, the tests were green, and the launch counter never moved off
+        // 852. compare() refuses a case where nothing launched, which is what
+        // turned that from a silent pass into a failure.
+        {
+            // 512 x 64 = 32 768, exactly the floor: the smallest shape that dispatches.
+            nn::LayerNorm ln(64);
+            Tensor X = Tensor::randn({512, 64}, 0.0f, 1.0f, true);
+            compare("LayerNorm forward (512x64)", [&] { return ln.forward(X); });
+
+            // A non-uniform upstream gradient, for the reason the softmax case
+            // gives: with every weight equal, an indexing error cancels itself.
+            compare("LayerNorm gradient of the input", [&] {
+                X.zero_grad();
+                Tensor w = Tensor::zeros(X.shape());
+                for (size_t i = 0; i < w.size(); ++i) {
+                    w.data()[i] = 0.1f * static_cast<float>(i % 7) - 0.2f;
+                }
+                (ln.forward(X) * w).sum().backward();
+                return X.grad();
+            });
+
+            // dgamma and dbeta are the ones that accumulate across rows, which
+            // is the whole reason this kernel needed a two-stage reduction
+            // rather than an atomicAdd. They get their own cases because an
+            // error there would not show in the input's gradient at all.
+            compare("LayerNorm gradient of gamma", [&] {
+                ln.parameters()[0].zero_grad();
+                Tensor w = Tensor::zeros(X.shape());
+                for (size_t i = 0; i < w.size(); ++i) w.data()[i] = 0.3f - 0.05f * (i % 11);
+                (ln.forward(X) * w).sum().backward();
+                return ln.parameters()[0].grad();
+            });
+            compare("LayerNorm gradient of beta", [&] {
+                ln.parameters()[1].zero_grad();
+                Tensor w = Tensor::zeros(X.shape());
+                for (size_t i = 0; i < w.size(); ++i) w.data()[i] = 0.05f * (i % 13) - 0.3f;
+                (ln.forward(X) * w).sum().backward();
+                return ln.parameters()[1].grad();
+            });
+
+            // Same input twice on the device: the partials are summed in index
+            // order, so two runs must agree bit for bit. An atomicAdd here would
+            // pass every tolerance case above and fail this one.
+            {
+                cuda::set_enabled(true);
+                ln.parameters()[0].zero_grad();
+                Tensor w = Tensor::zeros(X.shape());
+                for (size_t i = 0; i < w.size(); ++i) w.data()[i] = 0.2f * (i % 5) - 0.1f;
+                (ln.forward(X) * w).sum().backward();
+                const std::vector<float> first = ln.parameters()[0].grad().data();
+
+                ln.parameters()[0].zero_grad();
+                (ln.forward(X) * w).sum().backward();
+                const std::vector<float> second = ln.parameters()[0].grad().data();
+
+                bool identical = first.size() == second.size();
+                for (size_t i = 0; i < first.size() && identical; ++i) {
+                    identical = first[i] == second[i];
+                }
+                testing::check(identical,
+                               identical
+                                   ? "LayerNorm's dgamma is bit-identical across runs, so the "
+                                     "partials combine in a fixed order"
+                                   : "LayerNorm's dgamma changed between two identical runs: the "
+                                     "cross-row reduction depends on scheduling");
+            }
+        }
+
         Tensor A = Tensor::randn({30, 40}, 0.0f, 1.0f, true);
         Tensor B = Tensor::randn({40, 25}, 0.0f, 1.0f, true);
-        compare("gradient of matmul respecto de A", [&] {
+        compare("gradient of matmul with respect to A", [&] {
             A.zero_grad();
             B.zero_grad();
             A.matmul(B).sum().backward();

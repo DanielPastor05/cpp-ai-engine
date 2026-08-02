@@ -16,7 +16,7 @@ void test_layernorm_and_embedding() {
     Tensor normed = norm(x);
     check(normed.shape() == x.shape(), "LayerNorm preserves the shape");
 
-    // Primera fila: media 0 y varianza 1 tras normalizar
+    // First row: mean 0 and variance 1 after normalising
     float mean = 0.0f;
     for (size_t j = 0; j < 4; ++j) mean += normed.data()[j];
     mean /= 4.0f;
@@ -26,8 +26,8 @@ void test_layernorm_and_embedding() {
         var += d * d;
     }
     var /= 4.0f;
-    check_close(mean, 0.0f, "LayerNorm deja media 0", 1e-3f);
-    check_close(var, 1.0f, "LayerNorm deja varianza 1", 1e-2f);
+    check_close(mean, 0.0f, "LayerNorm leaves mean 0", 1e-3f);
+    check_close(var, 1.0f, "LayerNorm leaves variance 1", 1e-2f);
 
     // A constant row: with no variance, epsilon avoids dividing by zero
     check_close(normed.data()[4], 0.0f, "a constant row normalises to 0 without dividing by zero");
@@ -51,9 +51,9 @@ void test_layernorm_and_embedding() {
         nn::LayerNorm n2(4);
         Tensor fixed = Tensor::randn({3, 4});
         Tensor w = Tensor::randn({3, 4});
-        check_gradient("gradient of LayerNorm respecto a gamma", n2.gamma(),
+        check_gradient("gradient of LayerNorm with respect to gamma", n2.gamma(),
                        [&](Tensor&) { return (n2(fixed) * w).sum(); });
-        check_gradient("gradient of LayerNorm respecto a beta", n2.beta(),
+        check_gradient("gradient of LayerNorm with respect to beta", n2.beta(),
                        [&](Tensor&) { return (n2(fixed) * w).sum(); });
     }
 
@@ -135,7 +135,7 @@ void test_attention() {
 }
 
 void test_positional_encoding() {
-    section("transformer: codificacion posicional");
+    section("transformer: positional encoding");
 
     Tensor pe = nn::positional_encoding(4, 6);
     check(pe.shape() == std::vector<size_t>({4, 6}), "positional_encoding da (seq, d_model)");

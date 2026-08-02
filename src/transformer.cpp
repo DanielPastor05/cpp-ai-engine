@@ -1,5 +1,6 @@
 #include "engine/transformer.hpp"
 #include "engine/autograd.hpp"
+#include "engine/detail/cuda_ops.hpp"
 #include "engine/detail/restrict.hpp"
 #include "engine/parallel.hpp"
 
@@ -29,32 +30,24 @@ LayerNorm::LayerNorm(size_t normalized_size, float eps)
     beta_ = Tensor({normalized_size}, 0.0f, true);
 }
 
-Tensor LayerNorm::forward(const Tensor& input) {
-    if (input.ndim() < 1 || input.shape().back() != normalized_size_) {
-        throw std::invalid_argument("LayerNorm of size " + std::to_string(normalized_size_) +
-                                    " received an input " + input.shape_str() + ".");
-    }
+namespace {
 
-    const size_t D = normalized_size_;
-    const size_t rows = input.size() / D;
-    const float inv_d = 1.0f / static_cast<float>(D);
-
-    Tensor out(input.shape(), 0.0f, false);
-    // xhat and 1/deviation are saved because the derivative needs them
-    Tensor xhat(input.shape(), 0.0f, false);
-    std::vector<float> inv_std(rows, 0.0f);
-
+// The CPU forward, unchanged, lifted out so the dispatch above reads as one
+// condition instead of an if wrapped around forty lines.
+void layernorm_cpu(const Tensor& input, const Tensor& gamma, const Tensor& beta, Tensor& out,
+                   Tensor& xhat, Tensor& inv_std, size_t rows, size_t D, float inv_d, float eps) {
     const std::vector<float>& x = input.data();
-    const std::vector<float>& g = gamma_.data();
-    const std::vector<float>& b = beta_.data();
+    const std::vector<float>& g = gamma.data();
+    const std::vector<float>& b = beta.data();
 
     // Each row is normalised with its own mean and variance, so no reduction
-    // crosses a chunk boundary: splitting by row gives the same result bit for bit
-    // with one thread or with eight.
+    // crosses a chunk boundary: splitting by row gives the same result bit for
+    // bit with one thread or with eight.
     float* ENGINE_RESTRICT xhat_out = xhat.data().data();
     float* ENGINE_RESTRICT out_data = out.data().data();
-    // The threshold is counted in rows, but the work is in the elements: a row is D
-    // values and three passes over them.
+    float* ENGINE_RESTRICT inv_out = inv_std.data().data();
+    // The threshold is counted in rows, but the work is in the elements: a row
+    // is D values and three passes over them.
     const size_t rows_per_thread =
         std::max<size_t>(1, parallel::kElementsPerThread / std::max<size_t>(1, D));
     parallel::parallel_for(rows, rows_per_thread, [&](size_t from, size_t to) {
@@ -72,8 +65,8 @@ Tensor LayerNorm::forward(const Tensor& input) {
             }
             var *= inv_d;
 
-            const float inv = 1.0f / std::sqrt(var + eps_);
-            inv_std[i] = inv;
+            const float inv = 1.0f / std::sqrt(var + eps);
+            inv_out[i] = inv;
 
             for (size_t j = 0; j < D; ++j) {
                 const float h = (row[j] - mean) * inv;
@@ -82,6 +75,38 @@ Tensor LayerNorm::forward(const Tensor& input) {
             }
         }
     });
+}
+
+}  // namespace
+
+Tensor LayerNorm::forward(const Tensor& input) {
+    if (input.ndim() < 1 || input.shape().back() != normalized_size_) {
+        throw std::invalid_argument("LayerNorm of size " + std::to_string(normalized_size_) +
+                                    " received an input " + input.shape_str() + ".");
+    }
+
+    const size_t D = normalized_size_;
+    const size_t rows = input.size() / D;
+    const float inv_d = 1.0f / static_cast<float>(D);
+
+    Tensor out(input.shape(), 0.0f, false);
+    // xhat and 1/deviation are saved because the derivative needs them. inv_std
+    // is a Tensor and not a std::vector because the backward has a kernel now:
+    // a host vector here would be a value the device path had to come down for,
+    // and the chain would break in the middle of the block it was closed for.
+    Tensor xhat(input.shape(), 0.0f, false);
+    Tensor inv_std({rows}, 0.0f, false);
+
+    // The device takes the whole row-normalisation in one pass, writing out,
+    // xhat and inv_std together. Offered before any .data() call, because the
+    // first accessor below would pull the input down and there would be nothing
+    // resident left to work on.
+    if (!cuda::ops::layernorm(input.get_impl()->storage, gamma_.get_impl()->storage,
+                              beta_.get_impl()->storage, out.get_impl()->storage,
+                              xhat.get_impl()->storage, inv_std.get_impl()->storage, rows, D,
+                              eps_)) {
+        layernorm_cpu(input, gamma_, beta_, out, xhat, inv_std, rows, D, inv_d, eps_);
+    }
 
     const bool req_g = autograd::grad_enabled() &&
                        (input.requires_grad() || gamma_.requires_grad() || beta_.requires_grad());
@@ -96,26 +121,41 @@ Tensor LayerNorm::forward(const Tensor& input) {
 
     out.get_impl()->backward_fn = [input_copy, gamma_copy, beta_copy, xhat, inv_std, rows, D,
                                    inv_d](const Tensor& grad_out) mutable {
-        const std::vector<float>& dy = grad_out.data();
-        const std::vector<float>& h = xhat.data();
-        const std::vector<float>& g = gamma_copy.data();
-
         Tensor dgamma(gamma_copy.shape(), 0.0f, false);
         Tensor dbeta(beta_copy.shape(), 0.0f, false);
         Tensor dX(input_copy.shape(), 0.0f, false);
 
+        // Offered before a single accessor below, for the usual reason: the
+        // first .data() would pull grad_out and xhat down and leave the device
+        // path nothing resident to work on.
+        if (cuda::ops::layernorm_backward(
+                grad_out.get_impl()->storage, xhat.get_impl()->storage,
+                gamma_copy.get_impl()->storage, inv_std.get_impl()->storage, dX.get_impl()->storage,
+                dgamma.get_impl()->storage, dbeta.get_impl()->storage, rows, D)) {
+            if (input_copy.requires_grad()) input_copy.add_grad(dX);
+            if (gamma_copy.requires_grad()) gamma_copy.add_grad(dgamma);
+            if (beta_copy.requires_grad()) beta_copy.add_grad(dbeta);
+            return;
+        }
+
+        const std::vector<float>& dy = grad_out.data();
+        const std::vector<float>& h = xhat.data();
+        const std::vector<float>& g = gamma_copy.data();
+        const std::vector<float>& inv = inv_std.data();
+
         // This loop stays serial deliberately, unlike the forward's. dX is
         // independent per row, but dgamma and dbeta accumulate **across** rows:
-        // splitting it would need a per-thread partial and a fixed-order combine so
-        // as not to lose the bit-for-bit identity the tests check, and separating it
-        // into two passes would cost rereading dy and xhat in full. Neither has been
-        // measured, so neither is chosen blind.
+        // splitting it would need a per-thread partial and a fixed-order combine
+        // so as not to lose the bit-for-bit identity the tests check. The device
+        // path above does exactly that -- a fixed block count with private
+        // partials, summed in index order -- and the same treatment here is the
+        // remaining half of that idea.
         //
         // ponytail: serial reduction; per-thread partials if the profile flags it.
         for (size_t i = 0; i < rows; ++i) {
             // The mean and variance depend on the whole vector, so each
             // component's derivative drags two correction terms along:
-            // dx = (dxhat - media(dxhat) - xhat * media(dxhat * xhat)) / std
+            // dx = (dxhat - mean(dxhat) - xhat * mean(dxhat * xhat)) / std
             float sum_dxhat = 0.0f;
             float sum_dxhat_h = 0.0f;
             for (size_t j = 0; j < D; ++j) {
@@ -127,8 +167,7 @@ Tensor LayerNorm::forward(const Tensor& input) {
             for (size_t j = 0; j < D; ++j) {
                 const size_t k = i * D + j;
                 const float dxhat = dy[k] * g[j];
-                dX.data()[k] =
-                    inv_std[i] * (dxhat - inv_d * sum_dxhat - h[k] * inv_d * sum_dxhat_h);
+                dX.data()[k] = inv[i] * (dxhat - inv_d * sum_dxhat - h[k] * inv_d * sum_dxhat_h);
                 dgamma.data()[j] += dy[k] * h[k];
                 dbeta.data()[j] += dy[k];
             }

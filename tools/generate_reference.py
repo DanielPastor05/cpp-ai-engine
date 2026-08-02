@@ -28,7 +28,7 @@ try:
     import torch
     import torch.nn.functional as F
 except ImportError:
-    sys.exit("Hace falta PyTorch: pip install torch")
+    sys.exit("PyTorch is required: pip install torch")
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tests", "fixtures")
 MAGIC = b"CPPAIENG"
@@ -63,7 +63,7 @@ def write_fixture(name, tensors):
                 f.write(struct.pack("<Q", d))
             f.write(t.reshape(-1).numpy().astype("<f4").tobytes())
 
-    print(f"  {name+'.bin':38s} {len(tensors):2d} tensores")
+    print(f"  {name+'.bin':38s} {len(tensors):2d} tensors")
 
 
 def randn(*shape, seed=None, requires_grad=False):
@@ -76,13 +76,13 @@ def backward_with(output, grad_output):
     """Backpropagates a specific gradient rather than a tensor of ones.
 
     An output gradient of all ones can hide indexing errors:
-    varias posiciones equivocadas dan la misma suma.
+    several wrong positions give the same sum.
     """
     output.backward(grad_output)
 
 
 # ---------------------------------------------------------------------------
-# Casos
+# Cases
 # ---------------------------------------------------------------------------
 def case_matmul():
     torch.manual_seed(1)

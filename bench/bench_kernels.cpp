@@ -99,12 +99,12 @@ void bandwidth_table(double peak_gbs) {
 
     const double f = sizeof(float);
     const std::vector<Case> cases = {
-        {"add (elementwise)", 3.0 * n * f, 3.0 * small * f,
-         [&] { Tensor c = a + b; }, [&] { Tensor c = a_s + b_s; }},
-        {"scalar affine", 2.0 * n * f, 2.0 * small * f,
-         [&] { Tensor c = a * 2.0f; }, [&] { Tensor c = a_s * 2.0f; }},
-        {"relu", 2.0 * n * f, 2.0 * small * f,
-         [&] { Tensor c = a.relu(); }, [&] { Tensor c = a_s.relu(); }},
+        {"add (elementwise)", 3.0 * n * f, 3.0 * small * f, [&] { Tensor c = a + b; },
+         [&] { Tensor c = a_s + b_s; }},
+        {"scalar affine", 2.0 * n * f, 2.0 * small * f, [&] { Tensor c = a * 2.0f; },
+         [&] { Tensor c = a_s * 2.0f; }},
+        {"relu", 2.0 * n * f, 2.0 * small * f, [&] { Tensor c = a.relu(); },
+         [&] { Tensor c = a_s.relu(); }},
         {"transpose (last two axes)", 2.0 * rows.size() * f, 2.0 * rows_s.size() * f,
          [&] { Tensor c = rows.transpose(); }, [&] { Tensor c = rows_s.transpose(); }},
         {"permute (0,2,1)", 2.0 * cube.size() * f, 2.0 * cube_s.size() * f,
@@ -112,8 +112,8 @@ void bandwidth_table(double peak_gbs) {
          [&] { Tensor c = cube_s.permute({0, 2, 1}); }},
         {"sum over axis 0", 1.0 * rows.size() * f, 1.0 * rows_s.size() * f,
          [&] { Tensor c = rows.sum(0); }, [&] { Tensor c = rows_s.sum(0); }},
-        {"sum to scalar", 1.0 * n * f, 1.0 * small * f,
-         [&] { Tensor s = a.sum(); }, [&] { Tensor s = a_s.sum(); }},
+        {"sum to scalar", 1.0 * n * f, 1.0 * small * f, [&] { Tensor s = a.sum(); },
+         [&] { Tensor s = a_s.sum(); }},
     };
 
     printf("Bandwidth against size, %.0f GB/s theoretical peak\n\n", peak_gbs);
@@ -131,19 +131,20 @@ void bandwidth_table(double peak_gbs) {
                gbs_sml / peak_gbs * 100.0, gbs_big, gbs_big / peak_gbs * 100.0, ratio);
     }
     printf(
-        "\n  The last column is the honest one, and it is why there is no single\n"
-        "  bandwidth figure here. A kernel whose cost is proportional to its work\n"
-        "  reads 1.00x: the reductions do, and they reach a third to a half of\n"
-        "  peak. The element-wise rows do not -- eight times the data costs far\n"
-        "  more than eight times the time -- so neither their large nor their\n"
-        "  small figure is a bandwidth, and quoting either as one would be wrong.\n"
+        "\n  The last column is cost per byte, large against small. A kernel whose\n"
+        "  cost is proportional to its work reads around 1.00x, and below it if\n"
+        "  the larger size amortises a fixed overhead better -- which is what the\n"
+        "  reductions do.\n"
         "\n"
-        "  An earlier version of this table did exactly that, then a two-point fit\n"
-        "  to separate a fixed cost from a slope, which produced negative fixed\n"
-        "  costs: the model was linear and the measurement is not. What breaks the\n"
-        "  proportionality has not been identified yet -- a 64 MiB output allocated\n"
-        "  per call is the first suspect, and the tensor pool in the roadmap is\n"
-        "  where that gets tested. Until then this is a shape, not a number.\n\n");
+        "  This table is the reason the memory pool got fixed. It first reported\n"
+        "  every element-wise row at 9-13%% of peak with a ratio near 6x, meaning\n"
+        "  eight times the data cost far more than eight times the time. Six\n"
+        "  kernels that simple cannot all be bad, and they were not: nsys timed\n"
+        "  the addition's kernel at 0.48 ms inside 3.5 ms of wall clock. The\n"
+        "  allocator was handing each 64 MiB output back to the driver at every\n"
+        "  synchronise, because cudaMemPoolAttrReleaseThreshold defaults to zero.\n"
+        "  See docs/PERFORMANCE.md. A table that looked wrong was worth more than\n"
+        "  the number it was built to print.\n\n");
 }
 
 void occupancy_table() {
@@ -154,8 +155,8 @@ void occupancy_table() {
     }
 
     printf("Occupancy ceiling per kernel\n\n");
-    printf("  %-24s %8s %6s %8s %8s %8s  %s\n", "kernel", "threads", "regs", "smem",
-           "blocks", "occup.", "limited by");
+    printf("  %-24s %8s %6s %8s %8s %8s  %s\n", "kernel", "threads", "regs", "smem", "blocks",
+           "occup.", "limited by");
     for (const cuda::KernelOccupancy& k : rows) {
         printf("  %-24s %8d %6d %7zuB %8d %7.0f%%  %s\n", k.name.c_str(), k.block_threads,
                k.registers, k.shared_bytes, k.blocks_per_sm, k.occupancy * 100.0, k.limiter);
