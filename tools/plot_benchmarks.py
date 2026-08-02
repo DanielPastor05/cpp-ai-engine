@@ -54,7 +54,14 @@ DARK = {
     "series": ["#3987e5", "#d95926", "#199e70"],
 }
 
-FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
+# Single quotes around the multi-word family, and that is not a style choice.
+# These strings go into a double-quoted XML attribute, so a nested double quote
+# closes it early: font-family="system-ui, "Segoe UI", sans-serif" is not
+# well-formed, and an SVG loaded through <img> is parsed by a *strict* XML
+# parser, which means the whole image silently fails to render. Inlined into an
+# HTML page it looks fine, because the HTML parser recovers -- which is exactly
+# how this shipped broken and got caught only on GitHub.
+FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 BAR = 22       # <= 24px, so the band keeps some air
 GAP = 2        # the surface gap, one width everywhere
 RADIUS = 4     # rounded data-end, square at the baseline
@@ -234,11 +241,26 @@ CHARTS = {
 }
 
 if __name__ == "__main__":
+    import xml.etree.ElementTree as ET
+
     os.makedirs(OUT, exist_ok=True)
     for name, fn in CHARTS.items():
         for suffix, palette in (("", LIGHT), ("-dark", DARK)):
             path = os.path.join(OUT, f"{name}{suffix}.svg")
+            svg = fn(palette)
+
+            # Parse before writing. An SVG referenced from <img> -- which is what
+            # a README does -- goes through a strict XML parser, so a single
+            # malformed attribute means the image does not appear at all, with no
+            # error anywhere. It renders fine in a preview page that inlines it,
+            # because the HTML parser recovers from what XML refuses. That is how
+            # the first version of these charts shipped broken.
+            try:
+                ET.fromstring(svg)
+            except ET.ParseError as e:
+                raise SystemExit(f"{name}{suffix}.svg is not well-formed XML: {e}")
+
             with open(path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(fn(palette))
+                f.write(svg)
             print(f"  {os.path.relpath(path, REPO)}")
-    print(f"\n{len(CHARTS) * 2} files written to docs/img/.")
+    print(f"\n{len(CHARTS) * 2} files written to docs/img/, all well-formed.")
