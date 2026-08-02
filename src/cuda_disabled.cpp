@@ -53,6 +53,10 @@ double peak_bandwidth_gbs() {
     return 0.0;
 }
 
+std::vector<KernelOccupancy> kernel_occupancy() {
+    return {};
+}
+
 MatmulKernel matmul_kernel() {
     return MatmulKernel::Auto;
 }

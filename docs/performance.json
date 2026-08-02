@@ -124,6 +124,40 @@
           "context": "slower with a card than without one"
         }
       ]
+    },
+    {
+      "value": 2.24,
+      "was": "how far behind PyTorch the engine trained MNIST, before the pool release threshold",
+      "replaced_by": "behind-pytorch-cuda",
+      "documented_in": [
+        {
+          "file": "docs/PERFORMANCE.md",
+          "context": "was 2.24"
+        },
+        {
+          "file": "docs/CUDA.md",
+          "context": "was 2.24"
+        }
+      ]
+    },
+    {
+      "value": 4.7,
+      "was": "MNIST on CUDA before the memory pool fix",
+      "replaced_by": "mnist-engine-cuda",
+      "documented_in": [
+        {
+          "file": "docs/PERFORMANCE.md",
+          "context": "MNIST went from 4.7 s"
+        },
+        {
+          "file": "docs/PERFORMANCE.md",
+          "context": "after five further fixes"
+        },
+        {
+          "file": "docs/PERFORMANCE.md",
+          "context": "was done at 4.7 s and holds"
+        }
+      ]
     }
   ],
   "claims": [
@@ -142,9 +176,9 @@
     },
     {
       "id": "mnist-engine-cuda",
-      "value": 4.7,
+      "value": 4.0,
       "unit": "s",
-      "how": "mnist_demo from build-cuda, stock thresholds, best of 3 alternating",
+      "how": "mnist_demo from build-cuda, stock thresholds, best of 3 alternating. Was 4.7 before the memory pool stopped releasing blocks to the OS on every synchronise.",
       "cited_in": [
         "README.md",
         "docs/PERFORMANCE.md",
@@ -188,7 +222,7 @@
     },
     {
       "id": "behind-pytorch-cuda",
-      "value": 2.24,
+      "value": 1.9,
       "unit": "x",
       "how": "mnist-engine-cuda / mnist-pytorch-cuda",
       "cited_in": [

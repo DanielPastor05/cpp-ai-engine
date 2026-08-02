@@ -121,6 +121,11 @@ target_link_libraries(bench PRIVATE engine)
 add_executable(bench_matmul bench/bench_matmul.cpp)
 target_link_libraries(bench_matmul PRIVATE engine)
 
+# Occupancy and achieved bandwidth for the rest of the kernels, which had a
+# roofline for the matrix product and nothing for the other twenty-five.
+add_executable(bench_kernels bench/bench_kernels.cpp)
+target_link_libraries(bench_kernels PRIVATE engine)
+
 # cuBLAS is linked HERE ONLY, and only as the benchmark's reference row. The
 # engine never calls it: the point of the project is to write the kernel. But
 # measuring against NVIDIA's own library is the only way the number means

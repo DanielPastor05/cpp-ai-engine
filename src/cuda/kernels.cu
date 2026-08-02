@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <vector>
 
 namespace engine {
 namespace cuda {
@@ -1807,6 +1808,119 @@ bool softmax_backward(const Storage& y, const Storage& grad_out, Storage& out, s
     return launched_ok("softmax_rows_grad", out);
 }
 
+// ---------------------------------------------------------
+// Occupancy, from the runtime rather than from a profiler
+// ---------------------------------------------------------
+//
+// This lives here and not in runtime.cu for one reason: the kernels are in an
+// anonymous namespace in this file, so this is the only translation unit that
+// can take their addresses. Everything it needs is a plain runtime call --
+// cudaFuncGetAttributes for registers and shared memory,
+// cudaOccupancyMaxActiveBlocksPerMultiprocessor for how many blocks fit -- and
+// neither wants the elevated permissions that kept `ncu` from being usable on
+// the machine this was developed on.
+//
+// `limiter` is a deduction, not a reported field: the runtime says how many
+// blocks fit but not what stopped it at that number, so each candidate ceiling
+// is computed and whichever binds first is named. It is the part a reader
+// actually wants -- "0.5 occupancy" says nothing you can act on, "0.5, limited
+// by registers" says which knob exists.
+
+namespace {
+
+// One row per kernel worth asking about. Not all 26: the point is the shapes of
+// the problem -- a heavily register-tiled GEMM, a shared-memory reduction, a
+// plain element-wise pass -- not a full inventory.
+struct Probe {
+    const char* name;
+    const void* fn;
+    int block_threads;
+};
+
+const char* what_binds(const cudaDeviceProp& p, const cudaFuncAttributes& a, int block_threads,
+                       int blocks_per_sm) {
+    if (blocks_per_sm <= 0) return "does not fit";
+
+    // Each ceiling, computed the way the hardware does, then compared. Whichever
+    // sits at the answer is the one that bound it.
+    const int by_blocks = p.maxBlocksPerMultiProcessor;
+    const int by_warps = (p.maxThreadsPerMultiProcessor / block_threads);
+    const int by_regs = a.numRegs > 0
+                            ? (int)(p.regsPerMultiprocessor / ((size_t)a.numRegs * block_threads))
+                            : by_blocks;
+    const int by_smem =
+        a.sharedSizeBytes > 0 ? (int)(p.sharedMemPerMultiprocessor / a.sharedSizeBytes) : by_blocks;
+
+    if (blocks_per_sm == by_regs && by_regs <= by_smem && by_regs <= by_warps) return "registers";
+    if (blocks_per_sm == by_smem && by_smem <= by_warps) return "shared memory";
+    if (blocks_per_sm == by_warps) return "threads per SM";
+    return "blocks per SM";
+}
+
+}  // namespace
+
+std::vector<KernelOccupancy> occupancy_report() {
+    std::vector<KernelOccupancy> out;
+    if (!available()) return out;
+
+    cudaDeviceProp prop{};
+    if (cudaGetDeviceProperties(&prop, 0) != cudaSuccess) return out;
+
+    const Probe probes[] = {
+        {"matmul_naive", (const void*)matmul_naive, kTile * kTile},
+        {"matmul_tiled", (const void*)matmul_tiled, kTile * kTile},
+        {"matmul_tiled_split_k", (const void*)matmul_tiled_split_k, kTile * kTile},
+        {"matmul_register_tiled", (const void*)matmul_register_tiled<false>, kRegBlock},
+        {"matmul_vectorized", (const void*)matmul_register_tiled<true>, kRegBlock},
+        {"matmul_tensor_core", (const void*)matmul_tensor_core, kTcBlock},
+        {"transpose_tiled", (const void*)transpose_tiled, kTrTile * kTrRows},
+        {"permute_gather", (const void*)permute_gather, kBlock},
+        {"sum_over_axis", (const void*)sum_over_axis, kBlock},
+        {"sum_over_axis_blocked", (const void*)sum_over_axis_blocked<kBlock>, kBlock},
+        {"im2col_gather", (const void*)im2col_gather, kBlock},
+        {"col2im_scatter", (const void*)col2im_scatter, kBlock},
+        {"maxpool_windows", (const void*)maxpool_windows, kBlock},
+        {"reduce_stage1", (const void*)reduce_stage1<false>, kReduceBlock},
+        {"grad_accumulate", (const void*)grad_accumulate, kBlock},
+        {"adam_update", (const void*)adam_update, kBlock},
+        {"softmax_rows", (const void*)softmax_rows, kBlock},
+    };
+
+    const double warps_per_sm = prop.maxThreadsPerMultiProcessor / 32.0;
+
+    for (const Probe& probe : probes) {
+        cudaFuncAttributes attr{};
+        if (cudaFuncGetAttributes(&attr, probe.fn) != cudaSuccess) continue;
+
+        int blocks = 0;
+        if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks, probe.fn, probe.block_threads,
+                                                          0) != cudaSuccess) {
+            continue;
+        }
+
+        KernelOccupancy row;
+        row.name = probe.name;
+        row.block_threads = probe.block_threads;
+        row.registers = attr.numRegs;
+        row.shared_bytes = attr.sharedSizeBytes;
+        row.blocks_per_sm = blocks;
+        row.occupancy = (blocks * probe.block_threads / 32.0) / warps_per_sm;
+        row.limiter = what_binds(prop, attr, probe.block_threads, blocks);
+        out.push_back(row);
+    }
+    // The error state is not the caller's problem, but a failed query would
+    // otherwise look like a kernel that does not exist.
+    cudaGetLastError();
+    return out;
+}
+
 }  // namespace ops
+
+// The public entry point. The body is in ops:: because that is the only scope
+// that can take the address of a kernel in this file's anonymous namespace.
+std::vector<KernelOccupancy> kernel_occupancy() {
+    return ops::occupancy_report();
+}
+
 }  // namespace cuda
 }  // namespace engine

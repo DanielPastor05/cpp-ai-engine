@@ -27,8 +27,8 @@ No dependencies. No BLAS. The point is to implement it, not to call it.
 | "Token after the marker" | **99.3%** (Transformer) | 17.5% (mean pooling) | chance is 16.7% |
 | **Gradient agreement with PyTorch** | **~1e-7** | — | 23 fixtures, single ops to full blocks |
 | MNIST training on 4 cores | **1.78×** (329 s vs 587 s) | 1 core | identical loss to the last digit |
-| MNIST training on the GPU | **5.47×** (4.3 s vs 23.5 s) | same binary, CUDA off | RTX 3060 Ti, 2k subset, same loss curve, stock settings |
-| The same run against PyTorch | **2.24× slower** (4.7 s vs 2.1 s) | PyTorch 2.11 + cuDNN, same card | fp32 both sides, TF32 off; [why](docs/PERFORMANCE.md#against-pytorch-on-the-same-card-which-is-the-number-that-counts) |
+| MNIST training on the GPU | **6.03×** (4.0 s vs 24.1 s) | same binary, CUDA off | RTX 3060 Ti, 2k subset, same loss curve, stock settings |
+| The same run against PyTorch | **1.90× slower** (4.0 s vs 2.1 s) | PyTorch 2.11 + cuDNN, same card | fp32 both sides, TF32 off; [why](docs/PERFORMANCE.md#against-pytorch-on-the-same-card-which-is-the-number-that-counts) |
 | …and on the CPU | 4.55× slower (24.1 s vs 5.3 s) | PyTorch on oneDNN | no BLAS here, by design — and on 12 threads against its 6 |
 | matmul 512³ on 4 cores | **3.08×** | 1 core | bit-identical regardless of thread count |
 
@@ -37,13 +37,13 @@ starts succeeding, the experiment is broken — not the model.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/mnist-vs-pytorch-dark.svg">
-  <img alt="MNIST training time: this engine against PyTorch, on CPU and on CUDA. The engine takes 24.1 s on CPU against PyTorch's 5.30, and 4.70 s on CUDA against PyTorch's 2.10." src="docs/img/mnist-vs-pytorch.svg">
+  <img alt="MNIST training time: this engine against PyTorch, on CPU and on CUDA. The engine takes 24.1 s on CPU against PyTorch's 5.30, and 4.00 s on CUDA against PyTorch's 2.10." src="docs/img/mnist-vs-pytorch.svg">
 </picture>
 
 **The engine loses to PyTorch, and that is the number worth publishing.** "5.5×
 faster on the GPU than on the CPU" does not say the GPU path is fast — it says
 the CPU path is slow. Measured against a framework anyone can install, on the
-same card and the same model: 2.24× behind, and
+same card and the same model: 1.90× behind, and
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md#against-pytorch-on-the-same-card-which-is-the-number-that-counts)
 takes the gap apart with a profiler. About half of it is cuDNN choosing Winograd
 for the 3×3 convolutions, which is an algorithm this engine does not implement.

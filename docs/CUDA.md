@@ -246,7 +246,7 @@ is inside the timed region:
 
 **46.5% of peak, 1.21× behind cuBLAS** for the best hand-written kernel. On a
 single matrix product, which is the flattering comparison — end to end on MNIST
-the engine is **2.24× behind PyTorch**, and
+the engine is **1.90× behind PyTorch**, and
 [docs/PERFORMANCE.md](PERFORMANCE.md#against-pytorch-on-the-same-card-which-is-the-number-that-counts)
 takes that gap apart. A kernel close to cuBLAS does not make a framework close
 to PyTorch, and saying only the first would be choosing the number. The

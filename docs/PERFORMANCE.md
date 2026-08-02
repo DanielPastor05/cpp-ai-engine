@@ -361,6 +361,45 @@ no host memory at all.
 | + three kernel parallelism fixes | 32.2 ms |
 | + lazy host mirror | **9.99 ms** |
 
+### The allocator was giving the memory back
+
+Extending the roofline from the one matrix product to the other twenty-five
+kernels — `bench/bench_kernels.cpp` — produced a table where every element-wise
+operation ran at 9–13% of the card's bandwidth. Six kernels that simple cannot
+all be bad.
+
+They were not. A 16.7M-value addition took 3.5 ms of wall clock around a kernel
+`nsys` times at **0.48 ms**: 200 MB moved in 0.48 ms is 417 GB/s, **93% of the
+card's 448**. The kernel was near perfect and three milliseconds were going
+somewhere else, at a size where a fixed overhead should not have mattered.
+
+`cudaMemPoolAttrReleaseThreshold` defaults to **zero**, which means *hand every
+free block back to the operating system at the next synchronisation*. An engine
+synchronises to read a result, so every output buffer was being returned to the
+driver and re-acquired on the next operation — a cost that grows with the buffer,
+which is why it hid at small sizes and dominated at 64 MiB.
+
+Setting it to never-release:
+
+| 16.7M-value addition | |
+|---|---|
+| before | 3.50 ms |
+| after | **0.503 ms** |
+| the kernel itself, from `nsys` | 0.480 ms |
+
+The engine's share of the operation went from 3 ms to **23 µs**, and the
+element-wise rows went from 40 GB/s to 400 — 89% of peak. MNIST went from 4.7 s
+to 4.0.
+
+Two things about this are worth more than the speedup. The first is that a
+comment in `src/cuda/runtime.cu` had already tried this and recorded it as worth
+6% and not worth setting; that measurement never synchronised between
+iterations, so the block was never released and there was nothing for the
+threshold to change. **The benchmark was measuring a case the engine never
+runs.** The second is that the bad table is what found it: publishing "9% of
+peak" for six kernels was so obviously wrong that it had to be chased, and a
+single roofline for a single matmul had hidden it for the whole project.
+
 ### The thresholds could not express the thing that mattered
 
 One more measurement, and it undid a premise the engine had carried since the
@@ -421,23 +460,29 @@ twelve is genuinely its better configuration and the row is its best number.
 |---|---|---|---|
 | engine, CPU (12 threads) | 24.1 s | — | **4.55×** |
 | PyTorch, CPU (6 threads) | 5.30 s | — | — |
-| engine, CUDA | 4.70 s | 1.53 ms | **2.24×** |
+| engine, CUDA | 4.0 s | 1.53 ms | **1.90×** |
 | **PyTorch, fp32** | **2.10 s** | **0.65 ms** | — |
-| PyTorch, TF32 | 1.90 s | — | 2.47× |
+| PyTorch, TF32 | 1.90 s | — | 2.11× |
 
-**The engine is 2.24× slower than PyTorch on the GPU**, and 2.47× slower than
-PyTorch as anyone would actually run it. That is the honest headline, and it is
-a better one than the CPU comparison because it can be checked.
+**The engine is 1.90× slower than PyTorch on the GPU.** That is the honest
+headline, and it is a better one than the CPU comparison because it can be
+checked.
+
+The CUDA row was 2.24× when this section was first written. What closed the gap
+is one attribute on the memory pool, and it is written up under "The allocator
+was giving the memory back" below — the analysis of *where* the remaining time
+goes was done at 4.7 s and holds, since the fix removed host cost and touched no
+kernel.
 
 The CPU row is the more uncomfortable one — **4.55× behind** — and it is worth
 putting next to the other because of what the pair says. PyTorch's CPU path is
 oneDNN with hand-written AVX kernels; this engine has no BLAS by design and
 leans on the autovectoriser, and it pays 4.55× for that. Its CUDA path, written
-from nothing against the same cuDNN it is being measured against, pays 2.24×.
+from nothing against the same cuDNN it is being measured against, pays 1.90×.
 **The hand-written kernels closed more of the gap than the hand-written CPU code
 did**, which is not the result I expected to be able to write down.
 
-Where the 2.24× goes, from `nsys` on both:
+Where the gap goes, from `nsys` on both:
 
 **Roughly half of it is one algorithm the engine does not have.** PyTorch's
 profile is led by `_5x_cudnn_ampere_scudnn_winograd_128x128` — cuDNN picking a
@@ -454,7 +499,7 @@ engine spends 1.53 ms of a 9.16 ms step inside kernels — **17%**. PyTorch spen
 batch 64 is a workload where dispatch overhead dominates arithmetic for
 *everybody*, and the framework with the leaner Python-to-kernel path wins. That
 the engine, written from scratch in a weekend's worth of sessions, sits within
-2.24× of that is the real result — not the 5.5×.
+1.90× of that is the real result — not the 6×.
 
 One engine kernel stands out as addressable rather than algorithmic:
 `grad_accumulate` is 13.5% of GPU time across **1 501 launches per 100 steps**,

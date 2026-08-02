@@ -110,6 +110,31 @@ struct Context {
         cudaDeviceGetAttribute(&pools, cudaDevAttrMemoryPoolsSupported, 0);
         memory_pools = (pools != 0);
 
+        // The pool's release threshold defaults to **zero**, which means "give
+        // every free block back to the operating system at the next
+        // synchronisation". An engine that synchronises to read a result -- which
+        // is every engine -- therefore re-acquires each output buffer from the
+        // driver on every operation, and that cost grows with the buffer.
+        //
+        // Measured on a 16.7M-value addition: 3.5 ms of wall clock around a
+        // kernel that nsys times at 0.48 ms. The kernel is at 93% of the card's
+        // bandwidth; the other 3 ms was the allocator handing 64 MiB back and
+        // asking for it again, twenty times a second.
+        //
+        // UINT64_MAX means never release. The pool still bounds itself -- it
+        // reuses rather than grows -- and freeing the context at exit returns
+        // everything. An earlier note here recorded that raising this to 512 MiB
+        // was worth only 6%; that measurement did not synchronise between
+        // iterations, so the block was never released and there was nothing for
+        // the threshold to change.
+        if (memory_pools) {
+            cudaMemPool_t pool = nullptr;
+            if (cudaDeviceGetDefaultMemPool(&pool, 0) == cudaSuccess) {
+                uint64_t never_release = UINT64_MAX;
+                cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold, &never_release);
+            }
+        }
+
         usable = true;
 
         // ENGINE_CUDA=0 turns the backend off without recompiling, to compare against
@@ -299,12 +324,18 @@ void note_kernel_failed() {
 //
 // The pool the driver already keeps behind cudaMallocAsync returns the block to
 // a free list instead of to the system, and the next allocation of the same size
-// reuses it: the same 3.64 ms drops to 0.60. No custom allocator is needed for
-// this.
+// reuses it. No custom allocator is needed for this.
 //
-// The pool's release threshold (cudaMemPoolAttrReleaseThreshold) is left at its
-// default deliberately: raising it to 512 MiB gave 0.599 ms against 0.638, a 6%
-// that justifies neither the tuning nor a knob to configure it.
+// It only reuses the block if the pool is allowed to keep it, which by default
+// it is not -- see the release threshold set in Context(). That one attribute
+// took the same 16.7M addition from 3.5 ms to 0.50, against a kernel nsys times
+// at 0.48: the engine's share of the operation went from 3 ms to 23 us.
+//
+// This paragraph used to say the threshold was worth 6% and not worth setting.
+// That measurement never synchronised between iterations, so the block was
+// never released and there was nothing for the threshold to change. The
+// benchmark it came from was measuring the wrong thing, which is the whole
+// reason bench/bench_kernels.cpp now measures at two sizes.
 //
 // The whole engine launches on the default stream, so the stream order
 // cudaFreeAsync respects is the same one the memory was used in.

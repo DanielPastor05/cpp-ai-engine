@@ -139,7 +139,7 @@ def chart_vs_pytorch(p):
     # better configuration here, 23.9 s against 27.0 at six. So it ran on twice
     # the threads and still lost by 4.55x, and the label should say so.
     rows = [("CPU", "engine 12 threads, PyTorch 6", 24.1, 5.30),
-            ("CUDA", "RTX 3060 Ti", 4.70, 2.10)]
+            ("CUDA", "RTX 3060 Ti", 4.00, 2.10)]
     w, x0, plot_w = 760, 210, 460
     y = PLOT_TOP + 14
     body = [gridlines(x0, plot_w, PLOT_TOP, y + len(rows) * 74 - 10, 25, [0, 5, 10, 15, 20, 25], p, " s")]

@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 namespace engine {
 namespace cuda {
@@ -80,6 +81,36 @@ void reset_kernel_counters();
 double peak_fp32_gflops();
 // Memory clock x 2 (double data rate) x bus width.
 double peak_bandwidth_gbs();
+
+// ---------------------------------------------------------
+// What each kernel costs the scheduler.
+//
+// Registers per thread and static shared memory decide how many blocks fit on
+// an SM at once, and that decides how much latency the hardware can hide. It is
+// the first thing anybody asks about a CUDA kernel and this engine could not
+// answer it: `ncu` reports it, and `ncu` needs administrator rights for its
+// performance counters, which stopped the question being asked here at all.
+//
+// It does not need them. cudaFuncGetAttributes and
+// cudaOccupancyMaxActiveBlocksPerMultiprocessor are plain runtime calls, and
+// between them they give the whole static picture. What they cannot give is the
+// *achieved* occupancy -- whether the blocks that fit are actually resident,
+// which depends on the launch's grid and on what else is running. This is the
+// ceiling, and a kernel far below its ceiling is a different problem from one
+// whose ceiling is low.
+//
+// Empty without CUDA, or without a device.
+// ---------------------------------------------------------
+struct KernelOccupancy {
+    std::string name;
+    int block_threads = 0;     // the block size this kernel is launched with
+    int registers = 0;         // per thread
+    size_t shared_bytes = 0;   // static shared memory per block
+    int blocks_per_sm = 0;     // how many fit at once
+    double occupancy = 0.0;    // resident warps as a fraction of the SM's maximum
+    const char* limiter = "";  // what runs out first: registers, shared memory, blocks
+};
+std::vector<KernelOccupancy> kernel_occupancy();
 
 // ---------------------------------------------------------
 // Matrix product variants.
