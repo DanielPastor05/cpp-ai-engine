@@ -56,41 +56,37 @@ for the 3×3 convolutions, which is an algorithm this engine does not implement.
 **Gradients are validated against PyTorch, not just against themselves.**
 Numerical gradient checking proves internal consistency; it does not catch a
 convention that is wrong in both the forward and the backward pass.
-`tools/generate_reference.py` builds the same computation in PyTorch, dumps
-inputs, weights, outputs and gradients into the engine's own binary format, and
-`tests/test_reference.cpp` replays them. Coverage runs from `matmul` up to a
-complete `TransformerBlock` with all 16 of its parameters, and a 10-step Adam
-trajectory. Everything agrees to ~1e-7. The fixtures are committed, so CI checks
-them without needing Python.
+`tools/generate_reference.py` builds the same computation in PyTorch and
+`tests/test_reference.cpp` replays it, from `matmul` up to a complete
+`TransformerBlock` and a 10-step Adam trajectory. Everything agrees to ~1e-7, and
+the fixtures are committed so CI needs no Python.
 
-**Performance work is measured, and the measurements sometimes disagreed with
-me.** A micro-benchmark said removing a branch from `matmul` would give 1.7×;
-removing it made the Transformer 12% *slower*, because the matrices reaching it
-are ReLU outputs that are half zeros. Both results are in
-[docs/PERFORMANCE.md](docs/PERFORMANCE.md), including the optimisations I
-measured and discarded.
+**Performance work is measured, and the measurements often disagreed with me.** A
+micro-benchmark said removing a branch from `matmul` would give 1.7×; removing it
+made the Transformer 12% *slower*, because the matrices reaching it are ReLU
+outputs that are half zeros. The same micro-benchmark later argued for register
+tiling, which was 2.6× on dense matrices and 4% slower end to end, for the same
+reason. Both are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md) with the
+optimisations I measured and discarded.
 
-**Multi-threading that does not change the answer.** `matmul` and the
-element-wise operators split across a persistent thread pool, and the split is
-by output row — so the accumulation order never changes and results are
-**identical bit for bit** whatever the thread count. The first attempt at this
-made the examples *slower*; the thresholds are derived from a measured 7.8 µs
-dispatch cost. Set with `ENGINE_NUM_THREADS` or `parallel::set_num_threads`.
+**Multi-threading that does not change the answer.** The split is by output row,
+so the accumulation order never changes and results are **identical bit for bit**
+whatever the thread count. The first attempt made the examples *slower*; the
+thresholds come from a measured 7.8 µs dispatch cost.
 
-**A GPU backend that does not fork the codebase.** Every CUDA operation returns
-a `bool` — *true if it took the work*. False means no device, or a size where
-the GPU would lose to one CPU core, and the caller falls through to the existing
-path. So `src/tensor.cpp` gained one condition per operation, not a second
-implementation. `Storage` keeps a host buffer and a lazily-synced device mirror,
-so a chain of operations stays on the GPU and only comes back when the program
-reads a value — asserted by counting transfers, not assumed.
+**A GPU backend that does not fork the codebase.** Every CUDA operation returns a
+`bool` — *true if it took the work* — so `src/tensor.cpp` gained one condition
+per operation, not a second implementation. `Storage` keeps a host buffer and a
+lazily-synced device mirror, so a chain stays on the GPU and only comes back when
+the program reads a value, asserted by counting transfers rather than assumed.
 [docs/CUDA.md](docs/CUDA.md).
 
 **Real bugs, found and fixed.** A `shared_ptr` cycle that leaked the entire
 computation graph. A repeated `backward()` that multiplied gradients. A heap
-overflow that AddressSanitizer caught and every test missed. Each is written up
-with symptom, diagnosis and fix in [docs/ENGINEERING.md](docs/ENGINEERING.md),
-and each has a regression test.
+overflow AddressSanitizer caught and every test missed. Install rules that had
+never been consumed from outside the repository and were broken two ways. Each is
+written up with symptom, diagnosis and fix in
+[docs/ENGINEERING.md](docs/ENGINEERING.md), and each has a regression test.
 
 ---
 
@@ -143,85 +139,24 @@ it back up.
 
 ### What a tensor is made of
 
-Four types, and the split between them is the decision the rest of the engine
-rests on. `Storage` exists as its own type **because it was separated before the
-first kernel was written** — with a `std::vector<float>` inside `TensorImpl`
-there would have been nowhere to record that a tensor was already on the card,
-and every operation would have grown host/device branches.
-
-```mermaid
-classDiagram
-    class Tensor {
-        -shared_ptr~TensorImpl~ impl_
-        +shape() strides() size()
-        +matmul() relu() reshape()
-        +backward()
-    }
-    class TensorImpl {
-        +Storage storage
-        +vector shape
-        +vector strides
-        +bool requires_grad
-        +shared_ptr~TensorImpl~ grad
-        +vector~weak_ptr~ parents
-        +function backward_fn
-    }
-    class Storage {
-        -vector~float~ host
-        -float* device
-        -size_t count
-        -float fill
-        -bool host_valid
-        -bool device_valid
-        +host()
-        +device()
-        +device_write()
-    }
-    Tensor --> TensorImpl : shared handle, copies alias
-    TensorImpl --> Storage : owns
-    TensorImpl ..> TensorImpl : parents, weak_ptr
-```
-
-Three things this picture is the shortest way to say:
-
-**`Tensor` is a handle.** Copying one shares the data, the gradient and the
-history. That is what lets a `backward_fn` capture its inputs by value without
-copying a megabyte, and it is why `Storage`'s copy constructor deep-copies while
-sharing has to be asked for by name — a captured input that changed under a
-closure would be a very quiet bug.
-
-**The parent edges are `weak_ptr`.** A graph node holds its parents, and a
-parameter holds its gradient, which holds the node that produced it: a cycle,
-and one that leaked the entire computation graph until it was found. The write-up
-is in [docs/ENGINEERING.md](docs/ENGINEERING.md).
-
-**`Storage` describes its buffer before it allocates it.** `count` and `fill`
-say what the values are; the host vector is built on first host access and the
-device pointer on first device use. A tensor that only ever passes through
-kernels allocates no host memory at all — which was worth 20 ms of a 32 ms
-training step.
+Four types — `Tensor` (a handle: copying shares data, gradient and history),
+`TensorImpl` (the graph node, whose parent edges are `weak_ptr` because holding
+them strongly leaked the entire graph until it was found), `Storage` (the buffer
+and its device mirror) and the gradient. `Storage` is its own type **because it
+was separated before the first kernel was written**: with a `std::vector<float>`
+inside `TensorImpl` there would have been nowhere to record that a tensor was
+already on the card. The class diagram and the reasoning are in
+[docs/DESIGN.md](docs/DESIGN.md); the bug is in
+[docs/ENGINEERING.md](docs/ENGINEERING.md).
 
 [**API reference**](https://danielpastor05.github.io/cpp-ai-engine/), generated
 from these headers on every push to `main`.
 
-```
-include/engine/
-  tensor.hpp       Tensor (handle) + N-dimensional operations
-  autograd.hpp     backward(), NoGradGuard
-  nn.hpp           Module, Linear, activations, Dropout, Sequential, losses
-  conv.hpp         im2col/col2im, Conv2d, MaxPool2d, Flatten
-  transformer.hpp  LayerNorm, Embedding, attention, MultiHeadAttention, blocks
-  optim.hpp        SGD, Adam, gradient clipping, LR schedulers
-  parallel.hpp     Deterministic multi-threading over the hot loops
-  cuda.hpp         CUDA backend: kernel selection, thresholds, transfer accounting
-  serialize.hpp    Save and load weights
-  data.hpp         IDX/MNIST reader
-examples/          Six runnable demos, one per phase plus MNIST
-tests/             530 checks across nine translation units + PyTorch fixtures
-bench/             Reproducible performance benchmarks, incl. an isolated
-                   matmul harness meant to be handed to Nsight Compute
-tools/             PyTorch fixture generator, MNIST downloader
-```
+`include/engine/` carries ten headers — `tensor`, `autograd`, `nn`, `conv`,
+`transformer`, `optim`, `parallel`, `cuda`, `serialize`, `data` — and the
+reference above indexes every one. `examples/` has six runnable demos, `tests/`
+530 checks across nine units plus the PyTorch fixtures, `bench/` the reproducible
+benchmarks including an isolated matmul harness for Nsight Compute.
 
 Design decisions and their trade-offs: **[docs/DESIGN.md](docs/DESIGN.md)**.
 The CUDA backend: **[docs/CUDA.md](docs/CUDA.md)**.
@@ -230,37 +165,6 @@ Profiling methodology: **[docs/PROFILING.md](docs/PROFILING.md)**.
 ---
 
 ## Usage
-
-### Tensors and autodiff
-
-```cpp
-#include "engine/tensor.hpp"
-using engine::Tensor;
-
-Tensor a({1}, {2.0f}, /*requires_grad=*/true);
-Tensor b({1}, {3.0f}, true);
-
-Tensor L = (a * b) + a.relu();   // L = a*b + relu(a)
-L.backward();
-
-a.grad().data()[0];   // 4.0  ->  dL/da = b + 1
-b.grad().data()[0];   // 2.0  ->  dL/db = a
-```
-
-Implicit `backward()` is only allowed on a scalar. For any other root, supply
-the seed: `y.backward(Tensor(y.shape(), 1.0f))`.
-
-For inference, `NoGradGuard` skips graph construction entirely — about 6× less
-memory:
-
-```cpp
-{
-    engine::autograd::NoGradGuard no_grad;
-    Tensor logits = model(X);
-}
-```
-
-### Training a network
 
 ```cpp
 #include "engine/nn.hpp"
@@ -273,55 +177,29 @@ nn::Sequential model{
     nn::make<nn::ReLU>(),
     nn::make<nn::MaxPool2d>(2, 2),
     nn::make<nn::Flatten>(),
-    nn::make<nn::Dropout>(0.25f),
     nn::make<nn::Linear>(16 * 14 * 14, 10)
 };
 
 optim::Adam opt(model.parameters(), 0.001f);
-optim::CosineAnnealingLR scheduler(opt, /*epochs=*/6);
 
-for (size_t epoch = 0; epoch < 6; ++epoch) {
-    model.train();                             // Dropout active
-    for (/* each mini-batch */) {
-        opt.zero_grad();
-        Tensor loss = nn::cross_entropy_loss(model(X.select_rows(idx)), y);
-        loss.backward();
-        optim::clip_grad_norm(model.parameters(), 5.0f);
-        opt.step();
-    }
-    scheduler.step();
+opt.zero_grad();
+Tensor loss = nn::cross_entropy_loss(model(X), y);
+loss.backward();
+optim::clip_grad_norm(model.parameters(), 5.0f);
+opt.step();
 
-    model.eval();                              // Dropout off
-    float acc = nn::accuracy(model(X_test), y_test);
-}
-
-engine::save_parameters(model, "model.bin");
+engine::save_parameters(model, "model.bin");    // matched by name, shapes verified
 ```
 
-Checkpoints are matched **by name**, and shapes are verified on load: a file
-from a different model is rejected rather than silently producing a broken
-network.
+Autodiff, `NoGradGuard` for inference, LR schedulers, attention with a causal
+mask: [`examples/`](examples/) has one runnable program per area, and they are
+built and run by CI rather than pasted here. The full signatures are in the
+[API reference](https://danielpastor05.github.io/cpp-ai-engine/).
 
-### Transformers
+One thing worth saying rather than showing: **attention needed no new
+derivatives.** It composes batched `matmul`, `transpose`, `softmax` and an
+addition. What it required was generalising the tensor to N dimensions.
 
-```cpp
-#include "engine/transformer.hpp"
-
-nn::Embedding embedding(vocab, 32);
-nn::TransformerBlock block(/*d_model=*/32, /*heads=*/4, /*ff_hidden=*/64);
-Tensor pe = nn::positional_encoding(seq_len, 32);
-
-Tensor h = block(embedding(ids) + pe);         // the sum broadcasts (S, 32)
-
-Tensor mask = nn::causal_mask(seq_len);        // no position sees the future
-h = block.forward(h, &mask);
-```
-
-Attention needed **no new derivatives** — it composes batched `matmul`,
-`transpose`, `softmax` and an addition. What it required was generalising the
-tensor to N dimensions.
-
----
 
 ## Examples
 
@@ -345,16 +223,9 @@ Attention from [CLS] in the second block:
                      ^ the position containing the answer
 ```
 
----
-
-## Roadmap
-
-- [x] **Phase 1 — Tensor library** · strides, row-major indexing, cache-friendly matmul
-- [x] **Phase 2 — Autograd** · DAG, reverse mode, iterative topological sort, `NoGradGuard`
-- [x] **Phase 3 — Layers and optimisers** · `nn::Module`, SGD/Adam, schedulers, gradient clipping
-- [x] **Phase 4 — CNNs** · im2col/col2im, `Conv2d`, `MaxPool2d`, `Flatten`
-- [x] **Phase 5 — Transformers** · scaled dot-product attention, multi-head, `LayerNorm`
-- [x] **Phase 6 — CUDA backend** · host/device memory, custom kernels, shared-memory tiling
+Built in six phases — tensors, autograd, layers and optimisers, CNNs,
+Transformers, CUDA — each with its own demo above and its own write-up in
+[docs/](docs/).
 
 ---
 
@@ -378,22 +249,16 @@ stays on the device end to end. Everything else stays on the CPU, and
 [docs/CUDA.md](docs/CUDA.md) says which and why.
 
 **The kernel list is a residency decision, not a checklist.** An operation
-without one downloads its input and forces the next one to upload it again, so
-the cheap ops in the middle of a chain cost more than the expensive ones at the
-end: a `* 1/sqrt(d_k)` between two `matmul`s was a full round trip over PCIe. A
-full `TransformerBlock` step went from 29 downloads / 39 uploads to 14 / 6 once
-the scaling, the axis reordering and `reshape` stopped going through host.
+without one downloads its input and forces the next one to upload it again, so a
+`* 1/sqrt(d_k)` between two `matmul`s was a full round trip over PCIe. A
+`TransformerBlock` step went from 29 downloads / 39 uploads to 14 / 6 once the
+cheap operations in the middle stopped going through host.
 
-**The `matmul` ships as four kernels**, from a naive one to a register-tiled one,
-all of them live and individually selectable. That is not indecision — the
-progression is the result. The textbook shared-memory tiling everyone writes
-first does **1 FMA per 2 shared-memory reads**, and it is that ratio, not
-occupancy and not global traffic, that caps it. Giving each thread an 8x8 block
-of outputs in registers turns it into 64 FMAs per 16 reads. Each variant is
-parity-checked separately, because a kernel built on 128x128 blocks fails
-precisely on the shapes that are not a multiple of that.
-
-**And it is measured against cuBLAS, not against itself.** 4096³, RTX 3060 Ti,
+**The `matmul` ships as six kernels**, all live and individually selectable,
+because the progression is the result. Textbook shared-memory tiling does 1 FMA
+per 2 shared-memory reads, and that ratio — not occupancy, not global traffic —
+is what caps it; an 8×8 block of outputs per thread makes it 64 FMAs per 16
+reads. **Measured against cuBLAS, not against itself.** 4096³, RTX 3060 Ti,
 operands already resident, one process per kernel:
 
 <picture>
@@ -410,60 +275,39 @@ operands already resident, one process per kernel:
 of 5.8 over the textbook version. cuBLAS is linked into the benchmark as the
 reference row and nowhere else; the engine never calls it.
 
-**The tf32 tensor-core kernel is in there and it loses**, and the fp16 one is in
-there and does not. Both are real WMMA implementations — 128×128 tile, 8 warps,
-2×4 fragments each — and tf32 reaches 31.5% against fp32's 46.5%. The reason is
-the card, not the code: on consumer Ampere, dense tf32 tensor throughput is *the
-same* 16.2 TFLOP/s as fp32.
+**The tf32 tensor-core kernel loses and the fp16 one does not.** Both are real
+WMMA — 128×128 tile, 8 warps, 2×4 fragments each — and tf32 reaches 31.5%
+against fp32's 46.5%, because on consumer Ampere dense tf32 throughput is *the
+same* 16.2 TFLOP/s as fp32. Changing one thing, `__half` fragments stepping 16
+along K instead of 8, takes the same tile to **9 176 GFLOP/s: within 1% of
+cuBLAS.** "The famous 2× needs fp16" stops being an argument and becomes two rows
+of a table.
 
-Changing one thing — `__half` fragments stepping 16 along K instead of tf32
-stepping 8 — takes the same tile to **9 176 GFLOP/s, 1.68× the tf32 kernel and
-within 1% of cuBLAS's fp32 row.** So the claim "the famous 2× needs fp16" stops
-being an argument and becomes two rows of a table.
+Neither is selected automatically and neither trains anything: fp16 loses
+*range*, which is what loss scaling exists to manage and this engine has none.
 
-Neither is selected automatically and neither trains anything. fp16 keeps tf32's
-10 mantissa bits and loses *range* — 5 exponent bits against fp32's 8 — which is
-what loss scaling exists to manage, and this engine has none. It is a measurement
-of what the hardware does, not a mode to train in; [docs/CUDA.md](docs/CUDA.md)
-has the reasoning and the 6%-of-a-step arithmetic that says it would not pay
-here anyway.
+**And the benchmark was lying before that got sorted out.** Five kernels back to
+back in one process measures temperature as much as code — the same kernel read
+4 888 GFLOP/s inside the sweep and 7 660 on its own, a factor of 1.6, larger than
+most of the differences the table exists to show. The numbers above come from one
+process per kernel. An earlier version of this README reported the throttled
+figures as fact.
 
-**And the benchmark was lying before that got sorted out.** Running five kernels
-back to back in one process measures temperature as much as code — the same
-kernel read 4 888 GFLOP/s inside the sweep and 7 660 on its own, a factor of 1.6
-that is larger than most of the differences the table exists to show. The numbers
-above come from one process per kernel; the sweep now prints a warning saying its
-rows are not comparable to each other. An earlier version of this README reported
-the throttled figures as fact.
+**CI has no GPU**, so the kernel's index arithmetic is *replayed on the CPU* —
+same grid, same 256 threads, same shared-memory staging, same barriers, same
+index expressions — against a reference product on eleven shapes chosen for their
+remainders. That runs everywhere. On a machine with a card, parity is checked by
+computing the same expression twice, backend off and on, up to a full
+`TransformerBlock` and its backward pass; to a relative tolerance, because the
+device fuses multiply-add into one rounding where the CPU does two, and demanding
+bit-identical results would be demanding the GPU compute *worse*.
 
-```bash
-./build-cuda/bench_matmul                              # all variants, with % of peak
-ncu --set full -o p ./build-cuda/bench_matmul --kernel=register --size=2048 --iters=5
-```
+Three knobs, no recompilation: `ENGINE_CUDA=0`, `ENGINE_CUDA_MIN_FLOPS` /
+`ENGINE_CUDA_MIN_ELEMENTS` for the dispatch thresholds, and `ENGINE_CUDA_SYNC=1`
+so a fault *inside* a kernel is reported against the launch that caused it.
 
-How to profile it and which metrics actually mean something:
-**[docs/PROFILING.md](docs/PROFILING.md)**.
-
-**CI has no GPU, so the CUDA job builds the suite and runs it with the parity
-section skipping itself** — which catches a syntax error and a broken fallback, and
-nothing else. An indexing error compiles perfectly happily and shows up weeks later
-as wrong numbers. So the kernel's index arithmetic is *replayed on the CPU*: same
-block grid, same 256 threads, same shared-memory staging, same barriers, same index
-expressions, checked against a reference product on eleven shapes chosen for their
-remainders. That runs everywhere, on every push.
-
-Parity is then checked on the device by computing the same expression twice on the
-same data, once with the backend off and once on — up to a full `TransformerBlock` and its
-backward pass. The comparison is to a relative tolerance rather than bit for
-bit, because the device compiler fuses multiply and add into one FMA that rounds
-once where the CPU rounds twice. Demanding bit-identical results between CPU and
-GPU would be demanding that the GPU compute *worse*.
-
-Three knobs, no recompilation: `ENGINE_CUDA=0` turns the backend off on the same
-binary, `ENGINE_CUDA_MIN_FLOPS` / `ENGINE_CUDA_MIN_ELEMENTS` move the thresholds
-that decide when a kernel is worth launching at all, and `ENGINE_CUDA_SYNC=1`
-synchronizes after every launch so a fault *inside* a kernel is reported against
-the kernel that caused it instead of surfacing at the next `cudaMemcpy`.
+Kernel-by-kernel reasoning: **[docs/CUDA.md](docs/CUDA.md)**. How to profile it
+and which metrics mean something: **[docs/PROFILING.md](docs/PROFILING.md)**.
 
 ---
 
@@ -505,31 +349,19 @@ target_link_libraries(my_app PRIVATE engine::engine)
 Then point CMake at the prefix, either with `-DCMAKE_PREFIX_PATH=/where/you/put/it`
 or by installing somewhere already on the default search path.
 
-Two things worth knowing. **A CUDA build and a CPU build are not
-interchangeable**: `ENGINE_CUDA` is a `PUBLIC` compile definition because it
-changes `Storage`'s layout, so it has to reach your translation units too. It
-travels with the exported target, which is the point of exporting one — but it
-means the archive you link has to be the one your headers were compiled for. And
-**consuming a CUDA build needs the toolkit findable at configure time**, because
-a static archive full of unresolved `cudaMalloc` imposes the runtime on whoever
-links it; it is `cudart_static`, so nothing has to be on `PATH` when the program
-actually runs.
+**A CUDA build and a CPU build are not interchangeable** — `ENGINE_CUDA` changes
+`Storage`'s layout and travels with the exported target — and **consuming a CUDA
+build needs the toolkit findable at configure time**, because a static archive
+full of unresolved `cudaMalloc` imposes the runtime on whoever links it.
 
 This is tested rather than asserted. [`tests/package/`](tests/package/) is a
-separate CMake project that finds the installed package, links the namespaced
-alias and runs; CI installs to a prefix and consumes it on every push, once for
-the CPU build and once for the CUDA build.
-
-That job exists because the install rules had been in the repository for weeks,
-had never been consumed from outside it, and were broken twice over. The CPU
-build failed at configure: `engine` links `Threads::Threads` as `PUBLIC` and the
-generated config file never re-found it, so the error came from inside our own
-package file. The CUDA build then failed at link with 27 unresolved externals,
-because `CUDA_RUNTIME_LIBRARY Static` resolves the runtime onto the link lines
-of executables in *this* build, and a static library has no link line to export.
-Neither is visible from inside: every test here links the `engine` target that
-already exists in the same CMake scope, so the exported package is never
-involved. It took a project that had no path back to the source tree.
+separate CMake project with no path back to the source tree; CI installs to a
+prefix and consumes it on every push, once per build. The job exists because the
+install rules had been here for weeks, had never been consumed from outside, and
+were broken two ways — a `Threads::Threads` the config file never re-found, and
+27 unresolved cudart symbols a static library has no link line to export. Neither
+is visible from inside, because every test here links the `engine` target that
+already exists in the same CMake scope.
 
 ---
 
