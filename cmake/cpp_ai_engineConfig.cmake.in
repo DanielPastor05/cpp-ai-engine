@@ -1,0 +1,45 @@
+@PACKAGE_INIT@
+
+# Everything the exported target needs and does not carry itself.
+#
+# This file exists because the one-line version did not work, and nobody had
+# noticed: `engine` links Threads::Threads as PUBLIC, so the exported target
+# names it in its link interface, and a consumer that had not found Threads got
+#
+#   The link interface of target "engine::engine" contains: Threads::Threads
+#   but the target was not found.
+#
+# at configure time, from inside our own config file. The install rules had been
+# in the repository for weeks and had never been consumed from outside it, which
+# is the only way this class of bug shows up.
+#
+# find_dependency rather than find_package: it forwards REQUIRED and QUIET from
+# the caller's find_package(cpp_ai_engine ...) and sets the package as not-found
+# rather than erroring out, which is what a config file is supposed to do.
+include(CMakeFindDependencyMacro)
+
+find_dependency(Threads)
+
+# Whether the installed archive was built with the CUDA backend. Substituted at
+# configure time, so it describes the build that produced *this* file rather
+# than whatever the consumer happens to have.
+set(cpp_ai_engine_CUDA @ENGINE_CUDA@)
+
+if(cpp_ai_engine_CUDA)
+    # `engine` is a static library containing unresolved cudart symbols, so the
+    # runtime is a PUBLIC link dependency and lands in the exported link
+    # interface as CUDA::cudart_static -- a target that does not exist until
+    # someone finds the toolkit. Without this a consumer got 27 unresolved
+    # externals; the CPU build has no such dependency and does not pay for it.
+    find_dependency(CUDAToolkit)
+endif()
+
+# One thing this file cannot check for you. A CUDA build exports ENGINE_CUDA as
+# a PUBLIC compile definition because the macro changes Storage's layout, and it
+# travels in the targets file below -- so a consumer of a CUDA build gets it
+# automatically and the two builds are not interchangeable. If you have both
+# installed, point CMAKE_PREFIX_PATH at exactly one.
+
+include("${CMAKE_CURRENT_LIST_DIR}/cpp_ai_engineTargets.cmake")
+
+check_required_components(cpp_ai_engine)

@@ -502,6 +502,35 @@ find_package(cpp_ai_engine REQUIRED)
 target_link_libraries(my_app PRIVATE engine::engine)
 ```
 
+Then point CMake at the prefix, either with `-DCMAKE_PREFIX_PATH=/where/you/put/it`
+or by installing somewhere already on the default search path.
+
+Two things worth knowing. **A CUDA build and a CPU build are not
+interchangeable**: `ENGINE_CUDA` is a `PUBLIC` compile definition because it
+changes `Storage`'s layout, so it has to reach your translation units too. It
+travels with the exported target, which is the point of exporting one — but it
+means the archive you link has to be the one your headers were compiled for. And
+**consuming a CUDA build needs the toolkit findable at configure time**, because
+a static archive full of unresolved `cudaMalloc` imposes the runtime on whoever
+links it; it is `cudart_static`, so nothing has to be on `PATH` when the program
+actually runs.
+
+This is tested rather than asserted. [`tests/package/`](tests/package/) is a
+separate CMake project that finds the installed package, links the namespaced
+alias and runs; CI installs to a prefix and consumes it on every push, once for
+the CPU build and once for the CUDA build.
+
+That job exists because the install rules had been in the repository for weeks,
+had never been consumed from outside it, and were broken twice over. The CPU
+build failed at configure: `engine` links `Threads::Threads` as `PUBLIC` and the
+generated config file never re-found it, so the error came from inside our own
+package file. The CUDA build then failed at link with 27 unresolved externals,
+because `CUDA_RUNTIME_LIBRARY Static` resolves the runtime onto the link lines
+of executables in *this* build, and a static library has no link line to export.
+Neither is visible from inside: every test here links the `engine` target that
+already exists in the same CMake scope, so the exported package is never
+involved. It took a project that had no path back to the source tree.
+
 ---
 
 ## API stability

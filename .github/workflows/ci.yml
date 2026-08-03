@@ -155,6 +155,22 @@ jobs:
       - name: Run the tests (no GPU, so parity is skipped)
         run: ctest --test-dir build --output-on-failure
 
+      # The packaging job below covers the CPU build, and would never have found
+      # this: `engine` is a static library, so CUDA_RUNTIME_LIBRARY Static
+      # governs how it compiles but resolves cudart only onto the link line of
+      # executables inside this build. The exported archive shipped with cudart
+      # unresolved and no usage requirement saying so -- a consumer of the
+      # installed CUDA build got 27 unresolved externals, from
+      # cudaDeviceSynchronize down. It needs no GPU to catch: the failure was at
+      # link time, which is exactly what this runner can do.
+      - name: Install and consume the CUDA build from outside
+        run: |
+          cmake --install build --prefix "$PWD/_prefix"
+          cmake -B _consumer -S tests/package -DCMAKE_PREFIX_PATH="$PWD/_prefix" \
+                -DCMAKE_BUILD_TYPE=Release
+          cmake --build _consumer --parallel
+          ./_consumer/package_test
+
   debug:
     name: Linux / Debug
     runs-on: ubuntu-latest
@@ -173,6 +189,50 @@ jobs:
 
       - name: Run the tests
         run: ctest --test-dir build --output-on-failure
+
+  package:
+    name: Linux / install and consume from outside
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The install rules had been in the repository for weeks, were never
+      # consumed from outside it, and were broken: `engine` links
+      # Threads::Threads as PUBLIC, so the exported target names it in its link
+      # interface, and the generated config file never re-found it. Every
+      # consumer got a configure-time error from inside our own package file.
+      #
+      # Nothing already in CI could have found that. The tests link the `engine`
+      # target that exists in the same CMake scope, so the exported package is
+      # never involved. Only a separate project, configured against an install
+      # prefix, with no path back to the source tree, exercises it -- which is
+      # exactly what this job is.
+      - name: Build
+        run: |
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+
+      - name: Install to a prefix
+        run: cmake --install build --prefix "$PWD/_prefix"
+
+      # Deliberately no -DCMAKE_PREFIX_PATH pointing anywhere near the build
+      # tree, and a source directory that contains only a CMakeLists.txt and a
+      # main.cpp. If find_package resolves here it resolved through the
+      # installed package, and nothing else.
+      - name: Configure a consumer against the installed package
+        run: >
+          cmake -B _consumer -S tests/package
+          -DCMAKE_PREFIX_PATH="$PWD/_prefix"
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build the consumer
+        run: cmake --build _consumer --parallel
+
+      # Run, not just build: a compile-and-link check would pass even if
+      # ENGINE_CUDA stopped travelling with the exported target, and that
+      # particular breakage corrupts memory rather than failing to link.
+      - name: Run the consumer
+        run: ./_consumer/package_test
 
   fuzz:
     name: Linux / fuzz the weight parser

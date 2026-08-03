@@ -143,6 +143,35 @@ find_package(cpp_ai_engine REQUIRED)
 target_link_libraries(mi_app PRIVATE engine::engine)
 ```
 
+Luego apunta CMake al prefijo con `-DCMAKE_PREFIX_PATH=/donde/lo/pusiste`.
+
+Dos cosas que conviene saber. **Una compilación con CUDA y una sin CUDA no son
+intercambiables**: `ENGINE_CUDA` es una definición `PUBLIC` porque cambia la
+disposición de `Storage`, así que tiene que llegar también a tus unidades de
+traducción. Viaja con el target exportado, que es para lo que sirve exportar
+uno. Y **consumir una compilación con CUDA necesita el toolkit localizable al
+configurar**, porque un archivo estático lleno de `cudaMalloc` sin resolver le
+impone el runtime a quien lo enlace; es `cudart_static`, así que en tiempo de
+ejecución no hace falta nada en el `PATH`.
+
+Esto está probado, no afirmado. [`tests/package/`](tests/package/) es un
+proyecto CMake aparte que encuentra el paquete instalado, enlaza el alias con
+espacio de nombres y se ejecuta; CI instala en un prefijo y lo consume en cada
+push, una vez con CUDA y otra sin.
+
+Ese job existe porque las reglas de instalación llevaban semanas en el
+repositorio, nadie las había consumido desde fuera, y estaban mal por partida
+doble. La compilación sin CUDA fallaba al configurar: `engine` enlaza
+`Threads::Threads` como `PUBLIC` y el fichero de configuración generado nunca lo
+volvía a buscar, así que el error salía de nuestro propio paquete. La de CUDA
+fallaba después al enlazar, con 27 símbolos sin resolver, porque
+`CUDA_RUNTIME_LIBRARY Static` resuelve el runtime en la línea de enlace de los
+ejecutables de *esta* compilación, y una biblioteca estática no tiene línea de
+enlace que exportar. Ninguno de los dos se ve desde dentro: todos los tests de
+aquí enlazan el target `engine` que ya existe en el mismo ámbito de CMake, así
+que el paquete exportado nunca interviene. Hizo falta un proyecto sin ningún
+camino de vuelta al árbol de fuentes.
+
 ---
 
 ## 📖 Uso

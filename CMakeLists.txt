@@ -79,6 +79,23 @@ if(ENGINE_CUDA)
     # what gives clean output. It also stops the binary depending on the right
     # cudart being on PATH.
     set_target_properties(engine PROPERTIES CUDA_RUNTIME_LIBRARY Static)
+
+    # And the property above is not enough for anyone outside this build.
+    #
+    # CUDA_RUNTIME_LIBRARY governs how `engine` is *compiled*, and CMake resolves
+    # the runtime onto the link line of whatever executable links it -- which is
+    # why every target in this file links cleanly. But `engine` is a STATIC
+    # library: it has no link line of its own, so the archive ships with cudart
+    # symbols unresolved and that resolution is not part of what gets exported.
+    # A consumer of the installed CUDA build got 27 unresolved externals,
+    # starting at cudaDeviceSynchronize.
+    #
+    # PUBLIC is the fix and is also the honest description: an archive with
+    # undefined cudaMalloc in it genuinely does impose the runtime on whoever
+    # links it. Static so a consumer needs no toolkit on PATH at run time,
+    # matching the property above.
+    find_package(CUDAToolkit REQUIRED)
+    target_link_libraries(engine PUBLIC CUDA::cudart_static)
 endif()
 
 # The warnings are for the host compiler: nvcc does not understand these flags.
@@ -189,8 +206,16 @@ write_basic_package_version_file(
     VERSION ${PROJECT_VERSION}
     COMPATIBILITY SameMajorVersion)
 
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/cpp_ai_engineConfig.cmake"
-     "include(\"\${CMAKE_CURRENT_LIST_DIR}/cpp_ai_engineTargets.cmake\")\n")
+# From a template rather than a file(WRITE) one-liner, and the difference was a
+# real bug. The one-liner only included the targets file; `engine` links
+# Threads::Threads as PUBLIC, so a consumer that had not found Threads itself
+# failed at configure time from inside our own config file. Nobody had seen it
+# because the install rules had never been consumed from outside this
+# repository -- which is what the packaging job in CI now does on every push.
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cpp_ai_engineConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/cpp_ai_engineConfig.cmake"
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cpp_ai_engine)
 
 install(FILES
         "${CMAKE_CURRENT_BINARY_DIR}/cpp_ai_engineConfig.cmake"

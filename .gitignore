@@ -1,5 +1,10 @@
 # CMake build directories and binaries
 build*/
+# The install prefix and the consumer build from the packaging test, which are
+# produced by hand locally and fresh in CI. tests/package/ itself IS committed:
+# it is the test.
+_prefix/
+_consumer/
 bin/
 out/
 .vs/
