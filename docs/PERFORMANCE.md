@@ -583,11 +583,17 @@ and 1.21× in its own table, forty lines apart, for weeks.
 
 `docs/performance.json` is now the source, and two checks read it.
 
-**`tools/check_claims.py` runs in CI and blocks.** Every claim must appear in each
+**`tools/claimcheck.py` runs in CI and blocks.** Every claim must appear in each
 file that cites it; no retired number may appear anywhere except where the
 retraction is deliberate and registered; and a ratio must equal the two numbers
 it comes from. It measures nothing — text against data on a checkout, so there is
 nothing in it to flake.
+
+It started here and now lives on its own at
+[claimcheck](https://github.com/DanielPastor05/claimcheck), because the idea
+turned out to be more general than the engine: any project that publishes
+measured numbers in more than one file has this problem. The copy in `tools/` is
+vendored, one standard-library file, so CI needs no network.
 
 **`tools/check_perf.py` re-runs the benchmarks** and compares them against the
 same file. It is deliberately *not* in CI: a shared virtualised runner with no

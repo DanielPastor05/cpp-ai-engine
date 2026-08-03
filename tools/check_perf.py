@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Re-runs the benchmarks and compares them against docs/performance.json.
 
-The other half of tools/check_claims.py. That one proves the documents agree
+The other half of tools/claimcheck.py. That one proves the documents agree
 with each other; this one proves they agree with the machine.
 
 **It is deliberately not in CI**, and the reason is worth stating rather than
@@ -196,7 +196,7 @@ def main():
         for d in drifted:
             print(f"  {d}")
         print("\nIf it is real: update docs/performance.json and every file that cites")
-        print("the number, then run tools/check_claims.py to find them all.")
+        print("the number, then run tools/claimcheck.py to find them all.")
         return 1
 
     print(f"{ok} claim(s) re-measured and still true.")

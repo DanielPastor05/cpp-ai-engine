@@ -244,6 +244,11 @@ jobs:
       # matches it, that no retired number has crept back in, and that a ratio
       # equals the two numbers it comes from.
       #
+      # The checker started here and now lives on its own at
+      # github.com/DanielPastor05/claimcheck. tools/claimcheck.py is a vendored
+      # copy: one standard-library file, so this job needs no network and the
+      # repository keeps its no-dependencies promise.
+      #
       # It measures nothing, on purpose. A runner here is shared, virtualised and
       # has no GPU; a timing threshold on one drifts further than the effects
       # being measured, and a performance test that fails at random teaches
@@ -251,7 +256,7 @@ jobs:
       # flake, and tools/check_perf.py does the re-measuring where the numbers
       # were taken.
       - name: Published numbers match docs/performance.json
-        run: python3 tools/check_claims.py
+        run: python3 tools/claimcheck.py --claims docs/performance.json --root .
 
   lint:
     name: Linux / clang-format + clang-tidy
