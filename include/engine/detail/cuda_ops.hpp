@@ -30,10 +30,21 @@ enum class Binary { Add, Sub, Mul, Div };
 bool binary(Binary op, const Storage& a, const Storage& b, Storage& out, size_t inner,
             size_t repeat);
 
-// out = a x b, batched. An unbatched operand (a_batched/b_batched false) is
-// reused for every matrix in the batch, exactly as on the CPU path.
+// out = a x b + beta * out, batched. An unbatched operand (a_batched/b_batched
+// false) is reused for every matrix in the batch, exactly as on the CPU path.
+//
+// `beta` is BLAS's, and beta == 0 is what every caller meant before it existed:
+// overwrite. beta == 1 accumulates, which is what lets the backward pass write a
+// gradient straight into the parameter's gradient instead of building a
+// temporary and adding it in a second kernel -- grad_accumulate was twenty
+// launches and 13.5% of GPU time per training step.
+//
+// Only the naive, tiled and register-tiled variants implement it. Split-K
+// finishes with sum_over_axis, which overwrites, and the tensor-core kernels
+// store through store_matrix_sync, which has no accumulate form; both refuse
+// beta != 0 and the caller takes the CPU path, same as any other refusal here.
 bool matmul(const Storage& a, const Storage& b, Storage& out, size_t batch, size_t rows,
-            size_t inner_dim, size_t cols, bool a_batched, bool b_batched);
+            size_t inner_dim, size_t cols, bool a_batched, bool b_batched, float beta = 0.0f);
 
 bool relu(const Storage& x, Storage& out);
 bool relu_backward(const Storage& x, const Storage& grad_out, Storage& out);

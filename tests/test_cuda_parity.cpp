@@ -17,6 +17,7 @@
 #include "test_support.hpp"
 
 #include "engine/cuda.hpp"
+#include "engine/detail/cuda_ops.hpp"
 #include "engine/transformer.hpp"
 
 #ifdef ENGINE_CUDA
@@ -239,6 +240,50 @@ void run_cuda_parity_tests() {
                 [&] { return A.matmul(B); });
 
         cuda::set_matmul_kernel(cuda::MatmulKernel::Auto);
+    }
+
+    // --- matmul with beta: accumulate instead of overwrite ---
+    //
+    // This case protects one line of the dispatch. With beta == 0 the output is
+    // taken with device_write(), which reserves the buffer **without uploading**
+    // because the kernel overwrites every element. With beta != 0 the kernel
+    // reads what is there, so the host side has to be uploaded first and the
+    // accessor must be device_mut().
+    //
+    // Getting that wrong loses the accumulated value silently, and it is
+    // invisible onto a zero destination: reading an unuploaded buffer that
+    // happens to hold zeros gives the same answer as reading a correctly
+    // uploaded one. So the destination here is **not** zero, and it is written
+    // on the host, which means the only way the device can see those values is
+    // by uploading them.
+    {
+        struct BetaCase {
+            size_t M, K, N;
+        };
+        const BetaCase beta_cases[] = {{17, 23, 31}, {64, 64, 64}, {129, 96, 130}};
+        for (const BetaCase& c : beta_cases) {
+            Tensor A(std::vector<size_t>{c.M, c.K}, 0.0f, false);
+            Tensor B(std::vector<size_t>{c.K, c.N}, 0.0f, false);
+            for (size_t i = 0; i < A.size(); ++i) A.data()[i] = 0.1f * (float)(i % 13) - 0.6f;
+            for (size_t i = 0; i < B.size(); ++i) B.data()[i] = 0.2f * (float)(i % 7) - 0.7f;
+
+            const std::string tag =
+                std::to_string(c.M) + "x" + std::to_string(c.K) + "x" + std::to_string(c.N);
+            compare("matmul beta=1 onto a non-zero destination " + tag, [&] {
+                Tensor out(std::vector<size_t>{c.M, c.N}, 0.0f, false);
+                for (size_t i = 0; i < out.size(); ++i)
+                    out.data()[i] = 0.5f * (float)(i % 5) - 1.0f;
+
+                if (!engine::cuda::ops::matmul(A.get_impl()->storage, B.get_impl()->storage,
+                                               out.get_impl()->storage, 1, c.M, c.K, c.N, true,
+                                               true, 1.0f)) {
+                    // What accumulation means, on the side that has no kernel.
+                    const Tensor product = A.matmul(B);
+                    for (size_t i = 0; i < out.size(); ++i) out.data()[i] += product.data()[i];
+                }
+                return out;
+            });
+        }
     }
 
     // --- split-K: a tall thin product, which is a convolution's weight gradient ---

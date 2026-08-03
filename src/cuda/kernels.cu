@@ -555,9 +555,35 @@ __global__ void maxpool_windows_grad(const float* __restrict__ argmax, const flo
 // rounds once instead of twice. That is why the parity test compares to a
 // tolerance rather than for exact equality.
 //
+// A note on `beta`, which three of these kernels now take.
+//
+// It is BLAS's: C = A*B + beta*C, with beta == 0 meaning "overwrite" and
+// therefore the behaviour every caller had before. It exists because the
+// backward pass was spending 13.5% of GPU time in grad_accumulate -- twenty
+// launches per training step -- writing each gradient to a fresh tensor and then
+// adding it to the parameter's gradient in a second kernel. With beta == 1 the
+// product lands in the gradient directly and both the launch and the temporary
+// go away. cuBLAS and PyTorch both take this parameter for the same reason.
+//
+// **beta != 0 changes which accessor the output needs, and getting that wrong
+// loses the gradient silently.** device_write() reserves the buffer without
+// uploading, which is correct exactly when the kernel overwrites every element;
+// with beta the kernel *reads* what is there, so the host side has to be
+// uploaded first and device_mut() is the accessor. The dispatch below picks
+// between them, and tests/test_cuda_parity.cpp checks accumulation onto a
+// **non-zero** gradient, because onto a zero one both spellings agree and the
+// bug would not show.
+//
+// Only naive, tiled and register-tiled take it. Split-K sums per-block partials
+// with sum_over_axis, which overwrites, and the tensor-core kernels store
+// through store_matrix_sync, which has no accumulate form -- both would need
+// their own work and neither is on the path this was measured for. The dispatch
+// refuses beta != 0 for them and the caller falls back, which is the same
+// contract as every other refusal in this file.
+
 __global__ void matmul_tiled(const float* __restrict__ A, const float* __restrict__ B,
                              float* __restrict__ C, int M, int K, int N, long long a_stride,
-                             long long b_stride) {
+                             long long b_stride, float beta) {
     __shared__ float As[kTile][kTile];
     __shared__ float Bs[kTile][kTile];
 
@@ -598,7 +624,8 @@ __global__ void matmul_tiled(const float* __restrict__ A, const float* __restric
     }
 
     if (row < M && col < N) {
-        C[(long long)row * N + col] = acc;
+        float* dst = C + (long long)row * N + col;
+        *dst = (beta == 0.0f) ? acc : acc + beta * *dst;
     }
 }
 
@@ -652,7 +679,7 @@ __global__ void matmul_tiled_split_k(const float* __restrict__ A, const float* _
 // times and each of B M times.
 __global__ void matmul_naive(const float* __restrict__ A, const float* __restrict__ B,
                              float* __restrict__ C, int M, int K, int N, long long a_stride,
-                             long long b_stride) {
+                             long long b_stride, float beta) {
     const long long batch = blockIdx.z;
     A += batch * a_stride;
     B += batch * b_stride;
@@ -666,7 +693,8 @@ __global__ void matmul_naive(const float* __restrict__ A, const float* __restric
     for (int k = 0; k < K; ++k) {
         acc += A[(long long)row * K + k] * B[(long long)k * N + col];
     }
-    C[(long long)row * N + col] = acc;
+    float* dst = C + (long long)row * N + col;
+    *dst = (beta == 0.0f) ? acc : acc + beta * *dst;
 }
 
 // ---------------------------------------------------------
@@ -711,7 +739,7 @@ __global__ void matmul_naive(const float* __restrict__ A, const float* __restric
 template <bool UseVector4>
 __global__ void matmul_register_tiled(const float* __restrict__ A, const float* __restrict__ B,
                                       float* __restrict__ C, int M, int K, int N,
-                                      long long a_stride, long long b_stride) {
+                                      long long a_stride, long long b_stride, float beta) {
     // No alignment attribute, deliberately: nothing reads these two matrices in
     // 16-byte blocks. The vectorised load acts on **global** memory, which is
     // where the gain is; what is written and read here is scalar, so there is
@@ -834,7 +862,10 @@ __global__ void matmul_register_tiled(const float* __restrict__ A, const float* 
 #pragma unroll
         for (int j = 0; j < kTN; ++j) {
             const int col = block_col + thread_col * kTN + j;
-            if (col < N) C[(long long)row * N + col] = acc[i][j];
+            if (col < N) {
+                float* dst = C + (long long)row * N + col;
+                *dst = (beta == 0.0f) ? acc[i][j] : acc[i][j] + beta * *dst;
+            }
         }
     }
 }
@@ -1653,7 +1684,7 @@ bool binary(Binary op, const Storage& a, const Storage& b, Storage& out, size_t 
 }
 
 bool matmul(const Storage& a, const Storage& b, Storage& out, size_t batch, size_t rows,
-            size_t inner_dim, size_t cols, bool a_batched, bool b_batched) {
+            size_t inner_dim, size_t cols, bool a_batched, bool b_batched, float beta) {
     if (!enabled()) return false;
     if (batch == 0 || rows == 0 || inner_dim == 0 || cols == 0) return false;
 
@@ -1684,6 +1715,14 @@ bool matmul(const Storage& a, const Storage& b, Storage& out, size_t batch, size
     const int K = (int)inner_dim;
     const int N = (int)cols;
 
+    // The output accessor depends on beta, and this is the line the parity test
+    // for accumulation exists to protect. device_write() reserves without
+    // uploading, which is right only when the kernel overwrites every element.
+    // With beta != 0 the kernel reads C, so the host side has to be there first.
+    const auto output = [&out, beta]() {
+        return beta == 0.0f ? out.device_write() : out.device_mut();
+    };
+
     MatmulKernel choice = resolve_matmul_kernel(rows, inner_dim, cols);
 
     // If someone asked for the vectorised variant by hand on a shape that does not
@@ -1702,7 +1741,7 @@ bool matmul(const Storage& a, const Storage& b, Storage& out, size_t batch, size
     // is still silently different. Refusing sends the work to the CPU, which the
     // caller can see in the launch counters.
     if ((choice == MatmulKernel::TensorCore || choice == MatmulKernel::TensorCoreFp16) &&
-        !tensor_cores_available()) {
+        (!tensor_cores_available() || beta != 0.0f)) {
         return false;
     }
 
@@ -1729,12 +1768,12 @@ bool matmul(const Storage& a, const Storage& b, Storage& out, size_t batch, size
         const dim3 grid((unsigned)((cols + kBN - 1) / kBN), (unsigned)((rows + kBM - 1) / kBM),
                         (unsigned)batch);
         if (choice == MatmulKernel::Vectorized) {
-            matmul_register_tiled<true><<<grid, kRegBlock>>>(
-                a.device(), b.device(), out.device_write(), M, K, N, a_stride, b_stride);
+            matmul_register_tiled<true><<<grid, kRegBlock>>>(a.device(), b.device(), output(), M, K,
+                                                             N, a_stride, b_stride, beta);
             return launched_ok("matmul_vectorized", out);
         }
-        matmul_register_tiled<false><<<grid, kRegBlock>>>(
-            a.device(), b.device(), out.device_write(), M, K, N, a_stride, b_stride);
+        matmul_register_tiled<false><<<grid, kRegBlock>>>(a.device(), b.device(), output(), M, K, N,
+                                                          a_stride, b_stride, beta);
         return launched_ok("matmul_register_tiled", out);
     }
 
@@ -1744,8 +1783,8 @@ bool matmul(const Storage& a, const Storage& b, Storage& out, size_t batch, size
                     (unsigned)batch);
 
     if (choice == MatmulKernel::Naive) {
-        matmul_naive<<<grid, block>>>(a.device(), b.device(), out.device_write(), M, K, N, a_stride,
-                                      b_stride);
+        matmul_naive<<<grid, block>>>(a.device(), b.device(), output(), M, K, N, a_stride, b_stride,
+                                      beta);
         return launched_ok("matmul_naive", out);
     }
 
@@ -1754,7 +1793,8 @@ bool matmul(const Storage& a, const Storage& b, Storage& out, size_t batch, size
     // blocks this exists to manufacture.
     const int tiles_m = (M + kTile - 1) / kTile;
     const int tiles_n = (N + kTile - 1) / kTile;
-    if (batch == 1 && choice == MatmulKernel::Tiled && tiles_m * tiles_n <= 8 && K >= 4096) {
+    if (beta == 0.0f && batch == 1 && choice == MatmulKernel::Tiled && tiles_m * tiles_n <= 8 &&
+        K >= 4096) {
         // Aim for about 256 blocks: enough to fill the card, few enough that the
         // partials stay scratch rather than an allocation worth worrying about.
         int split = std::min(256 / (tiles_m * tiles_n), kMaxSplitK);
@@ -1777,8 +1817,8 @@ bool matmul(const Storage& a, const Storage& b, Storage& out, size_t batch, size
         }
     }
 
-    matmul_tiled<<<grid, block>>>(a.device(), b.device(), out.device_write(), M, K, N, a_stride,
-                                  b_stride);
+    matmul_tiled<<<grid, block>>>(a.device(), b.device(), output(), M, K, N, a_stride, b_stride,
+                                  beta);
     return launched_ok("matmul_tiled", out);
 }
 

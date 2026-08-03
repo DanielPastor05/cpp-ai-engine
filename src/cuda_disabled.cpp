@@ -132,7 +132,8 @@ namespace ops {
 bool binary(Binary, const Storage&, const Storage&, Storage&, size_t, size_t) {
     return false;
 }
-bool matmul(const Storage&, const Storage&, Storage&, size_t, size_t, size_t, size_t, bool, bool) {
+bool matmul(const Storage&, const Storage&, Storage&, size_t, size_t, size_t, size_t, bool, bool,
+            float) {
     return false;
 }
 bool scalar(const Storage&, Storage&, float, float) {
