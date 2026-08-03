@@ -167,6 +167,17 @@
           "context": "was done at 4.7 s and holds"
         }
       ]
+    },
+    {
+      "value": 1.4,
+      "was": "what -march=native was said to be worth, in 'what is deliberately not done'. Never measured on this workload: the engine was rebuilt with /arch:AVX2 and compared in alternating runs, and the two are indistinguishable inside the run-to-run spread. The matmul loop is bound by L1 traffic, not by vector width.",
+      "replaced_by": "nothing. There is no speedup to report; the entry now says so and keeps the portability argument, which was always the real reason.",
+      "documented_in": [
+        {
+          "file": "docs/PERFORMANCE.md",
+          "context": "This used to say"
+        }
+      ]
     }
   ],
   "claims": [

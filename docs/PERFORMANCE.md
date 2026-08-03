@@ -68,6 +68,50 @@ Measured on the real example rather than on synthetic data:
 | Hoisted + `restrict`, no branch | 18.7 s |
 | Hoisted + `restrict`, with branch | **15.9 s** |
 
+### The branch is also why register tiling does not pay, which took a while to see
+
+The loop above writes into `c_row[j]`, so C is loaded from memory and stored back
+on **every** iteration of `k`. For the second convolution of the MNIST model —
+`(12544 x 144) x (144 x 32)` once `im2col` is done with it — that is 144 round
+trips through C per output row, and about 1.5 memory operations per
+floating-point operation. It is the textbook reason to tile: hold a strip of C in
+registers across the whole `k` loop and touch memory once per strip.
+
+Tiling 16 columns at a time was written, and on random dense matrices it did
+exactly what the textbook says:
+
+| shape | as written | tiled by 16 |
+|---|---|---|
+| conv1 `50176x9x16` | 9.2 GFLOP/s | 13.2 |
+| conv2 `12544x144x32` | 21.2 | **55.3** |
+| linear1 `64x1568x128` | 22.0 | **52.4** |
+
+Then MNIST got **slower**: 22.7-23.2 s became 23.9-24.5 s over three alternating
+runs of each, with the loss identical to four decimals and the test accuracy
+identical to two.
+
+The reason is the branch above. On the matrices that actually arrive — ReLU
+outputs, half of them zero — the skip already avoids the round trip through C,
+because skipping the `k` iteration skips the store too. So tiling has most of its
+win already taken, and it still pays the cost it added: the `k` loop now runs
+once per tile, re-reading A and re-testing the branch `N/16` times, which for
+`linear1` is eight.
+
+Measured on half-zero inputs, which is the workload:
+
+| shape | as written | tiled by 16 |
+|---|---|---|
+| conv1 | **12.3 GFLOP/s** | 9.0 |
+| conv2 | **45.4** | 37.2 |
+| linear1 | **64.2** | 56.8 |
+
+The engine keeps the untiled loop. What is worth keeping from this is that the
+paragraph above it — *the micro-benchmark is wrong for this workload* — was
+written about removing the branch, and then caught a completely unrelated
+optimisation later, in the same way, for the same reason. The dense
+micro-benchmark was not a bad measurement; it was a measurement of a matrix this
+engine never sees.
+
 ---
 
 ## Broadcasting: 8.6× from removing a modulo
@@ -659,14 +703,58 @@ The CUDA backend, its design and how to reproduce its measurements are in
 
 ## What is deliberately not done
 
-- **No BLAS.** The point is to implement it, not to call it. `matmul` reaches
-  ~15 GFLOP/s single-threaded; a tuned BLAS does 5-10× better on this hardware.
-- **No cache tiling in `matmul`.** It would pay off on large matrices; the ones
-  this engine handles are small enough that loop order and vectorisation
-  dominate.
-- **No `-march=native`.** Worth another 1.4×, at the cost of a binary that will
-  not run on a different CPU.
+- **No BLAS.** The point is to implement it, not to call it. On the shapes the
+  MNIST model produces, `matmul` reaches 45-64 GFLOP/s across twelve threads on
+  the inputs it really gets; a tuned BLAS still does better, and does it on dense
+  matrices too.
+- **No cache tiling in `matmul`, and no register tiling either.** The second was
+  written and measured: 2.6× on dense matrices, 15-20% *slower* on the half-zero
+  ones a real network produces, and 4% slower end to end. The section on the zero
+  check above has the numbers. Cache tiling was never written, and the profile
+  argues against it for a different reason than the one first given here: the one
+  shape with a B that does not fit in L2 — `linear1`, 784 KB — is the *fastest*
+  of the four at 64 GFLOP/s, because M is 64 and the whole product is 0.4 ms.
+- **No `-march=native` or `/arch:AVX2`.** This used to say "worth another 1.4×".
+  It is not, on this workload: the engine was rebuilt with `/arch:AVX2` and
+  measured against the baseline in alternating runs, and the two are
+  indistinguishable — conv2 came out at 18.4-20.2 GFLOP/s without it and
+  19.1-21.8 with it, inside a run-to-run spread wider than the difference. A loop
+  bound by L1 traffic does not care how wide the registers are. The portability
+  cost is real and now there is nothing on the other side of it.
 - **Views for `transpose` and `permute`.** `reshape` is a view now; those two
   are not, and stay that way deliberately. They genuinely move data, and making
   them views means non-contiguous strides through every kernel and every CPU
   loop — a different project, with no payoff measured here.
+
+## Where a CPU step actually goes, since the above is mostly about what it is not
+
+Measured on the MNIST model at batch 64, twelve threads, forward only:
+
+| | ms | |
+|---|---|---|
+| `Conv2d(1->16)` | 6.36 | of which `im2col` 0.83, `matmul` 1.17 |
+| `ReLU` | 1.19 | |
+| `MaxPool2d` | 1.38 | |
+| `Conv2d(16->32)` | **11.63** | of which `im2col` 4.75, `matmul` 2.54 |
+| `ReLU` | 0.51 | |
+| `MaxPool2d` | 0.88 | |
+| `Dropout` | 1.35 | on 100 352 elements, and see `nn.cpp` for why it is serial |
+| `Linear(1568->128)` | 0.60 | |
+| `Linear(128->10)` | 0.05 | |
+| **total** | **23.94** | a full step is ~67 ms: 24 forward, 41 backward, 0.8 Adam |
+
+Two things fall out of this, and neither is the matrix product.
+
+**The convolutions are 75% of the forward, and a third of each one is neither
+`im2col` nor `matmul`.** What is left is the `reshape → permute → reshape` that
+puts the product back into `(N, C, H, W)`; `permute` materialises, by the
+deliberate choice three bullets up, and for the first convolution that is 3.2 MB
+moved with strided index arithmetic.
+
+**Element-wise operations run at 5.5-9.5 GB/s** on `(64,16,28,28)` — `relu` 1.16
+ms, `add` 1.02, a scalar multiply 0.97 — against dual-channel DDR4 that does
+roughly 35. That is the floor under every activation, and it is a quarter of the
+hardware.
+
+Neither has been acted on. They are recorded here because the measurement exists
+and pointing at the wrong thing for a while is the expensive part.
