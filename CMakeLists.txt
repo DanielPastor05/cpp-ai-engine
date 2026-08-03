@@ -59,7 +59,11 @@ if(ENGINE_CUDA)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-    list(APPEND SOURCES src/cuda/runtime.cu src/cuda/kernels.cu)
+    # kernels.cu was 2 361 lines, the largest file here by some way. The matrix
+    # product came out into its own unit because it is the family nothing else
+    # calls into; src/cuda/kernels_common.cuh carries what the two share, and
+    # says why four helpers had to gain external linkage to make the split safe.
+    list(APPEND SOURCES src/cuda/runtime.cu src/cuda/kernels.cu src/cuda/kernels_matmul.cu)
     message(STATUS "CUDA backend enabled (architectures: ${CMAKE_CUDA_ARCHITECTURES})")
 endif()
 
