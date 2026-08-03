@@ -1,0 +1,53 @@
+name: API docs
+
+# Separate from ci.yml on purpose. This one deploys, which needs write
+# permission on Pages, and giving the whole test matrix that permission to
+# publish a documentation site would be the wrong trade. It also only runs on
+# main: a doc site built from a feature branch has nowhere useful to go.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and a newer push wins. Cancelling in progress rather
+# than queueing, because a half-superseded doc build is worth nothing.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # graphviz is what draws the class graphs. docs/Doxyfile ships with
+      # HAVE_DOT = NO so that a local `doxygen docs/Doxyfile` works on a machine
+      # without it; here it is available, so the setting is appended rather than
+      # committed.
+      - name: Install Doxygen and Graphviz
+        run: sudo apt-get update -qq && sudo apt-get install -y doxygen graphviz
+
+      - name: Generate
+        run: |
+          (cat docs/Doxyfile; echo "HAVE_DOT = YES") | doxygen -
+          test -f doxygen-out/html/index.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: doxygen-out/html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

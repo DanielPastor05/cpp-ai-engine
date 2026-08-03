@@ -5,6 +5,7 @@ autodiff, CNNs and Transformers — with **every gradient validated against
 PyTorch**.
 
 [![CI](https://github.com/DanielPastor05/cpp-ai-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/DanielPastor05/cpp-ai-engine/actions/workflows/ci.yml)
+[![API docs](https://img.shields.io/badge/API-reference-blue)](https://danielpastor05.github.io/cpp-ai-engine/)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)
 ![tests](https://img.shields.io/badge/tests-530%20%2B%20644%20checks-brightgreen)
 ![license](https://img.shields.io/badge/license-MIT-blue)
@@ -199,6 +200,9 @@ say what the values are; the host vector is built on first host access and the
 device pointer on first device use. A tensor that only ever passes through
 kernels allocates no host memory at all — which was worth 20 ms of a 32 ms
 training step.
+
+[**API reference**](https://danielpastor05.github.io/cpp-ai-engine/), generated
+from these headers on every push to `main`.
 
 ```
 include/engine/
@@ -497,6 +501,29 @@ cmake --install build --prefix /where/you/want
 find_package(cpp_ai_engine REQUIRED)
 target_link_libraries(my_app PRIVATE engine::engine)
 ```
+
+---
+
+## API stability
+
+The version is `0.6.0` and the leading zero is doing work: **the API is not
+stable yet, and this says which parts are least likely to move.**
+
+| | |
+|---|---|
+| `Tensor` and its operations | settled. `reshape` became a view in 0.5, which is the last semantic change made to it, and `tests/test_tensor.cpp` pins the aliasing that introduced |
+| `nn::Module`, `optim`, `serialize` | settled in shape; layers get added, existing ones do not change signature |
+| `cuda::` queries and `MatmulKernel` | additive. `TensorCoreFp16` was appended in 0.6 and nothing was renamed |
+| `engine::detail` | **not public**. `Storage` and `cuda::ops` live in headers because the library is header-plus-static-lib, not because anyone should call them. They change without notice and are excluded from the API reference for that reason |
+
+The weight-file format carries a version field and refuses anything it does not
+recognise, so a checkpoint is either read correctly or rejected — never
+misinterpreted. Bumping it is a breaking change and gets a major version.
+
+Until 1.0, a minor bump may break source compatibility. What will not happen
+silently: an operation changing its numerical result. Every one of them is
+checked against PyTorch fixtures to ~1e-7, and a change that moved those numbers
+would fail CI before it reached anybody.
 
 ---
 

@@ -1,0 +1,73 @@
+# Doxygen configuration for the public API.
+#
+# What this is for, and what it is not. The headers under include/engine/ carry
+# long prose explaining *why* each decision is what it is -- why Storage was
+# split out before the first kernel, why the dispatch returns bool, why the
+# tensor-core variant is never selected automatically. That prose is the part
+# worth reading and it is best read in the header.
+#
+# What a header cannot give you is an index: every type, every signature, the
+# call graph, jump-to-definition without a checkout. That is what this generates,
+# and it is why only include/ is scanned. src/ is implementation, and publishing
+# a browsable index of internals invites people to depend on them.
+
+PROJECT_NAME           = "cpp-ai-engine"
+PROJECT_BRIEF          = "A deep learning engine written from scratch in C++17, with a CUDA backend"
+OUTPUT_DIRECTORY       = doxygen-out
+CREATE_SUBDIRS         = NO
+
+# The main page is written for this index rather than being the README. Feeding
+# the README in produced forty warnings -- it links to documents that are not in
+# INPUT, and uses <picture> for the theme-aware charts, which Doxygen does not
+# parse -- and the result was a worse version of a page GitHub already renders
+# well. docs/api-mainpage.md says what this site is and links out for the prose.
+INPUT                  = include docs/api-mainpage.md
+USE_MDFILE_AS_MAINPAGE = docs/api-mainpage.md
+FILE_PATTERNS          = *.hpp *.md
+RECURSIVE              = YES
+
+# The engine has no /** */ comments: its documentation is ordinary // prose
+# above each declaration, written to be read in the file. These two make Doxygen
+# pick that up instead of producing a page of bare signatures.
+JAVADOC_AUTOBRIEF      = YES
+EXTRACT_ALL            = YES
+
+# detail/ is named that for a reason. Storage and the cuda::ops entry points are
+# implementation the public API happens to expose in a header, and an index that
+# lists them is an invitation to depend on them.
+EXCLUDE_PATTERNS       = */detail/*
+
+# ENGINE_CUDA changes Storage's layout and gates the whole cuda:: namespace.
+# Defining it here documents the backend; leaving it undefined would generate an
+# API that no CUDA build actually has.
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+PREDEFINED             = ENGINE_CUDA
+
+GENERATE_LATEX         = NO
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_TREEVIEW      = YES
+DISABLE_INDEX          = NO
+FULL_SIDEBAR           = NO
+HTML_COLORSTYLE        = TOGGLE
+
+# Off by default so `doxygen docs/Doxyfile` works on a machine without
+# Graphviz -- which is most machines, and an error per class page is a poor
+# welcome. CI installs graphviz and appends HAVE_DOT=YES, so the published site
+# has the class graphs and a local run stays quiet.
+HAVE_DOT               = NO
+CLASS_GRAPH            = YES
+COLLABORATION_GRAPH    = NO
+DOT_IMAGE_FORMAT       = svg
+INTERACTIVE_SVG        = YES
+
+# Undocumented members and broken references are worth knowing about, but the
+# build does not fail on them: this is a documentation index, and a missing
+# comment on a getter is not a reason to block a merge. The CI job prints the
+# warnings.
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_AS_ERROR          = NO
