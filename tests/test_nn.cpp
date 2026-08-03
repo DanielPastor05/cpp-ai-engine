@@ -12,7 +12,7 @@ using namespace testing;
 namespace {
 
 void test_nn_layers() {
-    section("nn: capas");
+    section("nn: layers");
 
     engine::manual_seed(7);
 
@@ -45,7 +45,7 @@ void test_nn_layers() {
             nn::Sequential s;
             s.add(nullptr);
         },
-        "Sequential rechaza capas nulas");
+        "Sequential rejects null layers");
 }
 
 void test_softmax_and_losses() {
@@ -257,9 +257,9 @@ void test_train_eval_and_dropout() {
     nn::Sequential model{nn::make<nn::Linear>(4, 4), nn::make<nn::Dropout>(0.5f),
                          nn::make<nn::Linear>(4, 2)};
     model.eval();
-    check(!model.at(1).is_training(), "Sequential propaga eval() a sus capas");
+    check(!model.at(1).is_training(), "Sequential propagates eval() to its layers");
     model.train();
-    check(model.at(1).is_training(), "Sequential propaga train() a sus capas");
+    check(model.at(1).is_training(), "Sequential propagates train() to its layers");
 
     // The gradient passes only through the positions that survived
     engine::manual_seed(5);
@@ -473,11 +473,11 @@ void test_serialization() {
     // the case that would leave a silently broken model.
     {
         Tensor good({2, 2}, 1.0f, true);
-        std::vector<std::pair<std::string, Tensor>> saved = {{"peso", good}};
+        std::vector<std::pair<std::string, Tensor>> saved = {{"weight", good}};
         engine::save_parameters(saved, "shape_test.bin");
 
         Tensor mismatched({3, 3}, 0.0f, true);
-        std::vector<std::pair<std::string, Tensor>> target = {{"peso", mismatched}};
+        std::vector<std::pair<std::string, Tensor>> target = {{"weight", mismatched}};
         check_throws([&] { (void)engine::load_parameters(target, "shape_test.bin"); },
                      "the same name with another shape is rejected");
         std::remove("shape_test.bin");

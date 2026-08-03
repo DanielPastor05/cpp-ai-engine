@@ -99,15 +99,15 @@ void test_repeated_backward() {
 }
 
 void test_row_indexing_and_batches() {
-    section("Tensor: indexacion (fila, col) y mini-lotes");
+    section("Tensor: (row, col) indexing and mini-batches");
 
     Tensor A({2, 3}, {1, 2, 3, 4, 5, 6});
     check_close(A(1, 2), 6.0f, "A(1, 2) accesses without a heap allocation");
     check_close(A(0, 0), 1.0f, "A(0, 0) is the first element");
     A(0, 1) = 99.0f;
-    check_close(A({0, 1}), 99.0f, "A(fila, col) permite escritura");
-    check_throws([&] { (void)A(2, 0); }, "A(fila, col) out of range throws");
-    check_throws([&] { (void)Tensor({4}, 1.0f)(0, 0); }, "A(fila, col) on a 1D tensor throws");
+    check_close(A({0, 1}), 99.0f, "A(row, col) allows writing");
+    check_throws([&] { (void)A(2, 0); }, "A(row, col) out of range throws");
+    check_throws([&] { (void)Tensor({4}, 1.0f)(0, 0); }, "A(row, col) on a 1D tensor throws");
 
     // Scalar on the left
     Tensor t({2}, {1.0f, 2.0f});

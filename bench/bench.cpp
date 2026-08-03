@@ -92,8 +92,8 @@ int main() {
         Tensor A = Tensor::randn({1000, 1000});
         Tensor B = Tensor::randn({1000, 1000});
         Tensor row_vec = Tensor::randn({1000});
-        row("suma", time_op([&] { Tensor C = A + B; }));
-        row("producto", time_op([&] { Tensor C = A * B; }));
+        row("add", time_op([&] { Tensor C = A + B; }));
+        row("multiply", time_op([&] { Tensor C = A * B; }));
         row("broadcast addition", time_op([&] { Tensor C = A + row_vec; }));
         row("relu", time_op([&] { Tensor C = A.relu(); }));
         row("softmax (row-wise)", time_op([&] { Tensor C = A.softmax(); }));
@@ -107,7 +107,7 @@ int main() {
         row("(32,8,16,16) -> {0,2,1,3}", time_op([&] { Tensor C = T.permute({0, 2, 1, 3}); }));
     }
 
-    section("capas (step adelante + atras)");
+    section("layers (forward + backward step)");
     {
         nn::Linear dense(512, 512);
         Tensor x = Tensor::randn({64, 512}, 0.0f, 1.0f, true);
@@ -196,7 +196,7 @@ int main() {
             }
 
             char note[96];
-            snprintf(note, sizeof(note), "matmul %.2fx   suma %.2fx  (%s)", base_mm / mm,
+            snprintf(note, sizeof(note), "matmul %.2fx   add %.2fx  (%s)", base_mm / mm,
                      base_add / add, gflops(mm, 2.0 * 512 * 512 * 512).c_str());
             row(std::to_string(threads) + " thread(s): matmul 512^3", mm, note);
         }

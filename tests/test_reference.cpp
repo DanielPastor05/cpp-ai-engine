@@ -95,7 +95,7 @@ Tensor input_of(const Fixture& fixture, const std::string& key) {
 // ---------------------------------------------------------
 
 void test_matmul_cases() {
-    section("PyTorch: multiplicacion matricial");
+    section("PyTorch: matrix multiplication");
 
     for (const std::string& name : {"matmul", "matmul_batched", "matmul_shared"}) {
         Fixture f = load(name);
@@ -184,11 +184,11 @@ void test_reduction_cases() {
 }
 
 // ---------------------------------------------------------
-// Capas
+// Layers
 // ---------------------------------------------------------
 
 void test_linear_cases() {
-    section("PyTorch: capa densa");
+    section("PyTorch: dense layer");
 
     for (const std::string& name : {"linear", "linear_3d"}) {
         Fixture f = load(name);
@@ -291,7 +291,7 @@ void test_cross_entropy_case() {
 // ---------------------------------------------------------
 
 void test_attention_cases() {
-    section("PyTorch: atencion");
+    section("PyTorch: attention");
 
     for (const std::string& name : {"attention", "attention_causal"}) {
         Fixture f = load(name);
@@ -317,7 +317,7 @@ void test_attention_cases() {
 }
 
 void test_multihead_case() {
-    section("PyTorch: atencion multi-cabeza");
+    section("PyTorch: multi-head attention");
 
     Fixture f = load("multihead_attention");
     nn::MultiHeadAttention mha(8, 2);

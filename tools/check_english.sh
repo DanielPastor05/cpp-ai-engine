@@ -58,7 +58,29 @@ readonly ALLOW='README\.md:[0-9]+:\*\[Versión en español\]'
 # and "desviacion maxima" all survived the original list and were printed by the
 # test suite for weeks, because a short label has no function words in it. Every
 # entry below was added after being found, not guessed at.
-readonly WORDS='[áéíóúñÁÉÍÓÚÑ¿¡]|\b(que|para|porque|cuando|donde|esto|esta|estos|estas|los|las|del|una|unos|unas|con|por|pero|como|desde|hasta|entre|sobre|cada|todo|toda|todos|todas|otro|otra|aunque|entonces|siempre|nunca|entrada|salida|fichero|ficheros|cadena|cadenas|pruebas|compilar|ejecutar|configurar|instalar|memoria|hilos|puntero|valores|datos|modelo|entrenamiento|dispositivo|convoluciones|iteracion|inferencia|resultados|ejemplos|calculo|tambien|ademas|despues|verificar|comprobar|devuelve|deja|dejan|varianza|respecto|desviacion|maxima|minima|codificacion|codificaciones|posicional|parecidas|iguales|distintos|distinta|senal|reducir|concatenar|consigo|misma|mismo|cambia|cambian|queda|quedan|falla|fallan|primera|segunda|ultima)\b'
+#
+# The second group is now much longer than the first, and that is the lesson.
+# This script passed for weeks while `./cpp_ai_engine` printed "Matriz A (2x3)",
+# "Producto Hadamard" and "Funciones de Activacion", `bench` printed "suma" and
+# "producto", and the test suite printed "PyTorch: capa densa" and "Sequential
+# propaga eval() a sus capas" -- 41 lines in 10 files, including a thrown
+# exception message in src/nn.cpp. It is the same failure as the one this file
+# was written to prevent, and the same one the install rules had: a check that
+# approximates the surface instead of exercising it.
+#
+# The surface here is *string literals*, because that is where the labels are,
+# and prose scanning cannot see a two-word label. The way to find them is not to
+# guess more words, it is to read them all -- there are about 1200 and it takes
+# one command:
+#
+#   git ls-files '*.cpp' '*.hpp' '*.cu' | xargs grep -ohE '"([^"\\]|\\.)*"' \
+#     | sort -u | less
+#
+# Re-run that after any batch of new user-facing strings. Everything added below
+# came out of it. Note what is deliberately absent: "matrices", "doses" and
+# "token" are English, and "precision" is both -- the first version of this list
+# flagged "mixed precision".
+readonly WORDS='[áéíóúñÁÉÍÓÚÑ¿¡]|\b(que|para|porque|cuando|donde|esto|esta|estos|estas|los|las|del|una|unos|unas|con|por|pero|como|desde|hasta|entre|sobre|cada|todo|toda|todos|todas|otro|otra|aunque|entonces|siempre|nunca|entrada|salida|fichero|ficheros|cadena|cadenas|pruebas|compilar|ejecutar|configurar|instalar|memoria|hilos|puntero|valores|datos|modelo|entrenamiento|dispositivo|convoluciones|iteracion|inferencia|resultados|ejemplos|calculo|tambien|ademas|despues|verificar|comprobar|devuelve|deja|dejan|varianza|respecto|desviacion|maxima|minima|codificacion|codificaciones|posicional|parecidas|iguales|distintos|distinta|senal|reducir|concatenar|consigo|misma|mismo|cambia|cambian|queda|quedan|falla|fallan|primera|segunda|ultima|matriz|suma|resta|producto|capa|capas|peso|pesos|funcion|funciones|creacion|inspeccion|fila|filas|columna|columnas|esperado|esperada|elemento|elementos|multiplicacion|activacion|derivacion|automatica|escalar|dimensiones|reconfigurar|pasadas|guardado|guardados|atencion|aprendidos|densa|epoca|epocas|muestras|perdida|entrenando|cargando|tamano|numero|indexacion|propaga|rechaza|permite|escritura|adelante|atras|nulas|cabeza|inicializar|acumula|repetido)\b'
 
 hits=$(git ls-files | grep -vE "$EXCLUDE" | xargs grep -IinE "$WORDS" 2>/dev/null \
        | grep -vE "$ALLOW" || true)

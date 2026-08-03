@@ -273,7 +273,7 @@ Tensor Sequential::forward(const Tensor& input) {
 
 Module& Sequential::at(size_t index) {
     if (index >= layers_.size()) {
-        throw std::out_of_range("Sequential: no hay capa " + std::to_string(index) + ".");
+        throw std::out_of_range("Sequential: no layer at index " + std::to_string(index) + ".");
     }
     return *layers_[index];
 }
@@ -305,7 +305,7 @@ std::vector<Tensor> Sequential::parameters() {
 }
 
 void Sequential::summary() const {
-    std::cout << "Sequential (" << layers_.size() << " capas)\n";
+    std::cout << "Sequential (" << layers_.size() << " layers)\n";
     size_t total = 0;
     for (size_t i = 0; i < layers_.size(); ++i) {
         size_t n = layers_[i]->num_parameters();

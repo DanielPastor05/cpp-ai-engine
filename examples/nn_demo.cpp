@@ -135,7 +135,7 @@ int main() {
     // ---------------------------------------------------------
     // 1. Dense layer and bias broadcasting
     // ---------------------------------------------------------
-    std::cout << "--- 1. Capa Densa (Linear) ---\n";
+    std::cout << "--- 1. Dense layer (Linear) ---\n";
     nn::Linear dense(3, 2);
     dense.bias() = Tensor({1, 2}, {0.5f, -0.5f}, true);
 

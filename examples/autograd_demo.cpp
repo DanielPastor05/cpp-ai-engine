@@ -13,8 +13,8 @@ int main() {
     // ---------------------------------------------------------
     // 1. Analytic gradients checked against autograd
     // ---------------------------------------------------------
-    std::cout << "--- 1. Derivacion Automatica de Funcion Escalar ---\n";
-    std::cout << "Funcion: L = a * b + ReLU(a)\n";
+    std::cout << "--- 1. Automatic differentiation of a scalar function ---\n";
+    std::cout << "Function: L = a * b + ReLU(a)\n";
     std::cout << "Values: a = 2.0, b = 3.0\n\n";
 
     Tensor a({1}, std::vector<float>{2.0f}, true);
@@ -27,9 +27,9 @@ int main() {
     // Run backpropagation
     L.backward();
 
-    std::cout << "Resultado L = " << L.data()[0] << " (Esperado: 2*3 + 2 = 8.0000)\n";
-    std::cout << "Gradiente dL/da = " << a.grad().data()[0] << " (Esperado: b + 1 = 4.0000)\n";
-    std::cout << "Gradiente dL/db = " << b.grad().data()[0] << " (Esperado: a = 2.0000)\n\n";
+    std::cout << "Result L = " << L.data()[0] << " (expected 2*3 + 2 = 8.0000)\n";
+    std::cout << "Gradient dL/da = " << a.grad().data()[0] << " (expected b + 1 = 4.0000)\n";
+    std::cout << "Gradient dL/db = " << b.grad().data()[0] << " (expected a = 2.0000)\n\n";
 
     // ---------------------------------------------------------
     // 2. Autograd through matrix multiplication (MatMul)
@@ -59,8 +59,8 @@ int main() {
 
     // The parameters to optimise. W is (1, 1) so it can go through matmul, and bias
     // is a (1, 1) row vector broadcast over the batch's 4 rows.
-    Tensor W({1, 1}, std::vector<float>{0.0f}, true);     // Inicializar peso en 0
-    Tensor bias({1, 1}, std::vector<float>{0.0f}, true);  // Inicializar sesgo en 0
+    Tensor W({1, 1}, std::vector<float>{0.0f}, true);     // Weight initialised at 0
+    Tensor bias({1, 1}, std::vector<float>{0.0f}, true);  // Bias initialised at 0
 
     // Training data (x and y)
     Tensor x({4, 1}, {1.0f, 2.0f, 3.0f, 4.0f}, false);

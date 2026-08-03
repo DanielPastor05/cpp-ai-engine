@@ -309,7 +309,7 @@ int main() {
     // ---------------------------------------------------------
     // 6. Where does the model look?
     // ---------------------------------------------------------
-    std::cout << "--- 6. Pesos de atencion aprendidos ---\n";
+    std::cout << "--- 6. Learned attention weights ---\n";
     {
         engine::autograd::NoGradGuard no_grad;
         Tensor one = X.select_rows({0});
@@ -322,7 +322,7 @@ int main() {
 
         const size_t heads = attn.shape()[1];
         for (size_t h = 0; h < heads; ++h) {
-            std::cout << "  Cabeza " << h << ": ";
+            std::cout << "  Head " << h << ": ";
             for (size_t s = 0; s < kSeqLen; ++s) {
                 // attn is (B, H, S, S): row 0 is what the [CLS] attends to
                 const float w = attn.data()[(h * kSeqLen + 0) * kSeqLen + s];

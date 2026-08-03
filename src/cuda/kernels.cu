@@ -776,9 +776,9 @@ __global__ void matmul_register_tiled(const float* __restrict__ A, const float* 
     const int b_load_row_v = threadIdx.x / (kBN / 4);  // [0, 8) with float4
     const int b_load_col_v = (threadIdx.x % (kBN / 4)) * 4;
 
-    const int a_load_row_s = threadIdx.x / kBK;  // [0, 32) escalar
+    const int a_load_row_s = threadIdx.x / kBK;  // [0, 32), a scalar
     const int a_load_col_s = threadIdx.x % kBK;
-    const int b_load_row_s = threadIdx.x / kBN;  // [0, 2) escalar
+    const int b_load_row_s = threadIdx.x / kBN;  // [0, 2), a scalar
     const int b_load_col_s = threadIdx.x % kBN;
 
     for (int k_base = 0; k_base < K; k_base += kBK) {

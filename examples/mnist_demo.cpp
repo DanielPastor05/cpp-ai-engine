@@ -238,7 +238,7 @@ int main() {
     // ---------------------------------------------------------
     std::cout << "--- 5. Persistencia ---\n";
     engine::save_parameters(model, kCheckpoint);
-    std::cout << "Pesos guardados en " << kCheckpoint << " (" << model.num_parameters()
+    std::cout << "Weights saved to " << kCheckpoint << " (" << model.num_parameters()
               << " parametros).\n";
 
     // A fresh model with random weights, which then loads the saved ones

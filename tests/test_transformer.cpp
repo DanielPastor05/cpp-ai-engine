@@ -72,7 +72,7 @@ void test_layernorm_and_embedding() {
     check_throws([&] { (void)emb(Tensor({1, 2}, {0.0f, 9.0f})); },
                  "a token outside the vocabulary throws");
 
-    // Un token repetido acumula gradiente en su fila
+    // A repeated token accumulates gradient in its row
     emb.zero_grad();
     emb(ids).sum().backward();
     check_close(emb.weight().grad().data()[12], 2.0f, "token 4 appears twice and accumulates 2");
@@ -81,7 +81,7 @@ void test_layernorm_and_embedding() {
 }
 
 void test_attention() {
-    section("transformer: atencion");
+    section("transformer: attention");
 
     // Orthogonal keys: each query must recover its value
     Tensor Q({3, 3}, {20, 0, 0, 0, 20, 0, 0, 0, 20}, false);
@@ -205,7 +205,7 @@ void test_multihead_and_block() {
     nn::TransformerBlock block(8, 2, 16);
     Tensor block_out = block(x);
     check(block_out.shape() == x.shape(), "TransformerBlock preserves the shape");
-    check(block.num_parameters() == 4 * (8 * 8 + 8)      // atencion
+    check(block.num_parameters() == 4 * (8 * 8 + 8)      // attention
                                         + 2 * (8 + 8)    // dos LayerNorm
                                         + (8 * 16 + 16)  // ff1
                                         + (16 * 8 + 8),  // ff2
