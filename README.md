@@ -7,7 +7,7 @@ PyTorch**.
 [![CI](https://github.com/DanielPastor05/cpp-ai-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/DanielPastor05/cpp-ai-engine/actions/workflows/ci.yml)
 [![API docs](https://img.shields.io/badge/API-reference-blue)](https://danielpastor05.github.io/cpp-ai-engine/)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)
-![tests](https://img.shields.io/badge/tests-530%20%2B%20647%20checks-brightgreen)
+![tests](https://img.shields.io/badge/tests-534%20%2B%20651%20checks-brightgreen)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
 No dependencies. No BLAS. The point is to implement it, not to call it.
@@ -94,7 +94,7 @@ written up with symptom, diagnosis and fix in
 
 ```bash
 cmake --preset default && cmake --build --preset default
-ctest --preset default                         # 530 checks
+ctest --preset default                         # 534 checks
 ./build/mnist_demo                             # trains a CNN on real data
 ```
 
@@ -155,7 +155,7 @@ from these headers on every push to `main`.
 `include/engine/` carries ten headers — `tensor`, `autograd`, `nn`, `conv`,
 `transformer`, `optim`, `parallel`, `cuda`, `serialize`, `data` — and the
 reference above indexes every one. `examples/` has six runnable demos, `tests/`
-530 checks across nine units plus the PyTorch fixtures, `bench/` the reproducible
+534 checks across nine units plus the PyTorch fixtures, `bench/` the reproducible
 benchmarks including an isolated matmul harness for Nsight Compute.
 
 Design decisions and their trade-offs: **[docs/DESIGN.md](docs/DESIGN.md)**.
@@ -232,7 +232,7 @@ Transformers, CUDA — each with its own demo above and its own write-up in
 ## CUDA
 
 The GPU backend is **off by default** — the engine has to keep compiling and
-passing its 530 checks on a machine with no toolkit and no card, which is what
+passing its 534 checks on a machine with no toolkit and no card, which is what
 CI has.
 
 ```bash
@@ -313,7 +313,7 @@ and which metrics mean something: **[docs/PROFILING.md](docs/PROFILING.md)**.
 
 ## Testing
 
-530 checks over nine translation units, run on every push against **GCC, Clang,
+534 checks over nine translation units, run on every push against **GCC, Clang,
 AppleClang and MSVC**, plus a job under **AddressSanitizer and
 UndefinedBehaviorSanitizer** one under **ThreadSanitizer**, and one in
 **Debug** with standard-library assertions enabled.

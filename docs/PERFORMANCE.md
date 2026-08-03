@@ -764,14 +764,53 @@ Two things fall out of this, and neither is the matrix product.
 
 **The convolutions are 75% of the forward, and a third of each one is neither
 `im2col` nor `matmul`.** What is left is the `reshape → permute → reshape` that
-puts the product back into `(N, C, H, W)`; `permute` materialises, by the
-deliberate choice three bullets up, and for the first convolution that is 3.2 MB
-moved with strided index arithmetic.
+puts the product back into `(N, C, H, W)`. That one has since been acted on; the
+section below has it.
 
 **Element-wise operations run at 5.5-9.5 GB/s** on `(64,16,28,28)` — `relu` 1.16
 ms, `add` 1.02, a scalar multiply 0.97 — against dual-channel DDR4 that does
 roughly 35. That is the floor under every activation, and it is a quarter of the
-hardware.
+hardware. Not acted on, recorded because the measurement exists.
 
-Neither has been acted on. They are recorded here because the measurement exists
-and pointing at the wrong thing for a while is the expensive part.
+### Blocking the axis swap, which was 46% of the first convolution
+
+The swap back to `(N, C, H, W)` was running at **2.57 GB/s** on a machine whose
+memory does about 35, and at `(64, 784, 16)` it cost 2.494 ms — **more than
+`im2col` and the matrix product of that layer put together**.
+
+Two loops did it and both were limited by the same thing. `transpose()` walked
+source rows and wrote its output with a stride of `rows`; `permute()` ran a
+general N-dimensional gather, `nd` multiply-adds and a carry counter per element.
+`src/conv.cpp` carried a comment preferring `permute` because it measured 5%
+faster — a real measurement, choosing between two variants of the same mistake.
+Neither blocked.
+
+A transpose cannot make both sides contiguous; one of read and write has to
+stride. Blocking sidesteps the choice. A 32×32 tile is 4 KB, so once it is read
+the strided side is served from L1 rather than from memory, and inside the tile
+the *write* is the contiguous one — a scattered write also costs a
+read-for-ownership of the line.
+
+| | before | after | |
+|---|---|---|---|
+| swap at `(64, 784, 16)` | 2.494 ms · 2.57 GB/s | **0.977 ms · 6.57 GB/s** | 2.55× |
+| swap at `(64, 196, 32)` | 0.942 ms · 3.41 GB/s | **0.549 ms · 5.85 GB/s** | 1.72× |
+| `Conv2d(1→16)` forward | 5.13-7.04 ms | **4.10-5.12 ms** | ~1.35× |
+| `Conv2d(16→32)` forward | 10.95-11.94 ms | 11.16-11.44 ms | unchanged |
+| forward pass, whole model | 22.15-25.56 ms | **21.25-22.68 ms** | ~7% |
+
+Alternating runs of each, medians of 21.
+
+**And the training step does not move.** 64.2-65.7 ms before, 63.6-66.6 after;
+MNIST end to end, 24.0-25.0 s against 24.4-24.7. The saving is about 1.9 ms of a
+24 ms forward and the run-to-run spread of a step is 2.8 ms, so it sits under the
+noise floor of every measurement coarser than a layer.
+
+That is worth stating plainly rather than rounding up. It is kept because it is
+faster wherever the measurement can see it, never slower, bit-for-bit identical
+(loss 0.1037 and 94.60% accuracy across every run of both builds), and because it
+removes the 5% workaround `conv.cpp` was carrying. It is not kept because it made
+training faster, because it did not.
+
+The remaining item in the convolutions is bigger and is `im2col`: 4.75 ms in
+`Conv2d(16→32)`, which is now the largest single entry in the forward pass.

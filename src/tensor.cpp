@@ -53,6 +53,57 @@ inline size_t matmul_rows_per_thread(size_t rows, size_t K, size_t N) {
     return std::max<size_t>(1, kMatmulChunkWork / per_row);
 }
 
+// Batched 2D transpose, blocked. dst[b][j][i] = src[b][i][j].
+//
+// This exists because the post-convolution axis swap was measured at **2.57
+// GB/s** on a machine whose memory does about 35, and it was 46% of the first
+// convolution of the MNIST model -- more than im2col and the matrix product
+// together. Both of the loops that used to do it were limited by the same thing
+// and neither addressed it.
+//
+// A transpose cannot make both sides contiguous: one of read and write has to
+// stride. The old transpose() strided its writes, permute() paid per-element
+// index arithmetic on top, and docs/PERFORMANCE.md records permute coming out 5%
+// ahead -- a real measurement of two variants of the same mistake.
+//
+// Blocking sidesteps the choice. A 32x32 tile is 4 KB, so once it is read the
+// whole tile is in L1 and the strided side is served from cache rather than from
+// memory. Inside a tile the write is the contiguous one, deliberately: a
+// scattered write costs a read-for-ownership of the line as well.
+//
+// Deterministic by construction -- every destination element is written exactly
+// once by exactly one thread, and no value is accumulated -- so the bit-for-bit
+// promise the rest of the engine makes is not at risk here.
+constexpr size_t kTransposeTile = 32;
+
+void transpose_blocked(const float* ENGINE_RESTRICT src, float* ENGINE_RESTRICT dst, size_t batch,
+                       size_t rows, size_t cols) {
+    const size_t row_tiles = (rows + kTransposeTile - 1) / kTransposeTile;
+    const size_t work_per_tile = std::max<size_t>(1, kTransposeTile * cols);
+    const size_t tiles_per_thread = std::max<size_t>(1, kElementsPerThread / work_per_tile);
+
+    parallel::parallel_for(batch * row_tiles, tiles_per_thread, [&](size_t from, size_t to) {
+        for (size_t t = from; t < to; ++t) {
+            const size_t b = t / row_tiles;
+            const size_t i0 = (t % row_tiles) * kTransposeTile;
+            const size_t i_end = std::min(i0 + kTransposeTile, rows);
+
+            const float* ENGINE_RESTRICT s = src + b * rows * cols;
+            float* ENGINE_RESTRICT d = dst + b * rows * cols;
+
+            for (size_t j0 = 0; j0 < cols; j0 += kTransposeTile) {
+                const size_t j_end = std::min(j0 + kTransposeTile, cols);
+                for (size_t j = j0; j < j_end; ++j) {
+                    float* ENGINE_RESTRICT drow = d + j * rows;
+                    for (size_t i = i0; i < i_end; ++i) {
+                        drow[i] = s[i * cols + j];
+                    }
+                }
+            }
+        }
+    });
+}
+
 inline bool track(bool requires_grad) {
     return requires_grad && autograd::grad_enabled();
 }
@@ -789,22 +840,7 @@ Tensor Tensor::transpose() const {
 
     if (!cuda::ops::permute(impl_->storage, res.impl_->storage, out_shape.data(),
                             src_strides.data(), nd)) {
-        const float* ENGINE_RESTRICT src_base = data();
-        float* ENGINE_RESTRICT dst_base = res.data();
-        // Split by source row: each writes one whole column of the destination and
-        // none touches another's. The threshold is counted in rows because each row's
-        // work is its `cols` elements.
-        const size_t rows_per_thread =
-            std::max<size_t>(1, kElementsPerThread / std::max<size_t>(1, cols));
-        parallel::parallel_for(batch * rows, rows_per_thread, [&](size_t from, size_t to) {
-            for (size_t r = from; r < to; ++r) {
-                const size_t b = r / rows;
-                const size_t i = r % rows;
-                const float* src = src_base + b * rows * cols + i * cols;
-                float* dst = dst_base + b * rows * cols + i;
-                for (size_t j = 0; j < cols; ++j) dst[j * rows] = src[j];
-            }
-        });
+        transpose_blocked(data(), res.data(), batch, rows, cols);
     }
 
     if (req_g) {
@@ -844,8 +880,35 @@ Tensor Tensor::permute(const std::vector<size_t>& order) const {
     std::vector<size_t> src_strides(nd);
     for (size_t i = 0; i < nd; ++i) src_strides[i] = strides()[order[i]];
 
+    // Whether this permutation is only a swap of the last two axes. That is the
+    // shape Conv2d asks for -- (N, oH*oW, C) back into (N, C, oH*oW) -- and it is
+    // the one case where the generic gather below is doing far more work than the
+    // problem requires. Measured at (64, 784, 16): 2.494 ms through the general
+    // path, 46% of the whole first convolution of the MNIST model.
+    bool last_two_swapped = nd >= 2 && order[nd - 2] == nd - 1 && order[nd - 1] == nd - 2;
+    for (size_t i = 0; i + 2 < nd && last_two_swapped; ++i) {
+        if (order[i] != i) last_two_swapped = false;
+    }
+
     if (!cuda::ops::permute(impl_->storage, res.impl_->storage, out_shape.data(),
                             src_strides.data(), nd)) {
+        if (last_two_swapped) {
+            const size_t rows = shape()[nd - 2];
+            const size_t cols = shape()[nd - 1];
+            transpose_blocked(data(), res.data(), size() / std::max<size_t>(1, rows * cols), rows,
+                              cols);
+            if (req_g) {
+                res.impl_->parents = {impl_};
+                Tensor self_copy = *this;
+                std::vector<size_t> inverse(nd);
+                for (size_t i = 0; i < nd; ++i) inverse[order[i]] = i;
+                res.impl_->backward_fn = [self_copy, inverse](const Tensor& grad_out) mutable {
+                    self_copy.add_grad(grad_out.permute(inverse));
+                };
+            }
+            return res;
+        }
+
         const float* ENGINE_RESTRICT src_data = data();
         float* ENGINE_RESTRICT dst_data = res.data();
         // The carry counter is cheap per element but chains each one to the previous,

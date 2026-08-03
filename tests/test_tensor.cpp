@@ -124,6 +124,40 @@ void test_nd_tensor_ops() {
     check_throws([&] { (void)P.permute({0, 1, 1}); }, "permute with a repeated axis throws");
     check_throws([&] { (void)P.permute({0, 1, 5}); }, "permute with a nonexistent axis throws");
 
+    // Swapping the last two axes takes a blocked path in permute() and in
+    // transpose(); everything else takes the general per-element gather. Two code
+    // paths computing the same function need a test that they agree, and it has to
+    // run on shapes the 32x32 tile does not divide -- a blocked loop that is right
+    // on multiples of its tile and wrong on the remainder is the classic way to
+    // get this wrong, and every other shape in this file is a single partial tile.
+    //
+    // The oracle is the definition written out, out[b][j][i] == in[b][i][j], and
+    // not a composition of two other permutes. The first draft of this test used
+    // one, got the composition wrong, and reported four failures against correct
+    // code -- an oracle that needs its own proof is not an oracle.
+    for (const std::vector<size_t>& dims :
+         std::vector<std::vector<size_t>>{{2, 33, 31}, {1, 64, 64}, {3, 1, 65}, {2, 65, 1}}) {
+        Tensor A(dims, 0.0f);
+        for (size_t i = 0; i < A.size(); ++i) A.data()[i] = static_cast<float>(i % 251);
+
+        const Tensor swapped = A.permute({0, 2, 1});
+        const Tensor via_transpose = A.transpose();
+        const size_t rows = dims[1], cols = dims[2];
+
+        bool same = swapped.shape() == std::vector<size_t>{dims[0], cols, rows} &&
+                    via_transpose.shape() == swapped.shape();
+        for (size_t b = 0; same && b < dims[0]; ++b) {
+            for (size_t i = 0; same && i < rows; ++i) {
+                for (size_t j = 0; same && j < cols; ++j) {
+                    const float want = A.data()[(b * rows + i) * cols + j];
+                    same = swapped.data()[(b * cols + j) * rows + i] == want &&
+                           via_transpose.data()[(b * cols + j) * rows + i] == want;
+                }
+            }
+        }
+        check(same, "the blocked axis swap is exact on " + A.shape_str());
+    }
+
     // batched matmul: each matrix in the batch is multiplied separately
     Tensor A({2, 2, 3}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12});
     Tensor B({2, 3, 2}, {1, 0, 0, 1, 1, 1, 2, 0, 0, 2, 1, 1});

@@ -11,7 +11,7 @@ ctest --test-dir build-cuda --output-on-failure   # includes CPU/GPU parity
 ```
 
 The backend is **off by default**. The engine has to keep compiling and passing
-its 530 checks on a machine with no toolkit and no card, which is what CI has;
+its 534 checks on a machine with no toolkit and no card, which is what CI has;
 the GPU is an optional acceleration, not a requirement.
 
 ---

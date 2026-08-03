@@ -298,10 +298,13 @@ Tensor Conv2d::forward(const Tensor& input) {
     // The product comes out ordered (N, oH*oW, outC) and the layer returns
     // (N, outC, oH, oW): swapping the last two axes is all that is left.
     //
-    // permute({0,2,1}) rather than transpose(), even though on a 3D tensor they do
-    // the same and transpose has a loop of its own: measured, transpose comes out 5%
-    // worse here. It writes with a stride and reads contiguously, and at this size
-    // memory access rules, not the per-element index arithmetic permute does.
+    // This used to say that permute({0,2,1}) beat transpose() by 5% here, because
+    // transpose strided its writes while permute paid per-element index arithmetic
+    // instead -- a measured choice between two variants of the same mistake. Both
+    // were limited by memory access and neither blocked, and this swap was running
+    // at 2.57 GB/s on a machine that does about 35: 46% of this layer, more than
+    // im2col and the matrix product together. They now share one blocked
+    // implementation and the choice no longer matters.
     return out.reshape({N, spatial, out_channels_})
         .permute({0, 2, 1})
         .reshape({N, out_channels_, oH, oW});
