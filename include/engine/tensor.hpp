@@ -61,8 +61,30 @@ public:
     void backward();
     void backward(const Tensor& grad_output);
 
-    // Access to the shared internal implementation
-    [[nodiscard]] std::shared_ptr<TensorImpl> get_impl() const { return impl_; }
+    // The element buffer and its device mirror.
+    //
+    // Fifty-three of the seventy-eight uses of get_impl() below reached straight
+    // through it for this member, and every one of them copied a shared_ptr --
+    // an atomic increment and decrement -- to travel two hops. That happens on
+    // the dispatch path of every operation. This is the same thing without the
+    // ownership handle escaping and without the refcount.
+    //
+    // Storage lives under detail/ and is not part of the stable API. It is here
+    // because the CUDA entry points in engine/detail/cuda_ops.hpp take one, and
+    // a caller writing a kernel dispatch needs to hand it over.
+    [[nodiscard]] Storage& storage() noexcept { return impl_->storage; }
+    [[nodiscard]] const Storage& storage() const noexcept { return impl_->storage; }
+
+    // The whole node: buffer, shape, gradient, and the edges of the autograd
+    // graph. **Not part of the stable API** -- see the stability policy in the
+    // README. It exists because building a graph node from outside src/ needs to
+    // write `parents` and `backward_fn`, and the twenty-five call sites that do
+    // are all inside this engine.
+    //
+    // Returns a reference rather than a copy: callers overwhelmingly want to
+    // reach through it, not to keep it alive, and the copy was a refcount they
+    // were not asking for.
+    [[nodiscard]] const std::shared_ptr<TensorImpl>& get_impl() const noexcept { return impl_; }
 
     // Indexing and properties.
     //
@@ -78,8 +100,40 @@ public:
 
     [[nodiscard]] const std::vector<size_t>& shape() const;
     [[nodiscard]] const std::vector<size_t>& strides() const;
-    [[nodiscard]] const std::vector<float>& data() const;
-    std::vector<float>& data();
+
+    // The element buffer, as a pointer, with `size()` for the count.
+    //
+    // These used to return `const std::vector<float>&` and `std::vector<float>&`,
+    // and the writable one was a hole: a caller could `t.data().resize(0)` and
+    // leave the tensor claiming a shape whose elements no longer exist -- no
+    // error anywhere, a segfault somewhere else entirely. `src/serialize.cpp`
+    // came close, replacing a tensor's whole buffer by assigning over the
+    // reference. Nothing checked that the new one was the right length. A
+    // library that publishes an API stability policy should not also hand out a
+    // handle to its own invariants.
+    //
+    // A pointer carries exactly the authority a caller needs -- read the
+    // elements, write the elements -- and none of the authority to change how
+    // many there are. It is also what the engine wanted all along: about twenty
+    // call sites inside src/ immediately did `.data().data()` to get back to a
+    // pointer, and only a handful used the container.
+    //
+    // Neither is a plain field access. `data()` is the door to the host side of
+    // `Storage`: calling it downloads from the device if the host copy has gone
+    // stale, and the non-const one additionally marks the device copy stale.
+    // Hoist it out of loops -- that is worth ~10% on the element-wise operators,
+    // measured, and `docs/PERFORMANCE.md` has the profile that found it.
+    [[nodiscard]] const float* data() const;
+    [[nodiscard]] float* data();
+
+    // The elements as a container, by value.
+    //
+    // Wanting a vector of the values is a real need -- comparing two results,
+    // holding a snapshot across an operation that overwrites the original -- and
+    // it is the need the old `data()` was being used for. The difference is the
+    // copy: this hands over a vector the caller owns, so resizing it or keeping
+    // it is their business and the tensor's invariants are not involved.
+    [[nodiscard]] std::vector<float> to_vector() const;
     [[nodiscard]] size_t size() const;
     [[nodiscard]] size_t ndim() const;
     [[nodiscard]] std::string shape_str() const;

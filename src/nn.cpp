@@ -35,10 +35,10 @@ Tensor unary_with_grad(const Tensor& input, Tensor out, Derivative derivative) {
     out.get_impl()->backward_fn = [input_copy, saved, derivative](const Tensor& grad_out) mutable {
         Tensor dX(input_copy.shape(), 0.0f, false);
         const size_t n = dX.size();
-        const float* ENGINE_RESTRICT g = grad_out.data().data();
-        const float* ENGINE_RESTRICT x = input_copy.data().data();
-        const float* ENGINE_RESTRICT y = saved.data().data();
-        float* ENGINE_RESTRICT dx = dX.data().data();
+        const float* ENGINE_RESTRICT g = grad_out.data();
+        const float* ENGINE_RESTRICT x = input_copy.data();
+        const float* ENGINE_RESTRICT y = saved.data();
+        float* ENGINE_RESTRICT dx = dX.data();
         parallel::parallel_for(n, parallel::kElementsPerThread, [&](size_t from, size_t to) {
             for (size_t i = from; i < to; ++i) dx[i] = g[i] * derivative(x[i], y[i]);
         });
@@ -155,8 +155,8 @@ Tensor Sigmoid::forward(const Tensor& input) {
     // sigma(x) = 1 / (1 + e^-x), computed stably at both extremes
     Tensor out(input.shape(), 0.0f, false);
     const size_t n = input.size();
-    const float* ENGINE_RESTRICT x = input.data().data();
-    float* ENGINE_RESTRICT y = out.data().data();
+    const float* ENGINE_RESTRICT x = input.data();
+    float* ENGINE_RESTRICT y = out.data();
     parallel::parallel_for(n, parallel::kElementsPerThread, [&](size_t from, size_t to) {
         for (size_t i = from; i < to; ++i) {
             y[i] = (x[i] >= 0.0f) ? 1.0f / (1.0f + std::exp(-x[i]))
@@ -169,8 +169,8 @@ Tensor Sigmoid::forward(const Tensor& input) {
 Tensor Tanh::forward(const Tensor& input) {
     Tensor out(input.shape(), 0.0f, false);
     const size_t n = input.size();
-    const float* ENGINE_RESTRICT x = input.data().data();
-    float* ENGINE_RESTRICT y = out.data().data();
+    const float* ENGINE_RESTRICT x = input.data();
+    float* ENGINE_RESTRICT y = out.data();
     parallel::parallel_for(n, parallel::kElementsPerThread, [&](size_t from, size_t to) {
         for (size_t i = from; i < to; ++i) y[i] = std::tanh(x[i]);
     });
@@ -181,8 +181,8 @@ Tensor GELU::forward(const Tensor& input) {
     // 0.5x(1 + tanh(sqrt(2/pi)(x + 0.044715x^3)))
     Tensor out(input.shape(), 0.0f, false);
     const size_t n = input.size();
-    const float* ENGINE_RESTRICT x = input.data().data();
-    float* ENGINE_RESTRICT y = out.data().data();
+    const float* ENGINE_RESTRICT x = input.data();
+    float* ENGINE_RESTRICT y = out.data();
     parallel::parallel_for(n, parallel::kElementsPerThread, [&](size_t from, size_t to) {
         for (size_t i = from; i < to; ++i) {
             y[i] = 0.5f * x[i] *
@@ -223,8 +223,8 @@ Tensor Dropout::forward(const Tensor& input) {
     // would need one generator per thread, seeded deterministically, not a
     // parallel_for wrapped around it.
     const size_t n = input.size();
-    const float* ENGINE_RESTRICT x = input.data().data();
-    float* ENGINE_RESTRICT y = out.data().data();
+    const float* ENGINE_RESTRICT x = input.data();
+    float* ENGINE_RESTRICT y = out.data();
     for (size_t i = 0; i < n; ++i) {
         (*mask)[i] = alive(global_rng()) ? scale : 0.0f;
         y[i] = x[i] * (*mask)[i];
@@ -251,13 +251,9 @@ std::string Dropout::name() const {
 // Sequential
 // ---------------------------------------------------------
 
-Sequential::Sequential(std::initializer_list<std::shared_ptr<Module>> layers) : layers_(layers) {
-    for (const auto& layer : layers_) {
-        if (!layer) throw std::invalid_argument("Sequential does not accept null layers.");
-    }
-}
-
-Sequential& Sequential::add(std::shared_ptr<Module> layer) {
+// The constructor is a template and lives in the header; it forwards each layer
+// to this, so the null check happens in exactly one place either way.
+Sequential& Sequential::add(std::unique_ptr<Module> layer) {
     if (!layer) throw std::invalid_argument("Sequential does not accept null layers.");
     layers_.push_back(std::move(layer));
     return *this;
@@ -358,7 +354,7 @@ Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targe
             throw std::out_of_range("Etiqueta " + std::to_string(targets[i]) +
                                     " outside the range of " + std::to_string(C) + " classes.");
         }
-        const float* row = logits.data().data() + i * C;
+        const float* row = logits.data() + i * C;
         const float max_v = *std::max_element(row, row + C);
 
         float sum_exp = 0.0f;
@@ -392,8 +388,8 @@ Tensor cross_entropy_loss(const Tensor& logits, const std::vector<size_t>& targe
             Tensor dX(logits_copy.shape(), 0.0f, false);
             // This one is split, unlike the forward: it is a per-element
             // write and accumulates nothing.
-            const float* ENGINE_RESTRICT pr = probs.data().data();
-            float* ENGINE_RESTRICT dx = dX.data().data();
+            const float* ENGINE_RESTRICT pr = probs.data();
+            float* ENGINE_RESTRICT dx = dX.data();
             const size_t rows_per_thread =
                 std::max<size_t>(1, parallel::kElementsPerThread / std::max<size_t>(1, C));
             parallel::parallel_for(N, rows_per_thread, [&](size_t from, size_t to) {
@@ -425,7 +421,7 @@ std::vector<size_t> argmax_rows(const Tensor& logits) {
 
     std::vector<size_t> result(N, 0);
     for (size_t i = 0; i < N; ++i) {
-        const float* row = logits.data().data() + i * C;
+        const float* row = logits.data() + i * C;
         result[i] = static_cast<size_t>(std::max_element(row, row + C) - row);
     }
     return result;

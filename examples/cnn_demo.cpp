@@ -57,7 +57,7 @@ void make_dataset(size_t samples_per_class, Tensor& X, std::vector<size_t>& y) {
     size_t idx = 0;
     for (size_t c = 0; c < kNumClasses; ++c) {
         for (size_t i = 0; i < samples_per_class; ++i) {
-            draw_shape(X.data().data() + idx * kImageSize * kImageSize, c);
+            draw_shape(X.data() + idx * kImageSize * kImageSize, c);
             y[idx] = c;
             ++idx;
         }
@@ -67,7 +67,7 @@ void make_dataset(size_t samples_per_class, Tensor& X, std::vector<size_t>& y) {
 void print_image(const Tensor& X, size_t index, size_t label) {
     static const char* names[] = {"barra horizontal", "barra vertical", "cruz"};
     std::cout << "  Muestra " << index << " (" << names[label] << "):\n";
-    const float* img = X.data().data() + index * kImageSize * kImageSize;
+    const float* img = X.data() + index * kImageSize * kImageSize;
     for (size_t r = 0; r < kImageSize; ++r) {
         std::cout << "    ";
         for (size_t c = 0; c < kImageSize; ++c) {

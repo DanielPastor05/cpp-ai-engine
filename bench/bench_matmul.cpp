@@ -198,11 +198,11 @@ double time_cublas_once(const Tensor& A, const Tensor& B, size_t n, size_t iters
     // Force both operands onto the device through the engine's own Storage, so
     // this row measures the same thing the others do: a kernel over resident
     // data, with no transfer inside the timed region.
-    const float* dA = A.get_impl()->storage.device();
-    const float* dB = B.get_impl()->storage.device();
+    const float* dA = A.storage().device();
+    const float* dB = B.storage().device();
 
     Tensor C({n, n}, 0.0f, false);
-    float* dC = C.get_impl()->storage.device_write();
+    float* dC = C.storage().device_write();
 
     const int m = static_cast<int>(n);
     const float alpha = 1.0f;
@@ -253,7 +253,7 @@ bool cublas_agrees(size_t n) {
 
     cuda::set_matmul_kernel(cuda::MatmulKernel::Auto);
     const Tensor want = A.matmul(B);
-    const std::vector<float> expected = want.data();
+    const std::vector<float> expected = want.to_vector();
 
     const double seconds = time_cublas_once(A, B, n, 1, 0.0);
     if (seconds == 0.0) return false;
@@ -264,13 +264,12 @@ bool cublas_agrees(size_t n) {
     const int m = static_cast<int>(n);
     const float alpha = 1.0f;
     const float beta = 0.0f;
-    cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, m, m, m, &alpha, B.get_impl()->storage.device(),
-                m, A.get_impl()->storage.device(), m, &beta, C.get_impl()->storage.device_write(),
-                m);
+    cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, m, m, m, &alpha, B.storage().device(), m,
+                A.storage().device(), m, &beta, C.storage().device_write(), m);
     cuda::synchronize();
     cublasDestroy(handle);
 
-    const std::vector<float> got = C.data();
+    const std::vector<float> got = C.to_vector();
 
     // The scale is max(1, |expected|), the same one the parity test uses, and the
     // reason matters. Dividing by |expected| alone reports a huge relative error

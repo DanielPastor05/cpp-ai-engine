@@ -61,12 +61,12 @@ std::string position_of(size_t flat, const std::vector<size_t>& shape) {
 void compare(const std::string& what, const std::function<Tensor()>& compute, float tol = 1e-5f) {
     cuda::set_enabled(false);
     const Tensor on_cpu = compute();
-    const std::vector<float> want = on_cpu.data();
+    const std::vector<float> want = on_cpu.to_vector();
     const std::vector<size_t> shape = on_cpu.shape();
 
     cuda::set_enabled(true);
     const size_t launched_before = cuda::kernels_launched();
-    const std::vector<float> got = compute().data();
+    const std::vector<float> got = compute().to_vector();
     const size_t launched = cuda::kernels_launched() - launched_before;
 
     ++testing::g_checks;
@@ -274,9 +274,8 @@ void run_cuda_parity_tests() {
                 for (size_t i = 0; i < out.size(); ++i)
                     out.data()[i] = 0.5f * (float)(i % 5) - 1.0f;
 
-                if (!engine::cuda::ops::matmul(A.get_impl()->storage, B.get_impl()->storage,
-                                               out.get_impl()->storage, 1, c.M, c.K, c.N, true,
-                                               true, 1.0f)) {
+                if (!engine::cuda::ops::matmul(A.storage(), B.storage(), out.storage(), 1, c.M, c.K,
+                                               c.N, true, true, 1.0f)) {
                     // What accumulation means, on the side that has no kernel.
                     const Tensor product = A.matmul(B);
                     for (size_t i = 0; i < out.size(); ++i) out.data()[i] += product.data()[i];
@@ -347,9 +346,9 @@ void run_cuda_parity_tests() {
                 for (size_t i = 0; i < B.size(); ++i) B.data()[i] = (float)((int)(i % 3) - 1);
 
                 cuda::set_enabled(false);
-                const std::vector<float> want = A.matmul(B).data();
+                const std::vector<float> want = A.matmul(B).to_vector();
                 cuda::set_enabled(true);
-                const std::vector<float> got = A.matmul(B).data();
+                const std::vector<float> got = A.matmul(B).to_vector();
                 for (size_t i = 0; i < want.size() && exact; ++i) exact = want[i] == got[i];
                 if (!exact) break;
             }
@@ -448,10 +447,10 @@ void run_cuda_parity_tests() {
                 }
 
                 cuda::set_enabled(false);
-                const std::vector<float> want = A.matmul(B).data();
+                const std::vector<float> want = A.matmul(B).to_vector();
                 cuda::set_enabled(true);
                 cuda::set_matmul_kernel(cuda::MatmulKernel::TensorCore);
-                const std::vector<float> got = A.matmul(B).data();
+                const std::vector<float> got = A.matmul(B).to_vector();
 
                 for (size_t i = 0; i < want.size(); ++i) {
                     if (want[i] != got[i]) {
@@ -477,13 +476,13 @@ void run_cuda_parity_tests() {
         Tensor A = Tensor::randn({256, 256});
         Tensor B = Tensor::randn({256, 256});
         cuda::set_enabled(false);
-        const std::vector<float> want = A.matmul(B).data();
+        const std::vector<float> want = A.matmul(B).to_vector();
 
         cuda::set_enabled(true);
         cuda::set_matmul_kernel(cuda::MatmulKernel::TensorCore);
-        const std::vector<float> tf32 = A.matmul(B).data();
+        const std::vector<float> tf32 = A.matmul(B).to_vector();
         cuda::set_matmul_kernel(cuda::MatmulKernel::Vectorized);
-        const std::vector<float> fp32 = A.matmul(B).data();
+        const std::vector<float> fp32 = A.matmul(B).to_vector();
 
         auto worst_against_cpu = [&want](const std::vector<float>& got) {
             double worst = 0.0;
@@ -543,10 +542,10 @@ void run_cuda_parity_tests() {
                 for (size_t i = 0; i < Q.size(); ++i) Q.data()[i] = (float)((int)(i % 7) - 3);
 
                 cuda::set_enabled(false);
-                const std::vector<float> want_i = P.matmul(Q).data();
+                const std::vector<float> want_i = P.matmul(Q).to_vector();
                 cuda::set_enabled(true);
                 cuda::set_matmul_kernel(cuda::MatmulKernel::TensorCoreFp16);
-                const std::vector<float> got_i = P.matmul(Q).data();
+                const std::vector<float> got_i = P.matmul(Q).to_vector();
                 for (size_t i = 0; i < want_i.size() && exact; ++i) exact = want_i[i] == got_i[i];
                 if (!exact) break;
             }
@@ -717,11 +716,11 @@ void run_cuda_parity_tests() {
                 Tensor w = Tensor::zeros(X.shape());
                 for (size_t i = 0; i < w.size(); ++i) w.data()[i] = 0.2f * (i % 5) - 0.1f;
                 (ln.forward(X) * w).sum().backward();
-                const std::vector<float> first = ln.parameters()[0].grad().data();
+                const std::vector<float> first = ln.parameters()[0].grad().to_vector();
 
                 ln.parameters()[0].zero_grad();
                 (ln.forward(X) * w).sum().backward();
-                const std::vector<float> second = ln.parameters()[0].grad().data();
+                const std::vector<float> second = ln.parameters()[0].grad().to_vector();
 
                 bool identical = first.size() == second.size();
                 for (size_t i = 0; i < first.size() && identical; ++i) {
@@ -917,7 +916,11 @@ void run_cuda_parity_tests() {
                 w.matmul(x).relu().sum().backward();
                 opt.step();
             }
-            return w.data();
+            // to_vector, not data(): `auto` on the lambda's return type used to
+            // deduce a vector because data() handed back a reference to one, and
+            // the copy happened by accident. A pointer would deduce a pointer,
+            // into a buffer this lambda destroys on the next line.
+            return w.to_vector();
         };
 
         auto run_adam = [&](bool on) {
@@ -930,7 +933,11 @@ void run_cuda_parity_tests() {
                 w.matmul(x).relu().sum().backward();
                 opt.step();
             }
-            return w.data();
+            // to_vector, not data(): `auto` on the lambda's return type used to
+            // deduce a vector because data() handed back a reference to one, and
+            // the copy happened by accident. A pointer would deduce a pointer,
+            // into a buffer this lambda destroys on the next line.
+            return w.to_vector();
         };
 
         for (int which = 0; which < 2; ++which) {
@@ -986,14 +993,14 @@ void run_cuda_parity_tests() {
         const cuda::TransferStats after = cuda::transfer_stats();
         testing::check(after.to_host_count == 0,
                        "reshape of a resident tensor does not pull it down to host");
-        testing::check(flat.get_impl()->storage.resident_on_device(),
+        testing::check(flat.storage().resident_on_device(),
                        "and the reshape's result is still on the device");
 
         // The values have to match, of course: a botched D2D copy would give a resident
         // tensor full of garbage, which is worse than not accelerating anything.
         //
-        const std::vector<float> reshaped = flat.data();
-        const std::vector<float> original = A.matmul(B).data();
+        const std::vector<float> reshaped = flat.to_vector();
+        const std::vector<float> original = A.matmul(B).to_vector();
         bool same = reshaped.size() == original.size();
         for (size_t i = 0; same && i < reshaped.size(); ++i) same = (reshaped[i] == original[i]);
         testing::check(same, "and the values survive the device-to-device copy");
@@ -1018,9 +1025,9 @@ void run_cuda_parity_tests() {
         cuda::reset_transfer_stats();
         A.matmul(B).relu().sum().backward();
 
-        testing::check(A.grad().get_impl()->storage.resident_on_device(),
+        testing::check(A.grad().storage().resident_on_device(),
                        "the accumulated gradient stays on the device");
-        testing::check(B.grad().get_impl()->storage.resident_on_device(),
+        testing::check(B.grad().storage().resident_on_device(),
                        "the second operand's gradient too");
     }
 
@@ -1048,9 +1055,9 @@ void run_cuda_parity_tests() {
             // A new tensor each time round, not `Tensor x = X`: Tensor is a handle over a
             // shared TensorImpl, so copying it would share the gradient and the second pass
             // would accumulate on top of the first.
-            Tensor x(X.shape(), X.data(), true);
+            Tensor x(X.shape(), X.to_vector(), true);
             ((x.relu() * Wa) + (x.relu() * Wb)).sum().backward();
-            (on ? got : want) = x.grad().data();
+            (on ? got : want) = x.grad().to_vector();
         }
         cuda::set_enabled(true);
 

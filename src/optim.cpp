@@ -52,8 +52,8 @@ void SGD::step() {
         // from p.grad().data() would point into a temporary.
         //
         Tensor grad_tensor = p.grad();
-        Storage& param = p.get_impl()->storage;
-        Storage& grad = grad_tensor.get_impl()->storage;
+        Storage& param = p.storage();
+        Storage& grad = grad_tensor.storage();
         Storage* vel = velocity_.empty() ? nullptr : &velocity_[i];
 
         // Offered to the device before anything reads .data(). That ordering is
@@ -127,8 +127,8 @@ void Adam::step() {
         // from p.grad().data() would point into a temporary.
         //
         Tensor grad_tensor = p.grad();
-        Storage& param = p.get_impl()->storage;
-        Storage& grad = grad_tensor.get_impl()->storage;
+        Storage& param = p.storage();
+        Storage& grad = grad_tensor.storage();
 
         if (cuda::ops::adam_step(param, grad, m_[i], v_[i], lr_, beta1_, beta2_, eps_,
                                  weight_decay_, bias_c1, bias_c2)) {
@@ -185,11 +185,12 @@ float clip_grad_norm(const std::vector<Tensor>& parameters, float max_norm) {
         if (!p.has_grad()) continue;
         Tensor g = p.grad();
         double partial = 0.0;
-        if (cuda::ops::reduce_sum_squares(g.get_impl()->storage, partial)) {
+        if (cuda::ops::reduce_sum_squares(g.storage(), partial)) {
             total += partial;
             continue;
         }
-        for (float v : g.data()) total += static_cast<double>(v) * v;
+        const float* ENGINE_RESTRICT gp = g.data();
+        for (size_t i = 0; i < g.size(); ++i) total += static_cast<double>(gp[i]) * gp[i];
     }
     const float norm = static_cast<float>(std::sqrt(total));
 
@@ -198,8 +199,9 @@ float clip_grad_norm(const std::vector<Tensor>& parameters, float max_norm) {
         for (const Tensor& p : parameters) {
             if (!p.has_grad()) continue;
             Tensor g = p.grad();
-            if (cuda::ops::scale_in_place(g.get_impl()->storage, scale)) continue;
-            for (float& v : g.data()) v *= scale;
+            if (cuda::ops::scale_in_place(g.storage(), scale)) continue;
+            float* ENGINE_RESTRICT gp = g.data();
+            for (size_t i = 0; i < g.size(); ++i) gp[i] *= scale;
         }
     }
     return norm;

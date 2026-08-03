@@ -231,13 +231,14 @@ void test_train_eval_and_dropout() {
     Tensor x({1000}, 1.0f, false);
     Tensor trained = drop(x);
     size_t zeros = 0;
-    for (float v : trained.data())
-        if (v == 0.0f) ++zeros;
+    for (size_t i = 0; i < trained.size(); ++i) {
+        if (trained.data()[i] == 0.0f) ++zeros;
+    }
     check(zeros > 400 && zeros < 600, "in training it zeroes about half");
 
     // The mean is preserved thanks to the 1/(1-p) scaling
     float mean = 0.0f;
-    for (float v : trained.data()) mean += v;
+    for (size_t i = 0; i < trained.size(); ++i) mean += trained.data()[i];
     mean /= 1000.0f;
     check(std::fabs(mean - 1.0f) < 0.1f, "the scaling preserves the mean");
 
@@ -548,9 +549,10 @@ void test_idx_reader() {
     // Normalisation to [0, 1]: with 0-255 the first layer's gradients would be two
     // orders of magnitude larger
     float min_v = 1e9f, max_v = -1e9f;
-    for (float v : train.images.data()) {
-        min_v = std::min(min_v, v);
-        max_v = std::max(max_v, v);
+    const float* pixels = train.images.data();
+    for (size_t i = 0; i < train.images.size(); ++i) {
+        min_v = std::min(min_v, pixels[i]);
+        max_v = std::max(max_v, pixels[i]);
     }
     check(min_v >= 0.0f && max_v <= 1.0f, "the pixels end up normalised to [0, 1]");
     check(max_v > 0.9f, "and they reach the maximum (there are saturated pixels)");

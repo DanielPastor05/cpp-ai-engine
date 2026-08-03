@@ -3,9 +3,9 @@
 
 #include "engine/tensor.hpp"
 
-#include <initializer_list>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -39,7 +39,7 @@ public:
     // when inferring; the switch propagates to sub-layers.
     virtual void train(bool mode = true) { training_ = mode; }
     void eval() { train(false); }
-    bool is_training() const { return training_; }
+    bool is_training() const noexcept { return training_; }
 
     virtual std::string name() const { return "Module"; }
 
@@ -68,8 +68,8 @@ public:
 
     Tensor& weight() { return weight_; }
     Tensor& bias() { return bias_; }
-    size_t in_features() const { return in_features_; }
-    size_t out_features() const { return out_features_; }
+    size_t in_features() const noexcept { return in_features_; }
+    size_t out_features() const noexcept { return out_features_; }
 
 private:
     size_t in_features_;
@@ -125,7 +125,7 @@ public:
 
     Tensor forward(const Tensor& input) override;
     std::string name() const override;
-    float probability() const { return p_; }
+    float probability() const noexcept { return p_; }
 
 private:
     float p_;
@@ -137,9 +137,33 @@ private:
 class Sequential : public Module {
 public:
     Sequential() = default;
-    Sequential(std::initializer_list<std::shared_ptr<Module>> layers);
 
-    Sequential& add(std::shared_ptr<Module> layer);
+    // Variadic rather than initializer_list, and that is not a style choice.
+    //
+    // A Sequential owns its layers outright: nothing else in the engine holds a
+    // handle to one, `at()` hands back a reference, and `parameters()` returns
+    // tensors. So `unique_ptr` is the type that says what is true, and
+    // `shared_ptr` was paying an atomic refcount and a second pointer to
+    // describe sharing that never happens.
+    //
+    // What stood in the way was the constructor. `std::initializer_list` hands
+    // out `const` references and there is no way to move out of one, so a braced
+    // list of `unique_ptr` cannot be consumed -- which is why this took a
+    // shared_ptr in the first place. A variadic template takes the same
+    // `Sequential{make<Linear>(...), make<ReLU>()}` at the call site and can move
+    // each argument into place.
+    //
+    // The enable_if is load-bearing: without it this template is a better match
+    // than the copy constructor for a non-const `Sequential&`, and copying one
+    // would stop compiling for a confusing reason rather than the real one.
+    template <typename... Layers,
+              typename =
+                  std::enable_if_t<(std::is_convertible_v<Layers, std::unique_ptr<Module>> && ...)>>
+    explicit Sequential(Layers&&... layers) {
+        (add(std::forward<Layers>(layers)), ...);
+    }
+
+    Sequential& add(std::unique_ptr<Module> layer);
 
     Tensor forward(const Tensor& input) override;
     std::vector<Tensor> parameters() override;
@@ -149,17 +173,17 @@ public:
     std::string name() const override { return "Sequential"; }
 
     void summary() const;
-    size_t size() const { return layers_.size(); }
+    size_t size() const noexcept { return layers_.size(); }
     Module& at(size_t index);
 
 private:
-    std::vector<std::shared_ptr<Module>> layers_;
+    std::vector<std::unique_ptr<Module>> layers_;
 };
 
 // Construction helpers
 template <typename T, typename... Args>
-std::shared_ptr<T> make(Args&&... args) {
-    return std::make_shared<T>(std::forward<Args>(args)...);
+std::unique_ptr<T> make(Args&&... args) {
+    return std::make_unique<T>(std::forward<Args>(args)...);
 }
 
 // ---------------------------------------------------------

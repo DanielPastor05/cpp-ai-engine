@@ -49,7 +49,7 @@ void make_dataset(size_t num_samples, Tensor& ids, std::vector<size_t>& labels,
         std::shuffle(values.begin(), values.end(), engine::global_rng());
         const size_t m = slot(engine::global_rng());
 
-        float* row = ids.data().data() + n * kSeqLen;
+        float* row = ids.data() + n * kSeqLen;
         row[0] = static_cast<float>(kCls);
 
         // The values are copied with the marker inserted just before the m-th

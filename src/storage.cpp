@@ -4,6 +4,7 @@
 #include "engine/cuda.hpp"
 #endif
 
+#include <cassert>
 #include <utility>
 
 namespace engine {
@@ -60,9 +61,17 @@ Storage::~Storage() = default;
 
 void Storage::materialise() const {
     if (buf_->host.size() != buf_->count) buf_->host.assign(buf_->count, buf_->fill);
+    // The postcondition every caller relies on and none of them state: after
+    // this, host.size() is the element count. The lazy mirror made those two
+    // able to disagree, and the whole class of bug it can cause is a loop that
+    // trusts `count` walking off the end of a vector that was never grown.
+    assert(buf_->host.size() == buf_->count &&
+           "Storage: the host mirror does not match the element count");
 }
 
 const std::vector<float>& Storage::host() const {
+    // Callers index this with anything up to size(), which reads `count`.
+
 #ifdef ENGINE_CUDA
     sync_host();
 #endif
@@ -134,6 +143,8 @@ void Storage::ensure_device_buffer() const {
 }
 
 void Storage::sync_host() const {
+    assert((buf_->host_valid || buf_->device_valid) &&
+           "Storage: sync_host() with neither copy valid -- nothing to sync from");
     if (buf_->host_valid) return;
     if (buf_->device != nullptr && buf_->count != 0) {
         // resize and not materialise(): the download is about to overwrite every
@@ -162,11 +173,21 @@ const float* Storage::device() const {
 float* Storage::device_mut() {
     sync_device();
     buf_->host_valid = false;
+    // The one invariant this class exists to hold, asserted where it can
+    // actually break. sync_device() has just set device_valid, so dropping the
+    // host copy leaves the device one -- unless sync_device() took its early
+    // return on a zero-length buffer that never had a device pointer.
+    assert((buf_->host_valid || buf_->device_valid) &&
+           "Storage: neither copy is valid after device_mut()");
     return buf_->device;
 }
 
 float* Storage::device_write() {
     ensure_device_buffer();
+    // A zero-length buffer gets no device allocation, so claiming the device
+    // copy is the valid one would be a lie that the next host read believes.
+    assert((buf_->count == 0 || buf_->device != nullptr) &&
+           "Storage: device_write() with nothing allocated to write to");
     // Nothing is uploaded: the kernel is going to write the whole buffer. What was
     // on the host stops being valid as soon as it comes back.
     buf_->host_valid = false;
@@ -175,6 +196,11 @@ float* Storage::device_write() {
 }
 
 void Storage::revert_device_write() {
+    // Only ever correct straight after a device_write() whose kernel did not
+    // launch: the host copy is still whatever it was, and the device one holds
+    // uninitialised memory. Calling it at any other time hands the caller a
+    // stale host buffer and calls it current.
+    assert(!buf_->host_valid && "Storage: revert_device_write() with a valid host copy");
     buf_->host_valid = true;
     buf_->device_valid = false;
 }

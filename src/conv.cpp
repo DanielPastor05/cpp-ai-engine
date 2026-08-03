@@ -79,13 +79,13 @@ Tensor im2col(const Tensor& input, const Window2d& window) {
     // It is offered to the device first. If the device takes it, the columns stay
     // up there and the product behind reads them without crossing PCIe: they are
     // kH*kW times the input, so uploading them costs more than multiplying them.
-    if (cuda::ops::im2col(input.get_impl()->storage, cols.get_impl()->storage,
+    if (cuda::ops::im2col(input.storage(), cols.storage(),
                           {N, C, H, W, kH, kW, window.stride, window.padding, oH, oW})) {
         return cols;
     }
 
-    const std::vector<float>& src = input.data();
-    std::vector<float>& dst = cols.data();
+    const float* src = input.data();
+    float* dst = cols.data();
 
     // A single iteration writes each output row, so splitting by rows creates no
     // race.
@@ -146,13 +146,13 @@ Tensor col2im(const Tensor& cols, const std::vector<size_t>& input_shape, const 
 
     Tensor out(input_shape, 0.0f, false);
 
-    if (cuda::ops::col2im(cols.get_impl()->storage, out.get_impl()->storage,
+    if (cuda::ops::col2im(cols.storage(), out.storage(),
                           {N, C, H, W, kH, kW, window.stride, window.padding, oH, oW})) {
         return out;
     }
 
-    const std::vector<float>& src = cols.data();
-    std::vector<float>& dst = out.data();
+    const float* src = cols.data();
+    float* dst = out.data();
 
     // Splitting by rows is NOT possible here: two overlapping windows accumulate
     // into the same pixel. The split is by batch image, which are disjoint regions
@@ -361,11 +361,10 @@ Tensor MaxPool2d::forward(const Tensor& input) {
     const cuda::ops::WindowShape shape{
         N, C, H, W, window_.kernel_h, window_.kernel_w, window_.stride, window_.padding, oH, oW};
 
-    if (!cuda::ops::maxpool(input.get_impl()->storage, out.get_impl()->storage,
-                            argmax.get_impl()->storage, shape)) {
-        const std::vector<float>& src = input.data();
-        std::vector<float>& dst = out.data();
-        float* am = argmax.data().data();
+    if (!cuda::ops::maxpool(input.storage(), out.storage(), argmax.storage(), shape)) {
+        const float* src = input.data();
+        float* dst = out.data();
+        float* am = argmax.data();
 
         // It was the only operation in this file not split across threads, with im2col
         // and col2im parallel right above it. Each (n, c) plane writes its own chunk
@@ -426,11 +425,11 @@ Tensor MaxPool2d::forward(const Tensor& input) {
     out.get_impl()->backward_fn = [input_copy, argmax, shape](const Tensor& grad_out) mutable {
         // Only the maximum influenced the output, so only it receives gradient.
         Tensor dX(input_copy.shape(), 0.0f, false);
-        if (!cuda::ops::maxpool_backward(argmax.get_impl()->storage, grad_out.get_impl()->storage,
-                                         dX.get_impl()->storage, shape)) {
-            const float* ENGINE_RESTRICT a = argmax.data().data();
-            const float* ENGINE_RESTRICT g = grad_out.data().data();
-            float* ENGINE_RESTRICT d = dX.data().data();
+        if (!cuda::ops::maxpool_backward(argmax.storage(), grad_out.storage(), dX.storage(),
+                                         shape)) {
+            const float* ENGINE_RESTRICT a = argmax.data();
+            const float* ENGINE_RESTRICT g = grad_out.data();
+            float* ENGINE_RESTRICT d = dX.data();
             // The += is necessary: with a stride smaller than the kernel, two
             // overlapping windows may have chosen the same pixel.
             for (size_t i = 0; i < argmax.size(); ++i) {

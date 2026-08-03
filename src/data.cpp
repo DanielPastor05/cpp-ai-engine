@@ -78,7 +78,7 @@ Tensor load_idx_images(const std::string& path, size_t max_samples) {
         }
         // Normalised to [0, 1]: with values 0-255 the first layer's gradients
         // would be two orders of magnitude larger than is reasonable.
-        float* dst = images.data().data() + i * pixels;
+        float* dst = images.data() + i * pixels;
         for (size_t p = 0; p < pixels; ++p) {
             dst[p] = static_cast<float>(buffer[p]) / 255.0f;
         }

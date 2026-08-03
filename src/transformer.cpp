@@ -36,23 +36,23 @@ namespace {
 // condition instead of an if wrapped around forty lines.
 void layernorm_cpu(const Tensor& input, const Tensor& gamma, const Tensor& beta, Tensor& out,
                    Tensor& xhat, Tensor& inv_std, size_t rows, size_t D, float inv_d, float eps) {
-    const std::vector<float>& x = input.data();
-    const std::vector<float>& g = gamma.data();
-    const std::vector<float>& b = beta.data();
+    const float* x = input.data();
+    const float* g = gamma.data();
+    const float* b = beta.data();
 
     // Each row is normalised with its own mean and variance, so no reduction
     // crosses a chunk boundary: splitting by row gives the same result bit for
     // bit with one thread or with eight.
-    float* ENGINE_RESTRICT xhat_out = xhat.data().data();
-    float* ENGINE_RESTRICT out_data = out.data().data();
-    float* ENGINE_RESTRICT inv_out = inv_std.data().data();
+    float* ENGINE_RESTRICT xhat_out = xhat.data();
+    float* ENGINE_RESTRICT out_data = out.data();
+    float* ENGINE_RESTRICT inv_out = inv_std.data();
     // The threshold is counted in rows, but the work is in the elements: a row
     // is D values and three passes over them.
     const size_t rows_per_thread =
         std::max<size_t>(1, parallel::kElementsPerThread / std::max<size_t>(1, D));
     parallel::parallel_for(rows, rows_per_thread, [&](size_t from, size_t to) {
         for (size_t i = from; i < to; ++i) {
-            const float* row = x.data() + i * D;
+            const float* ENGINE_RESTRICT row = x + i * D;
 
             float mean = 0.0f;
             for (size_t j = 0; j < D; ++j) mean += row[j];
@@ -101,10 +101,8 @@ Tensor LayerNorm::forward(const Tensor& input) {
     // xhat and inv_std together. Offered before any .data() call, because the
     // first accessor below would pull the input down and there would be nothing
     // resident left to work on.
-    if (!cuda::ops::layernorm(input.get_impl()->storage, gamma_.get_impl()->storage,
-                              beta_.get_impl()->storage, out.get_impl()->storage,
-                              xhat.get_impl()->storage, inv_std.get_impl()->storage, rows, D,
-                              eps_)) {
+    if (!cuda::ops::layernorm(input.storage(), gamma_.storage(), beta_.storage(), out.storage(),
+                              xhat.storage(), inv_std.storage(), rows, D, eps_)) {
         layernorm_cpu(input, gamma_, beta_, out, xhat, inv_std, rows, D, inv_d, eps_);
     }
 
@@ -128,20 +126,19 @@ Tensor LayerNorm::forward(const Tensor& input) {
         // Offered before a single accessor below, for the usual reason: the
         // first .data() would pull grad_out and xhat down and leave the device
         // path nothing resident to work on.
-        if (cuda::ops::layernorm_backward(
-                grad_out.get_impl()->storage, xhat.get_impl()->storage,
-                gamma_copy.get_impl()->storage, inv_std.get_impl()->storage, dX.get_impl()->storage,
-                dgamma.get_impl()->storage, dbeta.get_impl()->storage, rows, D)) {
+        if (cuda::ops::layernorm_backward(grad_out.storage(), xhat.storage(), gamma_copy.storage(),
+                                          inv_std.storage(), dX.storage(), dgamma.storage(),
+                                          dbeta.storage(), rows, D)) {
             if (input_copy.requires_grad()) input_copy.add_grad(dX);
             if (gamma_copy.requires_grad()) gamma_copy.add_grad(dgamma);
             if (beta_copy.requires_grad()) beta_copy.add_grad(dbeta);
             return;
         }
 
-        const std::vector<float>& dy = grad_out.data();
-        const std::vector<float>& h = xhat.data();
-        const std::vector<float>& g = gamma_copy.data();
-        const std::vector<float>& inv = inv_std.data();
+        const float* dy = grad_out.data();
+        const float* h = xhat.data();
+        const float* g = gamma_copy.data();
+        const float* inv = inv_std.data();
 
         // This loop stays serial deliberately, unlike the forward's. dX is
         // independent per row, but dgamma and dbeta accumulate **across** rows:
@@ -216,7 +213,9 @@ Tensor Embedding::forward(const Tensor& ids) {
 
     std::vector<size_t> indices;
     indices.reserve(ids.size());
-    for (float v : ids.data()) {
+    const float* ENGINE_RESTRICT id_values = ids.data();
+    for (size_t idx = 0; idx < ids.size(); ++idx) {
+        const float v = id_values[idx];
         const long long id = std::llround(v);
         if (id < 0 || static_cast<size_t>(id) >= num_embeddings_) {
             throw std::out_of_range("Embedding: token " + std::to_string(id) +

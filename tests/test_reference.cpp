@@ -79,7 +79,7 @@ void set_param(Tensor& param, const Tensor& source) {
         throw std::runtime_error("The fixture's weight has shape " + source.shape_str() +
                                  " and the layer expects " + param.shape_str() + ".");
     }
-    param.data() = source.data();
+    std::copy_n(source.data(), source.size(), param.data());
     param.set_requires_grad(true);
     param.zero_grad();
 }
@@ -277,7 +277,8 @@ void test_cross_entropy_case() {
     // would leave the reference dangling, because the temporary dies before the loop
     // begins.
     const Tensor target_values = get(f, "targets");
-    for (float v : target_values.data()) targets.push_back(static_cast<size_t>(v));
+    for (size_t i = 0; i < target_values.size(); ++i)
+        targets.push_back(static_cast<size_t>(target_values.data()[i]));
 
     Tensor loss = nn::cross_entropy_loss(logits, targets);
     check_matches(loss, get(f, "output"), "cross_entropy: loss");

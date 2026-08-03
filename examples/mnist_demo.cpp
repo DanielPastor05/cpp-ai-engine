@@ -36,7 +36,7 @@ const std::string kCheckpoint = "mnist_cnn.bin";
 
 void print_digit(const Tensor& images, size_t index, size_t label) {
     std::cout << "  Label " << label << ":\n";
-    const float* img = images.data().data() + index * 28 * 28;
+    const float* img = images.data() + index * 28 * 28;
     for (size_t r = 0; r < 28; r += 2) {  // every other row: terminal cells are tall
         std::cout << "    ";
         for (size_t c = 0; c < 28; ++c) {

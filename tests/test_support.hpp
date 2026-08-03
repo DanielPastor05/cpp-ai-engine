@@ -90,7 +90,7 @@ inline void check_gradient(const std::string& what, Tensor input,
         return;
     }
 
-    const std::vector<float> analytic = input.grad().data();
+    const std::vector<float> analytic = input.grad().to_vector();
     const float h = 1e-3f;
     float max_error = 0.0f;
 

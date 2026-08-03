@@ -54,7 +54,7 @@ public:
     std::string name() const override;
 
     Tensor& weight() { return weight_; }
-    size_t dim() const { return dim_; }
+    size_t dim() const noexcept { return dim_; }
 
 private:
     size_t num_embeddings_;
@@ -110,9 +110,9 @@ public:
     // useful for inspecting what the model looks at. They have to be switched
     // on with keep_attention(true): saving them costs a (B, H, S, S) copy every
     // step, and during training nobody reads them.
-    const Tensor& last_attention() const { return last_attention_; }
+    const Tensor& last_attention() const noexcept { return last_attention_; }
     void keep_attention(bool keep) { keep_attention_ = keep; }
-    bool keeps_attention() const { return keep_attention_; }
+    bool keeps_attention() const noexcept { return keep_attention_; }
 
 private:
     size_t d_model_;

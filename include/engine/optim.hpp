@@ -29,10 +29,10 @@ public:
     // because add_grad accumulates rather than overwrites)
     void zero_grad();
 
-    float learning_rate() const { return lr_; }
+    float learning_rate() const noexcept { return lr_; }
     void set_learning_rate(float lr) { lr_ = lr; }
 
-    const std::vector<Tensor>& parameters() const { return params_; }
+    const std::vector<Tensor>& parameters() const noexcept { return params_; }
 
 protected:
     std::vector<Tensor> params_;
@@ -76,7 +76,7 @@ public:
     void step() override;
 
     // Number of steps applied (used by the bias correction)
-    size_t steps() const { return t_; }
+    size_t steps() const noexcept { return t_; }
 
 private:
     float beta1_;
@@ -113,8 +113,8 @@ public:
     // Advances one epoch and applies the new learning rate
     void step();
 
-    size_t epoch() const { return epoch_; }
-    float base_learning_rate() const { return base_lr_; }
+    size_t epoch() const noexcept { return epoch_; }
+    float base_learning_rate() const noexcept { return base_lr_; }
 
 protected:
     // The learning rate for a given epoch (0 is the initial one)

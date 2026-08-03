@@ -91,7 +91,7 @@ void save_parameters(const std::vector<std::pair<std::string, Tensor>>& params,
         write_raw<uint32_t>(out, static_cast<uint32_t>(tensor.ndim()));
         for (size_t dim : tensor.shape()) write_raw<uint64_t>(out, static_cast<uint64_t>(dim));
 
-        out.write(reinterpret_cast<const char*>(tensor.data().data()),
+        out.write(reinterpret_cast<const char*>(tensor.data()),
                   static_cast<std::streamsize>(tensor.size() * sizeof(float)));
     }
 
@@ -276,7 +276,19 @@ size_t load_parameters(std::vector<std::pair<std::string, Tensor>>& params, cons
                                      " in the model, and a different one in '" + path + "'.");
         }
 
-        entry.second.data() = it->second.data;
+        // Assigning over the whole buffer is what this used to do, and it was
+        // reachable from a file: nothing here proved the parsed vector was as
+        // long as the shape it was checked against, so a truncated one
+        // silently shortened a live tensor. Copying element by element into a
+        // buffer that cannot be resized makes the length a precondition
+        // instead of a consequence.
+        if (it->second.data.size() != entry.second.size()) {
+            throw std::runtime_error("The parameter '" + entry.first + "' declares shape " +
+                                     entry.second.shape_str() + " but carries " +
+                                     std::to_string(it->second.data.size()) + " values in '" +
+                                     path + "'.");
+        }
+        std::copy_n(it->second.data.data(), entry.second.size(), entry.second.data());
         used.insert(entry.first);
         ++loaded;
     }
