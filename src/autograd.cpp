@@ -66,7 +66,9 @@ NoGradGuard::~NoGradGuard() {
 
 // Gradient backpropagation
 void backward(Tensor& root_tensor) {
-    auto root_impl = root_tensor.get_impl();
+    // A reference, not a copy: get_impl() hands back a const reference now, so
+    // `auto` here would copy the shared_ptr and pay a refcount for nothing.
+    const auto& root_impl = root_tensor.get_impl();
     if (!root_impl) return;
 
     // If the root has no gradient assigned yet, assign 1.0f (dLoss/dLoss = 1).

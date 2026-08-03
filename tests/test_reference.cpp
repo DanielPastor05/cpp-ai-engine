@@ -11,6 +11,8 @@
 
 #include "test_support.hpp"
 
+#include <algorithm>
+
 #include "engine/serialize.hpp"
 
 #include <map>
