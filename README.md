@@ -7,7 +7,7 @@ PyTorch**.
 [![CI](https://github.com/DanielPastor05/cpp-ai-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/DanielPastor05/cpp-ai-engine/actions/workflows/ci.yml)
 [![API docs](https://img.shields.io/badge/API-reference-blue)](https://danielpastor05.github.io/cpp-ai-engine/)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)
-![tests](https://img.shields.io/badge/tests-530%20%2B%20644%20checks-brightgreen)
+![tests](https://img.shields.io/badge/tests-530%20%2B%20647%20checks-brightgreen)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
 No dependencies. No BLAS. The point is to implement it, not to call it.
@@ -41,7 +41,7 @@ starts succeeding, the experiment is broken — not the model.
   <img alt="MNIST training time: this engine against PyTorch, on CPU and on CUDA. The engine takes 24.1 s on CPU against PyTorch's 5.30, and 4.00 s on CUDA against PyTorch's 2.10." src="docs/img/mnist-vs-pytorch.svg">
 </picture>
 
-**The engine loses to PyTorch, and that is the number worth publishing.** "5.5×
+**The engine loses to PyTorch, and that is the number worth publishing.** "6.03×
 faster on the GPU than on the CPU" does not say the GPU path is fast — it says
 the CPU path is slow. Measured against a framework anyone can install, on the
 same card and the same model: 1.90× behind, and

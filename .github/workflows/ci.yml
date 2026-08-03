@@ -318,6 +318,23 @@ jobs:
       - name: Published numbers match docs/performance.json
         run: python3 tools/claimcheck.py --claims docs/performance.json --root .
 
+      # The step above reads the eight paths listed under `tracked`, all of them
+      # in the repository, and that was the hole. The repository description said
+      # MNIST trained "5.5x faster on the GPU" and the v0.6.0 release page gave
+      # numbers that had never been in docs/performance.json at all -- the two
+      # most-read surfaces on GitHub, disagreeing with the checked ones from the
+      # day they were written, with no check that could have seen them because
+      # neither is a file. The same blind spot left this repository's only pull
+      # request titled in Spanish while a job three sections up guarded the source
+      # tree against exactly that.
+      #
+      # GITHUB_TOKEN is the default read-only one; the script exits 0 when gh is
+      # unauthenticated, so a fork without secrets does not fail on this.
+      - name: The description and release pages agree with it too
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 tools/check_github_metadata.py --claims docs/performance.json
+
   lint:
     name: Linux / clang-format + clang-tidy
     runs-on: ubuntu-latest

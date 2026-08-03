@@ -241,8 +241,8 @@ nothing but the shape: two of those five passes were pure metadata changes.
 
 **That table is the state before "Making the GPU actually win" below, kept
 because the retraction is the interesting part.** `reshape` is now a view, and
-after five further fixes the same subset trains in **4.3 s on the GPU against
-23.5 s on the CPU**. The composed convolution is no longer the slower one; what
+after five further fixes the same subset trains in **4.0 s on the GPU against
+24.1 s on the CPU**. The composed convolution is no longer the slower one; what
 was slow was never the composition.
 
 Two things measured along the way that did **not** work, recorded so nobody
@@ -317,11 +317,28 @@ For a long stretch this backend was well built and pointless: 620 parity checks,
 four matmul variants, gradients verified against the CPU bit for bit — and MNIST
 trained **slower with a card than without one**, 19.5 s against 18.4.
 
-It now trains in **4.3 s against 23.5 s: 5.5×**, on the same 2 000-image subset,
+It now trains in **4.0 s against 24.1 s: 6.03×**, on the same 2 000-image subset,
 same twelve epochs, same final accuracy (94.4% against 94.6%, and the loss curves
 agree to four decimals) — and with no environment variables set, which was not
 true of any measurement in this document before it. One training step, batch 64,
 went from 40.2 ms to 9.99 ms while the CPU stayed at 69.9.
+
+> **This paragraph originally said "4.3 s against 23.5 s: 5.5×"** — and so did
+> three other places in this document, one in `docs/CUDA.md`, the v0.6.0 release
+> page, and the repository's one-line description on GitHub. Not one of those
+> figures was ever a value in `docs/performance.json`, which has carried 24.1 for
+> the CPU since the file was created. The flagship document contradicted the
+> flagship claim for as long as both existed.
+>
+> `tools/claimcheck.py` did not catch it, and its own header says why: it checks
+> that a claim appears where it is cited, and that a withdrawn number appears
+> nowhere. **It has no rule against a document holding a second, different number
+> for the same quantity**, because nothing tells it which numbers describe which
+> quantity. Withdrawing the GPU figure fixes that one; its two companions cannot
+> be withdrawn at all, because matching is on bare numbers and both collide with
+> true sentences elsewhere in this file about a baseline, about milliseconds and
+> about GB/s. That is the tool's ceiling and it is worth knowing before trusting
+> it.
 
 What is worth reading here is not the number, it is that **the first two things I
 was sure were the cause were not**.
@@ -509,7 +526,7 @@ change, with no environment variables:
 
 | | before | after |
 |---|---|---|
-| MNIST, stock settings | 15.8 s | **4.3 s** |
+| MNIST, stock settings | 15.8 s | **4.0 s** |
 | `transformer_demo`, stock settings | 28.0 s | **26.0 s** |
 | `transformer_demo`, thresholds forced low | 39.0 s | — |
 
@@ -520,7 +537,7 @@ on the device between steps once the optimiser updates them there.
 
 ### Against PyTorch, on the same card, which is the number that counts
 
-Everything above compares the engine to itself. "5.5× faster on the GPU than on
+Everything above compares the engine to itself. "6.03× faster on the GPU than on
 the CPU" does not say the GPU path is fast — it says the CPU path is slow, and a
 reader has no way to calibrate it. So `tools/bench_pytorch.py` trains the same
 network on the same card: same subset read from the same IDX files, same two

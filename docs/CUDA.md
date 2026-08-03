@@ -430,7 +430,7 @@ settings against 3.4 s with the threshold forced down by hand. Lowering the
 default instead would have traded one demo for another — the same change made
 `transformer_demo` go from 28 s to 39, because its matrices are small and
 genuinely are not worth a launch. The residency rule improved both at once
-(MNIST 15.8 → 4.3 s, transformer 28.0 → 26.0) and needs no tuning.
+(MNIST 15.8 → 4.0 s, transformer 28.0 → 26.0) and needs no tuning.
 
 `matmul` asks for **both** operands to be resident rather than either: with one
 side on the host, dispatching would trade a download for an upload instead of

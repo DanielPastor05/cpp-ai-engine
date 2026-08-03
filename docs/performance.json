@@ -131,6 +131,10 @@
         {
           "file": "docs/PERFORMANCE.md",
           "context": "slower with a card than without one"
+        },
+        {
+          "file": "github:releases",
+          "context": "slower with a card than without one"
         }
       ]
     },
@@ -176,6 +180,23 @@
         {
           "file": "docs/PERFORMANCE.md",
           "context": "This used to say"
+        }
+      ]
+    },
+    {
+      "value": 4.3,
+      "was": "MNIST on the GPU, in three places in docs/PERFORMANCE.md, one in docs/CUDA.md, the v0.6.0 release page and the repository description -- alongside 23.5 s for the CPU and a 5.5x ratio drawn from the pair. None of the three was ever a value in this file: mnist-engine-cuda went 4.7 -> 4.0 and mnist-engine-cpu has been 24.1 since the file was created. So the flagship document contradicted the flagship claim, in the same repository, for as long as both existed.",
+      "replaced_by": "mnist-engine-cuda and mnist-engine-cpu, ratio 6.03x",
+      "_why_it_survived": "This is the failure claimcheck's own header describes -- 'a document saying 1.94x behind in one paragraph and 1.21x in its own table, forty lines apart' -- and claimcheck did not catch it. It verifies that a claim appears in the files that cite it, and that a retired value appears nowhere. It has no rule against a file containing a *different* number for the same quantity, because it has no idea which numbers describe which quantity. Retiring the value is the fix the tool does offer, and it only works after a human notices.",
+      "_why_its_companions_are_not_here": "23.5 and 5.5 cannot be retired, and the reason is a real limit worth stating. Retirement matches bare numbers, so 23.5 also matches the legitimate '23.4 s' baseline in the Conv2d table, and 5.5 also matches '0.65 ms of about 5.5 ms' and '5.5-9.5 GB/s' -- three true statements about three other quantities. A retired value is only usable when it does not collide, and this one does not.",
+      "documented_in": [
+        {
+          "file": "docs/PERFORMANCE.md",
+          "context": "originally said"
+        },
+        {
+          "file": "github:releases",
+          "context": "This page originally said"
         }
       ]
     }
