@@ -7,6 +7,7 @@
 #include <limits>
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <stdexcept>
 
@@ -74,6 +75,12 @@ Tensor im2col(const Tensor& input, const Window2d& window) {
     const size_t kW = window.kernel_w;
     const size_t K = C * kH * kW;
 
+    // The shape relation the matrix product downstream is written against: one
+    // row per output position, one column per (channel, kernel row, kernel
+    // column). col2im inverts it and test_conv asserts they are adjoint, but
+    // neither notices a window that produced no positions at all.
+    assert(oH > 0 && oW > 0 && "the window has to produce at least one position");
+    assert(K == C * kH * kW && "one column per channel and kernel element");
     Tensor cols({N * oH * oW, K}, 0.0f, false);
 
     // It is offered to the device first. If the device takes it, the columns stay

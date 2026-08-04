@@ -6,6 +6,7 @@
 #include "engine/detail/cuda_ops.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
@@ -60,6 +61,12 @@ void TensorImpl::compute_strides() {
         strides[i] = stride;
         stride *= shape[i];
     }
+    // Two postconditions every index computation in this engine assumes and none
+    // of them states: there is one stride per axis, and the last one is 1 because
+    // the buffer is contiguous in C order. Every kernel, every parallel_for and
+    // every im2col gather is written against both.
+    assert(strides.size() == shape.size() && "one stride per axis");
+    assert(strides.back() == 1 && "the tensor is contiguous, so the last stride is 1");
 }
 
 size_t TensorImpl::get_flat_index(const std::vector<size_t>& indices) const {

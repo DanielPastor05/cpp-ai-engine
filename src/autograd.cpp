@@ -1,9 +1,11 @@
 #include "engine/autograd.hpp"
 #include "engine/tensor.hpp"
 
-#include <utility>
-
+#include <cassert>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 
 namespace engine {
 namespace autograd {
@@ -43,6 +45,40 @@ std::vector<std::shared_ptr<TensorImpl>> topological_sort(const std::shared_ptr<
             stack.pop_back();
         }
     }
+
+#ifndef NDEBUG
+    // The property the whole backward pass rests on, checked where it is made.
+    //
+    // backward() walks this vector in reverse, and that is only correct if every
+    // node's parents sit *before* it: a node's gradient has to be complete
+    // before anything reads it to compute its parents'. The comment above has
+    // said so since Phase 2 and nothing verified it, which is a poor place for
+    // an unverified assumption -- a wrong order here does not crash, it produces
+    // gradients that are quietly incomplete for whichever subgraph got visited
+    // out of turn.
+    //
+    // O(nodes + edges) with a position map, and Debug-only. The `debug` CI job
+    // runs the whole suite with assertions live, so every graph the tests build
+    // is checked on every push.
+    {
+        std::unordered_map<const TensorImpl*, size_t> position;
+        position.reserve(topo_order.size());
+        for (size_t i = 0; i < topo_order.size(); ++i) position[topo_order[i].get()] = i;
+
+        for (size_t i = 0; i < topo_order.size(); ++i) {
+            for (const std::shared_ptr<TensorImpl>& parent : topo_order[i]->parents) {
+                if (!parent) continue;
+                const auto found = position.find(parent.get());
+                assert(found != position.end() &&
+                       "topological_sort: a reachable parent is missing from the order");
+                assert(found->second < i &&
+                       "topological_sort: a parent sits after its child, so reverse traversal "
+                       "would read an incomplete gradient");
+            }
+        }
+    }
+#endif
+
     return topo_order;
 }
 

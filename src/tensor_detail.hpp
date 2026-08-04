@@ -22,6 +22,7 @@
 #include "engine/tensor.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <vector>
 
@@ -151,6 +152,12 @@ inline BroadcastPlan plan_broadcast(const std::vector<size_t>& base,
     // with offset == 0 (same rank after dropping leading ones) a product over the
     // empty range would be mistaken for the full product.
     plan.repeat = (plan.inner == 0) ? 0 : product(base) / plan.inner;
+    // The broadcast loop walks `repeat` blocks of `inner` elements and expects
+    // that to be every element of the base, exactly. A plan where it is not sends
+    // the loop off the end of the buffer or silently skips a tail, and neither
+    // shows up as anything but wrong numbers.
+    assert(plan.inner * plan.repeat == product(base) &&
+           "a broadcast plan has to cover the base exactly");
     return plan;
 }
 
