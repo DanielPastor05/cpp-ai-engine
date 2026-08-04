@@ -24,6 +24,27 @@ namespace engine {
 // up with host/device branches spread through src/tensor.cpp and every kernel
 // would have paid a round trip over PCIe.
 //
+// What the host buffer pool has been doing, for the test suite to assert on.
+//
+// This exists because a performance guarantee needs a guard that cannot flake,
+// and a wall clock on a shared CI runner is the opposite of that -- the reasons
+// are in tools/check_perf.py's header and they are good ones. But the pool's
+// benefit is not really a time: it is that a training loop, having seen a shape
+// once, never allocates for it again. That is an exact invariant, it holds on
+// any machine at any speed, and tests/test_tensor.cpp asserts it.
+//
+// `fresh` counts buffers the free list could not serve, so the allocator did.
+// `recycled` counts the ones it could. If a change reintroduces an allocation
+// per operation, `fresh` grows with the step count and the test fails on every
+// compiler in the matrix, in milliseconds, with no timing involved.
+struct BufferPoolStats {
+    size_t fresh = 0;
+    size_t recycled = 0;
+    size_t bytes_held = 0;
+};
+
+BufferPoolStats buffer_pool_stats();
+
 // Invariant: at least one of the two copies is valid at all times.
 class Storage {
 public:

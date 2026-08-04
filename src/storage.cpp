@@ -46,11 +46,24 @@ public:
         if (count == 0) return {};
         const std::lock_guard<std::mutex> lock(mutex_);
         const auto it = free_.find(count);
-        if (it == free_.end() || it->second.empty()) return {};
+        if (it == free_.end() || it->second.empty()) {
+            ++fresh_;
+            return {};
+        }
         std::vector<float> buffer = std::move(it->second.back());
         it->second.pop_back();
         pooled_ -= count;
+        ++recycled_;
         return buffer;
+    }
+
+    BufferPoolStats stats() {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        BufferPoolStats out;
+        out.fresh = fresh_;
+        out.recycled = recycled_;
+        out.bytes_held = pooled_ * sizeof(float);
+        return out;
     }
 
     void give(std::vector<float> buffer) {
@@ -98,6 +111,8 @@ private:
     std::mutex mutex_;
     std::unordered_map<size_t, std::vector<std::vector<float>>> free_;
     size_t pooled_ = 0;
+    size_t fresh_ = 0;
+    size_t recycled_ = 0;
 };
 
 // Leaked on purpose, and this is not a leak in the sense that matters.
@@ -113,6 +128,10 @@ BufferPool& pool() {
 }
 
 }  // namespace
+
+BufferPoolStats buffer_pool_stats() {
+    return pool().stats();
+}
 
 Storage::Buffer::~Buffer() {
 #ifdef ENGINE_CUDA

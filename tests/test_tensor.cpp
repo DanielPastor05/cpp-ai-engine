@@ -1,5 +1,8 @@
 #include "test_support.hpp"
 
+#include <cstdlib>
+#include <string>
+
 #include "engine/parallel.hpp"
 
 using namespace testing;
@@ -495,6 +498,65 @@ void test_parallelism() {
     par::set_num_threads(original);
 }
 
+// The performance guard, and it deliberately measures nothing.
+//
+// The host buffer pool is worth 1.41x on MNIST, and nothing in this repository
+// stopped that from being lost again. A wall-clock threshold in CI is the wrong
+// answer -- tools/check_perf.py's header explains at length why a shared runner
+// cannot hold one, and it is right. But the pool's guarantee is not a time. It is
+// that a loop which has seen a shape once never allocates for it again, and that
+// is exact on any machine at any speed.
+//
+// If an operation starts allocating per call again, `fresh` grows with the
+// iteration count and this fails on all four compilers in milliseconds.
+void test_buffer_pool_recycles() {
+    section("Tensor: the buffer pool stops allocating once it has seen a shape");
+
+    // Turning the pool off is a supported configuration, so the guard skips
+    // itself rather than failing -- the same way the CUDA parity cases skip when
+    // there is no card. Verified by running the suite with it set to 0 before
+    // this branch existed: both checks below failed, which is what makes them a
+    // guard rather than decoration.
+    const char* pool_mb = std::getenv("ENGINE_BUFFER_POOL_MB");
+    if (pool_mb != nullptr && std::string(pool_mb) == "0") {
+        check(true, "the host buffer pool is disabled; the recycling guard skips itself");
+        return;
+    }
+
+    const std::vector<size_t> shape = {64, 512};
+
+    // Warm-up: the first pass is where the shapes are legitimately new, and how
+    // many buffers that takes is an implementation detail nobody should pin.
+    for (int i = 0; i < 4; ++i) {
+        Tensor a(shape, 1.5f, false);
+        Tensor b(shape, 2.5f, false);
+        Tensor c = (a + b).relu();
+        (void)c.data()[0];
+    }
+
+    const engine::BufferPoolStats before = engine::buffer_pool_stats();
+    constexpr int kRounds = 40;
+    for (int i = 0; i < kRounds; ++i) {
+        Tensor a(shape, 1.5f, false);
+        Tensor b(shape, 2.5f, false);
+        Tensor c = (a + b).relu();
+        (void)c.data()[0];
+    }
+    const engine::BufferPoolStats after = engine::buffer_pool_stats();
+
+    const size_t fresh = after.fresh - before.fresh;
+    const size_t recycled = after.recycled - before.recycled;
+
+    check(recycled >= static_cast<size_t>(kRounds),
+          "forty rounds of the same shapes are served from the free list");
+    // Not zero: `a` and `b` are constructed and destroyed inside the loop body,
+    // so the free list can be momentarily empty when the next round asks. What
+    // must not happen is fresh growing *with* the round count, which is what an
+    // allocation per operation looks like.
+    check(fresh < static_cast<size_t>(kRounds),
+          "and the allocator is asked for fewer buffers than there are rounds");
+}
+
 }  // namespace
 
 void run_tensor_tests() {
@@ -506,4 +568,5 @@ void run_tensor_tests() {
     test_slice_concat_stack();
     test_broadcast_all_operators();
     test_parallelism();
+    test_buffer_pool_recycles();
 }
