@@ -136,19 +136,19 @@ def chart_vs_pytorch(p):
     # takes hardware_concurrency (12 logical), PyTorch takes the physical core
     # count (6). Measured both ways before publishing this, because a chart that
     # handicapped the engine would be worthless -- 12 threads is genuinely its
-    # better configuration here, 23.9 s against 27.0 at six. So it ran on twice
-    # the threads and still lost by 4.55x, and the label should say so.
-    rows = [("CPU", "engine 12 threads, PyTorch 6", 24.1, 5.30),
-            ("CUDA", "RTX 3060 Ti", 4.00, 2.10)]
+    # better configuration here. It runs on twice the threads and still loses, and
+    # the label should say so.
+    rows = [("CPU", "engine 12 threads, PyTorch 6", 17.6, 6.10),
+            ("CUDA", "RTX 3060 Ti", 4.60, 2.70)]
     w, x0, plot_w = 760, 210, 460
     y = PLOT_TOP + 14
-    body = [gridlines(x0, plot_w, PLOT_TOP, y + len(rows) * 74 - 10, 25, [0, 5, 10, 15, 20, 25], p, " s")]
+    body = [gridlines(x0, plot_w, PLOT_TOP, y + len(rows) * 74 - 10, 20, [0, 5, 10, 15, 20], p, " s")]
     for label, note, engine, torch in rows:
         body.append(text(20, y + 16, label, p["secondary"], 12))
         body.append(text(20, y + 33, note, p["muted"], 11))
         for i, v in enumerate((engine, torch)):
             by = y + i * (BAR + GAP)
-            bw = plot_w * v / 25
+            bw = plot_w * v / 20
             body.append(hbar(x0, by, bw, BAR, p["series"][i]))
             body.append(text(x0 + bw + 8, by + 15, f"{v:.2f} s", p["secondary"], 12,
                              weight="600" if i == 0 else "400", tabular=True))
@@ -162,7 +162,10 @@ def chart_vs_pytorch(p):
 
 def chart_step(p):
     """Stacked bars: where a training step goes, and what each fix removed."""
-    rows = [("CPU", 23.82, 43.41, 2.64),
+    # The stacked segments sum to the published step totals: 68.4 ms before the
+    # host buffer pool and 42.5 ms with it.
+    rows = [("CPU, before the pool", 22.04, 43.41, 2.90),
+            ("CPU, with it", 16.74, 24.83, 0.93),
             ("CUDA, before", 8.32, 29.10, 2.74),
             ("+ three kernel fixes", 8.94, 20.31, 2.95),
             ("+ lazy host mirror", 4.54, 3.64, 1.81)]

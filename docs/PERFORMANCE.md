@@ -158,7 +158,9 @@ For reference, the graph itself costs about **6×** over inference: the same
 building a graph. That is inherent — activations have to be retained to
 differentiate.
 
-There is no leak: RSS is flat across 60 training iterations.
+There is no leak: RSS is flat across 60 training iterations. It is flat at a
+higher level since the host buffer pool below — 219 MB peak on MNIST against 110
+without it — which is a deliberate trade and has a switch.
 
 ---
 
@@ -412,15 +414,22 @@ no host memory at all.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/step-breakdown-dark.svg">
-  <img alt="One training step at batch 64, split into forward, backward and everything else: 69.9 ms on CPU; 40.2 on CUDA before this work; 32.2 after three kernel fixes; 10.0 after the lazy host mirror." src="img/step-breakdown.svg">
+  <img alt="One training step at batch 64, split into forward, backward and everything else: 68.4 ms on CPU before the host buffer pool and 42.5 with it; 40.2 on CUDA before this work; 32.2 after three kernel fixes; 10.0 after the lazy host mirror." src="img/step-breakdown.svg">
 </picture>
 
 | | step, batch 64 |
 |---|---|
-| CPU | 69.9 ms |
+| CPU, before the host buffer pool | 68.4 ms |
+| CPU, with it | **42.5 ms** |
 | GPU, before any of this | 40.2 ms |
 | + three kernel parallelism fixes | 32.2 ms |
-| + lazy host mirror | **9.99 ms** |
+| + lazy host mirror | 9.99 ms |
+| …and re-measured today | **8.91 ms** |
+
+The two GPU numbers at the bottom are the same code: 9.99 ms was taken on the day
+that work landed, 8.91 in the session that produced the table above. Both are
+inside the 30% band this repository states for a GPU wall clock, and neither is
+more true than the other.
 
 ### What every kernel costs the scheduler
 
@@ -556,19 +565,24 @@ Machine: Ryzen 5 5500 — **6 physical cores, 12 logical** — and an RTX 3060 T
 The two CPU rows use different thread counts because each side takes its own
 default: the engine asks for `hardware_concurrency` and gets 12, PyTorch asks for
 the physical core count and gets 6. That asymmetry was checked rather than
-assumed — at six threads the engine takes 27.0 s against 23.9 at twelve, so
-twelve is genuinely its better configuration and the row is its best number.
-**It ran on twice the threads and still lost by 4.55×.**
+assumed — twelve is genuinely its better configuration and the row is its best
+number. **It runs on twice the threads and still loses.**
+
+Every row below was taken in one alternating session, which matters more than it
+sounds: the machine was measurably slower on the day of this one than on the day
+of the last, and PyTorch on CUDA came out at 2.7 s against the 2.1 this document
+used to carry, on code that had not changed. Mixing a number taken today with one
+taken last week is the mistake this whole file exists to prevent.
 
 | | training | GPU kernel time per step | behind PyTorch |
 |---|---|---|---|
-| engine, CPU (12 threads) | 24.1 s | — | **4.55×** |
-| PyTorch, CPU (6 threads) | 5.30 s | — | — |
-| engine, CUDA | 4.0 s | 1.53 ms | **1.90×** |
-| **PyTorch, fp32** | **2.10 s** | **0.65 ms** | — |
-| PyTorch, TF32 | 1.90 s | — | 2.11× |
+| engine, CPU (12 threads) | 17.6 s | — | **2.89×** |
+| PyTorch, CPU (6 threads) | 6.10 s | — | — |
+| engine, CUDA | 4.6 s | 1.53 ms | **1.70×** |
+| **PyTorch, fp32** | **2.70 s** | **0.65 ms** | — |
+| PyTorch, TF32 | 2.20 s | — | 2.09× |
 
-**The engine is 1.90× slower than PyTorch on the GPU.** That is the honest
+**The engine is 1.70× slower than PyTorch on the GPU.** That is the honest
 headline, and it is a better one than the CPU comparison because it can be
 checked.
 
@@ -578,13 +592,15 @@ was giving the memory back" below — the analysis of *where* the remaining time
 goes was done at 4.7 s and holds, since the fix removed host cost and touched no
 kernel.
 
-The CPU row is the more uncomfortable one — **4.55× behind** — and it is worth
+The CPU row is the more uncomfortable one — **2.89× behind** — and it is worth
 putting next to the other because of what the pair says. PyTorch's CPU path is
-oneDNN with hand-written AVX kernels; this engine has no BLAS by design and
-leans on the autovectoriser, and it pays 4.55× for that. Its CUDA path, written
-from nothing against the same cuDNN it is being measured against, pays 1.90×.
-**The hand-written kernels closed more of the gap than the hand-written CPU code
-did**, which is not the result I expected to be able to write down.
+oneDNN with hand-written AVX kernels; this engine has no BLAS by design and leans
+on the autovectoriser. Its CUDA path, written from nothing against the same cuDNN
+it is being measured against, pays 1.70×.
+
+That CPU row read 4.55× until the host buffer pool below, and the thing worth
+taking from the change is that **none of the arithmetic got faster**. What moved
+was the allocator.
 
 Where the gap goes, from `nsys` on both:
 
@@ -603,7 +619,7 @@ engine spends 1.53 ms of a 9.16 ms step inside kernels — **17%**. PyTorch spen
 batch 64 is a workload where dispatch overhead dominates arithmetic for
 *everybody*, and the framework with the leaner Python-to-kernel path wins. That
 the engine, written from scratch in a weekend's worth of sessions, sits within
-1.90× of that is the real result — not the 6×.
+1.70× of that is the real result — not the 3.8×.
 
 One engine kernel stands out as addressable rather than algorithmic:
 `grad_accumulate` is 13.5% of GPU time across **1 501 launches per 100 steps**,
@@ -771,6 +787,96 @@ section below has it.
 ms, `add` 1.02, a scalar multiply 0.97 — against dual-channel DDR4 that does
 roughly 35. That is the floor under every activation, and it is a quarter of the
 hardware. Not acted on, recorded because the measurement exists.
+
+### The step was not bound by arithmetic. It was bound by the allocator.
+
+Five performance investigations in a row had ended without the clock moving.
+`grad_accumulate` measured and not wired, `/arch:AVX2` worth nothing, register
+tiling reverted, cache tiling argued away by the profile, and the axis swap below
+— 2.55× on the operation and invisible end to end. Five correct analyses and no
+faster training.
+
+The number that explained all of them was already in this document. Element-wise
+operations were measured at **5.5-9.5 GB/s** on twelve threads, against about 35
+that this machine's memory does. That is not a bandwidth figure, it is a symptom,
+and nobody had asked what of.
+
+Timed on `(64, 16, 28, 28)`, the largest tensor the MNIST model produces:
+
+| | ms | |
+|---|---|---|
+| `relu`, whole operation | 0.782 | |
+| `add`, whole operation | 0.893 | |
+| **allocating and zero-filling the output, alone** | **0.575** | 74% of the relu, 64% of the add |
+| writing the same bytes into a buffer that already exists | 0.044 | 72 GB/s |
+
+**A fresh allocation cost 12.9× a warm write.** 3.21 MB is 800 demand-zero pages,
+one fault each, on memory the allocator had just handed back to the OS — and a
+training loop asks for the same shapes on every step, so it paid for them again
+on every step. The memory was never the problem: over warm pages the same write
+runs at 72 GB/s, which is what the hardware should do.
+
+Every operation in this engine returns a new tensor. That design is what made
+`Storage` a separate type and what made the lazy host mirror possible, and it is
+also what put an allocation on the critical path of every single operation.
+
+The fix is a free list of host buffers keyed by element count, in
+`src/storage.cpp`. A `Buffer` hands its vector back on destruction instead of
+freeing it, and `materialise()` takes one instead of allocating. Sizes recur
+exactly in a training loop, so exact matching hits after the first step.
+
+**What it deliberately does not do is skip the fill.** That would be the CPU twin
+of `device_write()` and carries the same trap — correct only when the caller
+overwrites every element, silently wrong when it does not, and `matmul`
+accumulates into an output it assumes is zeroed. Recycling keeps the semantics
+identical and removes only the part that was never doing anything: the buffer is
+still filled, over pages that are already resident.
+
+| | before | after | |
+|---|---|---|---|
+| `relu` | 0.782 ms · 8.2 GB/s | **0.236 ms · 27.3** | 3.3× |
+| `add` | 0.893 ms · 10.8 GB/s | **0.117 ms · 82.3** | 7.6× |
+| allocate + fill | 0.575 ms | **0.032 ms** | 18× |
+| a training step | 58.7-68.4 ms | **42.2-44.3 ms** | ~1.45× |
+| forward | 21.4-22.4 ms | **16.3-17.2 ms** | ~1.3× |
+| backward | 36.4-45.6 ms | **24.2-27.2 ms** | ~1.5× |
+| **MNIST end to end** | **25.1-26.2 s** | **17.8-18.5 s** | **1.41×** |
+
+Loss identical to four decimals and accuracy identical to two, on every run of
+both builds. The backward gains most, which is where the most intermediate
+tensors are born.
+
+**And it costs memory, which is the part not to bury.** Peak RSS on MNIST goes
+from 110 MB to 219 MB. That is the trade a caching allocator always makes —
+PyTorch's does the same thing — but it should be as easy to refuse as to take,
+so the cap is `ENGINE_BUFFER_POOL_MB` and `0` turns the pool off entirely,
+restoring both the old speed and the old memory exactly:
+
+| `ENGINE_BUFFER_POOL_MB` | peak RSS | MNIST |
+|---|---|---|
+| `0` | 110 MB | 24.0 s |
+| 64 | 168 MB | 19.6 s |
+| **128, the default** | **219 MB** | **17.0 s** |
+| 192 | 247 MB | 18.3 s |
+| 512 | 247 MB | 16.9 s |
+
+The default is where the curve bends: 128 MB takes 87% of the available speedup,
+and past it the return is half a second for another 28 MB. Above about 192 MB the
+peak stops moving at all, because the working set of a step is already covered
+and there is nothing left to pool.
+
+On the CUDA path it is worth about 7%, and the small number is the interesting
+one: the lazy host mirror already stopped most GPU-resident tensors from
+allocating a host buffer at all, so most of this win had been taken there a while
+ago — on one side of the engine only.
+
+**The lesson is the one this section opens with.** Five optimisations of the
+arithmetic could not move a step that was not spending its time on arithmetic,
+and the measurement that said so had been sitting in this file for a day. A
+number that looks like a bandwidth figure and is a quarter of the hardware is not
+a fact about the hardware.
+
+---
 
 ### Blocking the axis swap, which was 46% of the first convolution
 

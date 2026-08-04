@@ -28,9 +28,9 @@ No dependencies. No BLAS. The point is to implement it, not to call it.
 | "Token after the marker" | **99.3%** (Transformer) | 17.5% (mean pooling) | chance is 16.7% |
 | **Gradient agreement with PyTorch** | **~1e-7** | — | 23 fixtures, single ops to full blocks |
 | MNIST training on 4 cores | **1.78×** (329 s vs 587 s) | 1 core | identical loss to the last digit |
-| MNIST training on the GPU | **6.03×** (4.0 s vs 24.1 s) | same binary, CUDA off | RTX 3060 Ti, 2k subset, same loss curve, stock settings |
-| The same run against PyTorch | **1.90× slower** (4.0 s vs 2.1 s) | PyTorch 2.11 + cuDNN, same card | fp32 both sides, TF32 off; [why](docs/PERFORMANCE.md#against-pytorch-on-the-same-card-which-is-the-number-that-counts) |
-| …and on the CPU | 4.55× slower (24.1 s vs 5.3 s) | PyTorch on oneDNN | no BLAS here, by design — and on 12 threads against its 6 |
+| MNIST training on the GPU | **3.83×** (4.6 s vs 17.6 s) | same binary, CUDA off | RTX 3060 Ti, 2k subset, same loss curve, stock settings |
+| The same run against PyTorch | **1.70× slower** (4.6 s vs 2.7 s) | PyTorch 2.11 + cuDNN, same card | fp32 both sides, TF32 off; [why](docs/PERFORMANCE.md#against-pytorch-on-the-same-card-which-is-the-number-that-counts) |
+| …and on the CPU | **2.89× slower** (17.6 s vs 6.1 s) | PyTorch on oneDNN | no BLAS here, by design — and on 12 threads against its 6 |
 | matmul 512³ on 4 cores | **3.08×** | 1 core | bit-identical regardless of thread count |
 
 Each baseline is a control that *provably cannot* solve its task. If one ever
@@ -38,13 +38,13 @@ starts succeeding, the experiment is broken — not the model.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/mnist-vs-pytorch-dark.svg">
-  <img alt="MNIST training time: this engine against PyTorch, on CPU and on CUDA. The engine takes 24.1 s on CPU against PyTorch's 5.30, and 4.00 s on CUDA against PyTorch's 2.10." src="docs/img/mnist-vs-pytorch.svg">
+  <img alt="MNIST training time: this engine against PyTorch, on CPU and on CUDA. The engine takes 17.6 s on CPU against PyTorch's 6.10, and 4.60 s on CUDA against PyTorch's 2.70." src="docs/img/mnist-vs-pytorch.svg">
 </picture>
 
-**The engine loses to PyTorch, and that is the number worth publishing.** "6.03×
+**The engine loses to PyTorch, and that is the number worth publishing.** "3.83×
 faster on the GPU than on the CPU" does not say the GPU path is fast — it says
 the CPU path is slow. Measured against a framework anyone can install, on the
-same card and the same model: 1.90× behind, and
+same card and the same model: 1.70× behind, and
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md#against-pytorch-on-the-same-card-which-is-the-number-that-counts)
 takes the gap apart with a profiler. About half of it is cuDNN choosing Winograd
 for the 3×3 convolutions, which is an algorithm this engine does not implement.
@@ -65,9 +65,17 @@ the fixtures are committed so CI needs no Python.
 micro-benchmark said removing a branch from `matmul` would give 1.7×; removing it
 made the Transformer 12% *slower*, because the matrices reaching it are ReLU
 outputs that are half zeros. The same micro-benchmark later argued for register
-tiling, which was 2.6× on dense matrices and 4% slower end to end, for the same
-reason. Both are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md) with the
-optimisations I measured and discarded.
+tiling, which was 2.6× on dense matrices and 4% slower end to end.
+
+**Then five optimisations in a row failed to move the clock, and the reason was
+none of them.** Element-wise operations were running at 5.5-9.5 GB/s against the
+35 this machine's memory does — and that was not a bandwidth figure, it was 800
+page faults per tensor. Every operation returns a new one, so allocating and
+zero-filling the output was **74% of a `relu`**. A pool of host buffers took MNIST
+from 25.1-26.2 s to 17.8-18.5 s without making any arithmetic faster. The
+measurement that explained five dead ends had been sitting in the performance
+notes for a day. All of it, including the ones I discarded, is in
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 **Multi-threading that does not change the answer.** The split is by output row,
 so the accumulation order never changes and results are **identical bit for bit**
@@ -305,6 +313,10 @@ bit-identical results would be demanding the GPU compute *worse*.
 Three knobs, no recompilation: `ENGINE_CUDA=0`, `ENGINE_CUDA_MIN_FLOPS` /
 `ENGINE_CUDA_MIN_ELEMENTS` for the dispatch thresholds, and `ENGINE_CUDA_SYNC=1`
 so a fault *inside* a kernel is reported against the launch that caused it.
+
+Two more for the CPU side: `ENGINE_NUM_THREADS`, and `ENGINE_BUFFER_POOL_MB` for
+the host buffer pool — `0` turns it off, which trades 1.41× of training time for
+109 MB of peak RSS in the other direction.
 
 Kernel-by-kernel reasoning: **[docs/CUDA.md](docs/CUDA.md)**. How to profile it
 and which metrics mean something: **[docs/PROFILING.md](docs/PROFILING.md)**.

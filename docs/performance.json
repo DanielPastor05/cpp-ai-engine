@@ -204,9 +204,9 @@
   "claims": [
     {
       "id": "mnist-engine-cpu",
-      "value": 24.1,
+      "value": 17.6,
       "unit": "s",
-      "how": "mnist_demo, 2000-image subset, 12 epochs, 12 threads, best of 3 alternating with PyTorch. Observed 23.9-25.7 across sessions.",
+      "how": "mnist_demo, 2000-image subset, 12 epochs, 12 threads. Observed 17.6-17.8 over four runs. Re-measured 2026-08-04 in one alternating session with every other MNIST row, after the host buffer pool: comparing a number taken today against one taken on another day is the mistake this file exists to prevent, and the machine was measurably slower today -- PyTorch on CUDA came out at 2.7 s against the 2.1 this file used to carry, on code that had not changed.",
       "cited_in": [
         "README.md",
         "docs/PERFORMANCE.md",
@@ -217,9 +217,9 @@
     },
     {
       "id": "mnist-engine-cuda",
-      "value": 4.0,
+      "value": 4.6,
       "unit": "s",
-      "how": "mnist_demo from build-cuda, stock thresholds, best of 3 alternating. Was 4.7 before the memory pool stopped releasing blocks to the OS on every synchronise.",
+      "how": "mnist_demo with the CUDA backend, same subset and epochs. Observed 4.6-4.7 over four runs. Re-measured 2026-08-04 in one alternating session with every other MNIST row, after the host buffer pool: comparing a number taken today against one taken on another day is the mistake this file exists to prevent, and the machine was measurably slower today -- PyTorch on CUDA came out at 2.7 s against the 2.1 this file used to carry, on code that had not changed.",
       "cited_in": [
         "README.md",
         "docs/PERFORMANCE.md",
@@ -229,9 +229,9 @@
     },
     {
       "id": "mnist-pytorch-cpu",
-      "value": 5.3,
+      "value": 6.1,
       "unit": "s",
-      "how": "tools/bench_pytorch.py --device cpu, 6 threads by PyTorch's own default. Observed 5.3-6.3 across runs.",
+      "how": "tools/bench_pytorch.py --device cpu, same model and schedule. Observed 5.9-6.3. Re-measured 2026-08-04 in one alternating session with every other MNIST row, after the host buffer pool: comparing a number taken today against one taken on another day is the mistake this file exists to prevent, and the machine was measurably slower today -- PyTorch on CUDA came out at 2.7 s against the 2.1 this file used to carry, on code that had not changed.",
       "cited_in": [
         "README.md",
         "docs/PERFORMANCE.md",
@@ -241,9 +241,9 @@
     },
     {
       "id": "mnist-pytorch-cuda",
-      "value": 2.1,
+      "value": 2.7,
       "unit": "s",
-      "how": "tools/bench_pytorch.py, TF32 off so both sides are fp32",
+      "how": "tools/bench_pytorch.py, fp32, TF32 off, same card. Re-measured 2026-08-04 in one alternating session with every other MNIST row, after the host buffer pool: comparing a number taken today against one taken on another day is the mistake this file exists to prevent, and the machine was measurably slower today -- PyTorch on CUDA came out at 2.7 s against the 2.1 this file used to carry, on code that had not changed.",
       "cited_in": [
         "README.md",
         "docs/PERFORMANCE.md",
@@ -253,9 +253,9 @@
     },
     {
       "id": "mnist-pytorch-cuda-tf32",
-      "value": 1.9,
+      "value": 2.2,
       "unit": "s",
-      "how": "tools/bench_pytorch.py --tf32, what a PyTorch user gets by default",
+      "how": "tools/bench_pytorch.py --tf32, the same run with TF32 allowed. Re-measured 2026-08-04 in one alternating session with every other MNIST row, after the host buffer pool: comparing a number taken today against one taken on another day is the mistake this file exists to prevent, and the machine was measurably slower today -- PyTorch on CUDA came out at 2.7 s against the 2.1 this file used to carry, on code that had not changed.",
       "cited_in": [
         "docs/PERFORMANCE.md"
       ],
@@ -263,9 +263,9 @@
     },
     {
       "id": "behind-pytorch-cuda",
-      "value": 1.9,
+      "value": 1.7,
       "unit": "x",
-      "how": "mnist-engine-cuda / mnist-pytorch-cuda",
+      "how": "mnist-engine-cuda over mnist-pytorch-cuda, 4.6 / 2.7. Re-measured 2026-08-04 in one alternating session with every other MNIST row, after the host buffer pool: comparing a number taken today against one taken on another day is the mistake this file exists to prevent, and the machine was measurably slower today -- PyTorch on CUDA came out at 2.7 s against the 2.1 this file used to carry, on code that had not changed.",
       "cited_in": [
         "README.md",
         "docs/PERFORMANCE.md",
@@ -279,9 +279,9 @@
     },
     {
       "id": "behind-pytorch-cpu",
-      "value": 4.55,
+      "value": 2.89,
       "unit": "x",
-      "how": "mnist-engine-cpu / mnist-pytorch-cpu",
+      "how": "mnist-engine-cpu over mnist-pytorch-cpu, 17.6 / 6.1. Was 4.55 before the host buffer pool. Re-measured 2026-08-04 in one alternating session with every other MNIST row, after the host buffer pool: comparing a number taken today against one taken on another day is the mistake this file exists to prevent, and the machine was measurably slower today -- PyTorch on CUDA came out at 2.7 s against the 2.1 this file used to carry, on code that had not changed.",
       "cited_in": [
         "README.md",
         "docs/PERFORMANCE.md",
@@ -306,9 +306,9 @@
     },
     {
       "id": "step-cpu",
-      "value": 69.9,
+      "value": 42.5,
       "unit": "ms",
-      "how": "one training step, batch 64, mean of 50 after 50 warm-up steps",
+      "how": "One training step, batch 64, 12 threads, median of 15. Observed 42.2-44.3. Re-measured 2026-08-04 in one alternating session with every other MNIST row, after the host buffer pool: comparing a number taken today against one taken on another day is the mistake this file exists to prevent, and the machine was measurably slower today -- PyTorch on CUDA came out at 2.7 s against the 2.1 this file used to carry, on code that had not changed.",
       "cited_in": [
         "docs/PERFORMANCE.md",
         "tools/plot_benchmarks.py"
@@ -317,9 +317,9 @@
     },
     {
       "id": "step-cuda",
-      "value": 9.99,
+      "value": 8.91,
       "unit": "ms",
-      "how": "the same, with the backend on. 1.53 ms of it is kernel time.",
+      "how": "One training step, batch 64, with the CUDA backend, median of 15. Observed 8.58-9.27. Re-measured 2026-08-04 in one alternating session with every other MNIST row, after the host buffer pool: comparing a number taken today against one taken on another day is the mistake this file exists to prevent, and the machine was measurably slower today -- PyTorch on CUDA came out at 2.7 s against the 2.1 this file used to carry, on code that had not changed.",
       "cited_in": [
         "docs/PERFORMANCE.md"
       ],

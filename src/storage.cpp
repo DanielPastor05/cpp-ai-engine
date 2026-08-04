@@ -4,15 +4,124 @@
 #include "engine/cuda.hpp"
 #endif
 
+#include <algorithm>
 #include <cassert>
+#include <cstdlib>
+#include <mutex>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace engine {
+namespace {
+
+// A free list of host buffers, keyed by exact element count.
+//
+// The measurement that made this necessary: on the largest tensor the MNIST
+// model produces, (64, 16, 28, 28) or 3.21 MB, allocating and zero-filling the
+// output buffer takes **0.575 ms**, against 0.044 ms to write the same number of
+// bytes into a buffer that already exists. Twelve times over, and it is 74% of a
+// relu and 64% of an addition. Every operation in this engine returns a new
+// tensor, so every operation pays it.
+//
+// It is not bandwidth: over warm memory the same write runs at 72 GB/s, which is
+// what this machine's DDR4 should do. It is 800 demand-zero page faults, one per
+// 4 KB, on memory the allocator has just handed back from the OS -- and a
+// training loop asks for the same shapes on every step, so it pays them again
+// every step.
+//
+// What this deliberately does NOT do is skip the fill. That would be the CPU
+// twin of device_write(), and it carries the same trap: correct only when the
+// caller overwrites every element, silently wrong when it does not, and matmul
+// accumulates into an output it assumes is zeroed. Recycling keeps the semantics
+// identical -- the buffer is still filled, just over pages that are already
+// resident -- and removes the part that was never doing anything.
+//
+// ponytail: one free list per exact count, and a cap. Sizes recur exactly in a
+// training loop, so exact matching hits; a size-class allocator would serve
+// irregular workloads better and is the upgrade if one ever turns up.
+class BufferPool {
+public:
+    std::vector<float> take(size_t count) {
+        if (count == 0) return {};
+        const std::lock_guard<std::mutex> lock(mutex_);
+        const auto it = free_.find(count);
+        if (it == free_.end() || it->second.empty()) return {};
+        std::vector<float> buffer = std::move(it->second.back());
+        it->second.pop_back();
+        pooled_ -= count;
+        return buffer;
+    }
+
+    void give(std::vector<float> buffer) {
+        const size_t count = buffer.size();
+        if (count == 0) return;
+        const std::lock_guard<std::mutex> lock(mutex_);
+        // Over the cap the buffer is simply let go, which frees it the ordinary
+        // way. Without this a program that allocates one enormous tensor and never
+        // asks for that shape again would hold it for the rest of the run.
+        if (pooled_ + count > cap_floats()) return;
+        pooled_ += count;
+        free_[count].push_back(std::move(buffer));
+    }
+
+    // How much the pool may hold, in bytes. 128 MB by default; override with
+    // ENGINE_BUFFER_POOL_MB, and 0 turns the pool off entirely.
+    //
+    // The default is a stated trade rather than a tuned one. Measured on MNIST,
+    // peak RSS against training time:
+    //
+    //     no pool   110 MB   25.3 s
+    //      64 MB    168 MB   19.6 s
+    //     128 MB    219 MB   18.8 s
+    //     192 MB    247 MB   18.3 s
+    //     256 MB    247 MB   18.2 s   <- the working set is already covered
+    //
+    // 128 MB takes 87% of the available speedup. Past it the curve is 0.5 s for
+    // another 28 MB, and a caller who would rather have the memory back has the
+    // variable. Doubling peak RSS to make training 1.35x faster is the same trade
+    // PyTorch's caching allocator makes, and it should be as easy to refuse.
+    static size_t cap_floats() {
+        static const size_t cap = [] {
+            const char* raw = std::getenv("ENGINE_BUFFER_POOL_MB");
+            size_t megabytes = 128;
+            if (raw != nullptr && raw[0] != '\0') {
+                const long parsed = std::strtol(raw, nullptr, 10);
+                if (parsed >= 0) megabytes = static_cast<size_t>(parsed);
+            }
+            return (megabytes << 20) / sizeof(float);
+        }();
+        return cap;
+    }
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<size_t, std::vector<std::vector<float>>> free_;
+    size_t pooled_ = 0;
+};
+
+// Leaked on purpose, and this is not a leak in the sense that matters.
+//
+// A function-local static would be destroyed at exit, and any Buffer outliving
+// it -- a static Tensor, a thread still unwinding -- would hand its vector to a
+// destroyed object. Never destroying the pool makes that impossible. The memory
+// is returned to the OS when the process ends, which is the same moment the
+// destructor would have run.
+BufferPool& pool() {
+    static BufferPool* instance = new BufferPool();
+    return *instance;
+}
+
+}  // namespace
 
 Storage::Buffer::~Buffer() {
 #ifdef ENGINE_CUDA
     if (device != nullptr) cuda::detail::device_free(device);
 #endif
+    // The host vector goes back to the free list rather than to the allocator, so
+    // the next tensor of this shape reuses pages that are already resident. See
+    // BufferPool above for the measurement that put it there.
+    pool().give(std::move(host));
 }
 
 Storage::Storage() : buf_(std::make_shared<Buffer>()) {}
@@ -35,7 +144,7 @@ Storage::Storage(std::vector<float> values) : buf_(std::make_shared<Buffer>()) {
 // somebody asks for the device.
 //
 // It is a copy and not a share, deliberately. Tensors get copied all over the
-// engine — captured in lambdas, returned by value — and if that quietly aliased
+// engine â€” captured in lambdas, returned by value â€” and if that quietly aliased
 // buffers, a backward_fn holding a captured input would see it change under it.
 // Sharing has to be asked for by name: share().
 Storage::Storage(const Storage& other) : buf_(std::make_shared<Buffer>()) {
@@ -60,7 +169,15 @@ Storage& Storage::operator=(const Storage& other) {
 Storage::~Storage() = default;
 
 void Storage::materialise() const {
-    if (buf_->host.size() != buf_->count) buf_->host.assign(buf_->count, buf_->fill);
+    if (buf_->host.size() != buf_->count) {
+        std::vector<float> recycled = pool().take(buf_->count);
+        if (recycled.empty()) {
+            buf_->host.assign(buf_->count, buf_->fill);
+        } else {
+            buf_->host = std::move(recycled);
+            std::fill(buf_->host.begin(), buf_->host.end(), buf_->fill);
+        }
+    }
     // The postcondition every caller relies on and none of them state: after
     // this, host.size() is the element count. The lazy mirror made those two
     // able to disagree, and the whole class of bug it can cause is a loop that
