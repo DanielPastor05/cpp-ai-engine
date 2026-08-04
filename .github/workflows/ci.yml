@@ -454,10 +454,24 @@ jobs:
       # negative_hits.warn is kept as well, because atomic counters make the race
       # impossible rather than merely unlikely and a warning is a better failure
       # mode than an empty report if that ever stops being true.
+      # The thresholds come from the first measurement this job ever produced,
+      # which was 86.0% of lines, 80.5% of functions and 49.5% of branches. They
+      # sit two points under: coverage of a fixed suite over fixed code is
+      # deterministic, so the only thing that moves it is a change, and two
+      # points of 2 668 lines is about fifty. Fifty lines of untested engine is
+      # worth a red build; two lines is not.
+      #
+      # Branches are half of lines and that is not a defect to fix by writing
+      # tests for it. Most of what is uncovered is the CPU fallback of an
+      # operation whose kernel took the work, the second half of every
+      # `if (!cuda::ops::...)`, and the error paths of a parser that a fuzzer
+      # reaches and a unit test does not. A branch threshold chasing the line
+      # number would be a threshold demanding tests nobody should write.
       - name: Summarise
         run: >
           .venv/bin/gcovr --root . --filter src/ --filter include/engine/
           --gcov-ignore-parse-errors=negative_hits.warn
+          --fail-under-line 84 --fail-under-branch 47
           --print-summary --xml coverage.xml
 
       - uses: actions/upload-artifact@v4
