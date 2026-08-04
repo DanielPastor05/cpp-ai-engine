@@ -349,7 +349,7 @@ void test_multihead_case() {
 }
 
 void test_transformer_block_case() {
-    section("PyTorch: bloque Transformer completo");
+    section("PyTorch: a whole Transformer block");
 
     Fixture f = load("transformer_block");
     nn::TransformerBlock block(8, 2, 16);

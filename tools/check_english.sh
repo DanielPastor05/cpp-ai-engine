@@ -77,10 +77,29 @@ readonly ALLOW='README\.md:[0-9]+:\*\[Versión en español\]'
 #     | sort -u | less
 #
 # Re-run that after any batch of new user-facing strings. Everything added below
-# came out of it. Note what is deliberately absent: "matrices", "doses" and
-# "token" are English, and "precision" is both -- the first version of this list
-# flagged "mixed precision".
-readonly WORDS='[áéíóúñÁÉÍÓÚÑ¿¡]|\b(que|para|porque|cuando|donde|esto|esta|estos|estas|los|las|del|una|unos|unas|con|por|pero|como|desde|hasta|entre|sobre|cada|todo|toda|todos|todas|otro|otra|aunque|entonces|siempre|nunca|entrada|salida|fichero|ficheros|cadena|cadenas|pruebas|compilar|ejecutar|configurar|instalar|memoria|hilos|puntero|valores|datos|modelo|entrenamiento|dispositivo|convoluciones|iteracion|inferencia|resultados|ejemplos|calculo|tambien|ademas|despues|verificar|comprobar|devuelve|deja|dejan|varianza|respecto|desviacion|maxima|minima|codificacion|codificaciones|posicional|parecidas|iguales|distintos|distinta|senal|reducir|concatenar|consigo|misma|mismo|cambia|cambian|queda|quedan|falla|fallan|primera|segunda|ultima|matriz|suma|resta|producto|capa|capas|peso|pesos|funcion|funciones|creacion|inspeccion|fila|filas|columna|columnas|esperado|esperada|elemento|elementos|multiplicacion|activacion|derivacion|automatica|escalar|dimensiones|reconfigurar|pasadas|guardado|guardados|atencion|aprendidos|densa|epoca|epocas|muestras|perdida|entrenando|cargando|tamano|numero|indexacion|propaga|rechaza|permite|escritura|adelante|atras|nulas|cabeza|inicializar|acumula|repetido)\b'
+# came out of it.
+#
+# It has now come up short six times. After the forty-one lines it missed at
+# first: a test named "im2col es identical bit for bit", a struct comment reading
+# "true si es el conjunto completo", a fixture path "directorio_inexistente", a
+# section called "bloque Transformer completo", and an echo in
+# tools/download_mnist.sh. The last two were found by the words added for the
+# three before them, which is the only encouraging thing about the list.
+#
+# A blocklist leaks by construction, and the two-letter cases -- "es", "si" --
+# cannot be added at all: they would flag every English word list in this
+# repository, including this one.
+#
+# The check that would not leak is the inverse -- every word in a user-visible
+# string has to be in an English dictionary -- and that needs a dictionary, which
+# needs a dependency this project does not have and will not add for a lint. So
+# the honest position is that this catches prose and most labels, has missed six
+# things, and the dump command above is the part to trust.
+#
+# Deliberately absent: "matrices", "doses" and "token" are English words, and
+# "precision" is both -- an earlier version of this list flagged "mixed
+# precision".
+readonly WORDS='[áéíóúñÁÉÍÓÚÑ¿¡]|\b(que|para|porque|cuando|donde|esto|esta|estos|estas|los|las|del|una|unos|unas|con|por|pero|como|desde|hasta|entre|sobre|cada|todo|toda|todos|todas|otro|otra|aunque|entonces|siempre|nunca|entrada|salida|fichero|ficheros|cadena|cadenas|pruebas|compilar|ejecutar|configurar|instalar|memoria|hilos|puntero|valores|datos|modelo|entrenamiento|dispositivo|convoluciones|iteracion|inferencia|resultados|ejemplos|calculo|tambien|ademas|despues|verificar|comprobar|devuelve|deja|dejan|varianza|respecto|desviacion|maxima|minima|codificacion|codificaciones|posicional|parecidas|iguales|distintos|distinta|senal|reducir|concatenar|consigo|misma|mismo|cambia|cambian|queda|quedan|falla|fallan|primera|segunda|ultima|matriz|suma|resta|producto|capa|capas|peso|pesos|funcion|funciones|creacion|inspeccion|fila|filas|columna|columnas|esperado|esperada|elemento|elementos|multiplicacion|activacion|derivacion|automatica|escalar|dimensiones|reconfigurar|pasadas|guardado|guardados|atencion|aprendidos|densa|epoca|epocas|muestras|perdida|entrenando|cargando|tamano|numero|indexacion|propaga|rechaza|permite|escritura|adelante|atras|nulas|cabeza|inicializar|acumula|repetido|conjunto|completo|subconjunto|directorio|inexistente|existente|escalares)\b'
 
 hits=$(git ls-files | grep -vE "$EXCLUDE" | xargs grep -IinE "$WORDS" 2>/dev/null \
        | grep -vE "$ALLOW" || true)

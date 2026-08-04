@@ -17,6 +17,7 @@
 #include "engine/parallel.hpp"
 #include "engine/cuda.hpp"
 
+#include <optional>
 #include <chrono>
 #include <cstdio>
 #include <functional>
@@ -215,10 +216,10 @@ int main() {
                 "  Built without CUDA, or no usable device.\n"
                 "  Rebuild with: cmake -B build-cuda -S . -DENGINE_CUDA=ON\n");
         } else {
-            const cuda::DeviceInfo info = cuda::device_info();
-            printf("  Device: %s (cc %d.%d, %d SM, %zu MiB)\n\n", info.name.c_str(),
-                   info.compute_major, info.compute_minor, info.multiprocessors,
-                   info.total_memory >> 20);
+            const std::optional<cuda::DeviceInfo> device = cuda::device_info();
+            printf("  Device: %s (cc %d.%d, %d SM, %zu MiB)\n\n", device->name.c_str(),
+                   device->compute_major, device->compute_minor, device->multiprocessors,
+                   device->total_memory >> 20);
 
             // No threshold: the point here is to measure where the crossover is, not apply it.
             const size_t saved_flops = cuda::min_matmul_flops();

@@ -175,16 +175,17 @@ CharVocab::CharVocab(const std::string& corpus) {
     }
 }
 
-size_t CharVocab::index_of(char symbol) const {
-    return lookup_[static_cast<unsigned char>(symbol)];
+std::optional<size_t> CharVocab::index_of(char symbol) const {
+    const size_t index = lookup_[static_cast<unsigned char>(symbol)];
+    if (index >= alphabet_.size()) return std::nullopt;
+    return index;
 }
 
 std::vector<size_t> CharVocab::encode(const std::string& text) const {
     std::vector<size_t> out;
     out.reserve(text.size());
     for (char symbol : text) {
-        const size_t index = index_of(symbol);
-        if (index < alphabet_.size()) out.push_back(index);
+        if (const std::optional<size_t> index = index_of(symbol)) out.push_back(*index);
     }
     return out;
 }

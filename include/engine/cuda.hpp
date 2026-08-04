@@ -2,6 +2,7 @@
 #define ENGINE_CUDA_HPP
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -28,13 +29,24 @@ bool enabled();
 void set_enabled(bool on);
 
 struct DeviceInfo {
-    std::string name = "no device";
+    std::string name;
     int compute_major = 0;
     int compute_minor = 0;
     int multiprocessors = 0;
     size_t total_memory = 0;
 };
-DeviceInfo device_info();
+
+// The card, if there is one.
+//
+// This used to return a DeviceInfo whose name defaulted to "no device" and whose
+// numbers defaulted to zero, and that is a sentinel dressed as a value. It was
+// already producing wrong output: the diagnostic in kernels.cu that prints "the
+// binary carries no native code for this card (cc %d.%d)" reads compute_major
+// and compute_minor straight out of it, so on a machine with no usable device it
+// advised reconfiguring with -DCMAKE_CUDA_ARCHITECTURES=00.
+//
+// An optional will not compile if the caller forgets.
+std::optional<DeviceInfo> device_info();
 
 // Waits for launched kernels to finish. Only needed for measurement: the copies
 // are synchronising, so correctness never depends on this.

@@ -22,5 +22,5 @@ for name in train-images-idx3 train-labels-idx1 t10k-images-idx3 t10k-labels-idx
 done
 
 echo
-echo "MNIST completo en $DIR"
+echo "The full MNIST is in $DIR"
 echo "Run ./build/mnist_demo to train on it."

@@ -3,6 +3,7 @@
 
 #include "engine/tensor.hpp"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -49,8 +50,14 @@ public:
     size_t size() const noexcept { return alphabet_.size(); }
     char symbol(size_t index) const { return alphabet_.at(index); }
 
-    // Index of a character, or size() if the corpus never contained it.
-    size_t index_of(char symbol) const;
+    // Index of a character, empty if the corpus never contained it.
+    //
+    // std::optional rather than returning size() as a sentinel: a caller who
+    // forgets to compare against size() gets an index one past the end and a
+    // silent out-of-bounds read, where forgetting to check an optional does not
+    // compile. It costs a byte next to a size_t and nothing at all in a release
+    // build's generated code.
+    std::optional<size_t> index_of(char symbol) const;
 
     std::vector<size_t> encode(const std::string& text) const;
     std::string decode(const std::vector<size_t>& indices) const;
@@ -81,7 +88,7 @@ struct MnistPaths {
     std::string train_labels;
     std::string test_images;
     std::string test_labels;
-    bool full = false;  // true si es el conjunto completo, false si el subconjunto
+    bool full = false;  // true for the whole set, false for the repository's subset
 };
 
 // Looks for MNIST in the given directory. It prefers the full set

@@ -22,6 +22,7 @@
 
 #ifdef ENGINE_CUDA
 
+#include <optional>
 #include <algorithm>
 #include <cmath>
 
@@ -145,7 +146,10 @@ void run_cuda_parity_tests() {
         return;
     }
 
-    const cuda::DeviceInfo info = cuda::device_info();
+    // The early return above already established there is a device, so the
+    // optional is engaged; value() rather than * says so and would throw
+    // rather than read past nothing if that ever stopped being true.
+    const cuda::DeviceInfo info = cuda::device_info().value();
     // All three versions, and in this order, because the mismatch that breaks
     // execution is toolkit > driver. Printing only the runtime hides it: it follows
     // the driver, so on a machine with driver 13.2 and toolkit 13.3 this line said

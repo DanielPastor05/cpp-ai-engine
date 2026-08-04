@@ -577,7 +577,7 @@ void test_idx_reader() {
                  "a nonexistent file throws");
     check_throws([&] { (void)engine::data::load_idx_images(paths.train_labels); },
                  "reading labels as images throws (different magic)");
-    check_throws([&] { (void)engine::data::find_mnist("directorio_inexistente"); },
+    check_throws([&] { (void)engine::data::find_mnist("a_directory_that_does_not_exist"); },
                  "a directory with no data throws");
 }
 

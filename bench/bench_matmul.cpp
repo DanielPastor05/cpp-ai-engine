@@ -23,6 +23,7 @@
 #include "engine/detail/tensor_impl.hpp"
 #endif
 
+#include <optional>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -310,11 +311,11 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    const cuda::DeviceInfo info = cuda::device_info();
+    const std::optional<cuda::DeviceInfo> device = cuda::device_info();
     const double peak = cuda::peak_fp32_gflops();
 
-    printf("Device: %s (cc %d.%d, %d SM, %zu MiB)\n", info.name.c_str(), info.compute_major,
-           info.compute_minor, info.multiprocessors, info.total_memory >> 20);
+    printf("Device: %s (cc %d.%d, %d SM, %zu MiB)\n", device->name.c_str(), device->compute_major,
+           device->compute_minor, device->multiprocessors, device->total_memory >> 20);
     printf("Theoretical peak: %.0f GFLOP/s fp32, %.0f GB/s of bandwidth\n", peak,
            cuda::peak_bandwidth_gbs());
 

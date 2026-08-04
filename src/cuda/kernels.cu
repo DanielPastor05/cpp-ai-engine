@@ -119,12 +119,22 @@ bool launch_ok(const char* what) {
                          "  build with a CUDA version the driver supports.\n");
         }
         if (status == cudaErrorUnsupportedPtxVersion || status == cudaErrorNoKernelImageForDevice) {
-            const DeviceInfo info = device_info();
-            std::fprintf(stderr,
-                         "  The binary carries no native code for this card (cc %d.%d).\n"
-                         "  Reconfigure with -DCMAKE_CUDA_ARCHITECTURES=%d%d\n",
-                         info.compute_major, info.compute_minor, info.compute_major,
-                         info.compute_minor);
+            // The optional is the point here. This used to read a DeviceInfo whose
+            // fields defaulted to zero when there was no usable device, so the very
+            // failure it reports -- no native code for this card -- printed "cc 0.0"
+            // and advised -DCMAKE_CUDA_ARCHITECTURES=00. Advice built on a number
+            // nobody has is worse than no advice.
+            if (const std::optional<DeviceInfo> info = device_info()) {
+                std::fprintf(stderr,
+                             "  The binary carries no native code for this card (cc %d.%d).\n"
+                             "  Reconfigure with -DCMAKE_CUDA_ARCHITECTURES=%d%d\n",
+                             info->compute_major, info->compute_minor, info->compute_major,
+                             info->compute_minor);
+            } else {
+                std::fprintf(stderr,
+                             "  The binary carries no native code for this device, and the"
+                             " device could not be queried to say which one it needs.\n");
+            }
         }
         std::fprintf(stderr,
                      "  Later failures are not repeated here;"

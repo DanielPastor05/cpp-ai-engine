@@ -28,6 +28,7 @@
 #include "engine/random.hpp"
 #include "engine/tensor.hpp"
 
+#include <optional>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -177,9 +178,9 @@ int main() {
         return 0;
     }
 
-    const cuda::DeviceInfo info = cuda::device_info();
-    printf("Device: %s (cc %d.%d, %d SM)\n", info.name.c_str(), info.compute_major,
-           info.compute_minor, info.multiprocessors);
+    const std::optional<cuda::DeviceInfo> device = cuda::device_info();
+    printf("Device: %s (cc %d.%d, %d SM)\n", device->name.c_str(), device->compute_major,
+           device->compute_minor, device->multiprocessors);
     printf("Peak: %.0f GFLOP/s fp32, %.0f GB/s\n\n", cuda::peak_fp32_gflops(),
            cuda::peak_bandwidth_gbs());
 

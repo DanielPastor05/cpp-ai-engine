@@ -15,6 +15,7 @@
 #include "engine/cuda.hpp"
 #include "engine/parallel.hpp"
 
+#include <optional>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -114,9 +115,9 @@ int main() {
     // card end to end; the loss and the optimiser are still on the CPU and break it
     // once per step.
     if (engine::cuda::available()) {
-        const engine::cuda::DeviceInfo gpu = engine::cuda::device_info();
-        std::cout << "Backend: CUDA on " << gpu.name << " (cc " << gpu.compute_major << "."
-                  << gpu.compute_minor << "), convolutions included.\n";
+        const std::optional<engine::cuda::DeviceInfo> gpu = engine::cuda::device_info();
+        std::cout << "Backend: CUDA on " << gpu->name << " (cc " << gpu->compute_major << "."
+                  << gpu->compute_minor << "), convolutions included.\n";
     } else {
         std::cout << "Backend: CPU, " << engine::parallel::num_threads() << " thread(s).\n";
     }

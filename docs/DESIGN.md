@@ -200,6 +200,47 @@ The gradient of a broadcast operand is the sum over its repetitions.
 
 ---
 
+## Where `std::optional` is used, and why there is no `std::span`
+
+Two sentinels became optionals, and the reason in both cases is that the sentinel
+was already producing wrong output or was one keystroke from it.
+
+`cuda::device_info()` returned a `DeviceInfo` whose `name` defaulted to
+`"no device"` and whose numbers defaulted to zero. The diagnostic in
+`src/cuda/kernels.cu` that reports *"the binary carries no native code for this
+card (cc %d.%d)"* reads `compute_major` and `compute_minor` straight out of it —
+so on a machine where the device could not be queried, the message that exists to
+tell you which architecture to build for said **cc 0.0** and advised
+`-DCMAKE_CUDA_ARCHITECTURES=00`. Advice built on a number nobody has is worse
+than no advice. With an optional the caller cannot reach the fields without
+saying what happens when there is no card, and that branch now prints a different
+sentence.
+
+`data::CharVocab::index_of` returned `size()` for a character the corpus never
+contained. A caller who forgot to compare against `size()` got an index one past
+the end and a silent out-of-bounds read; forgetting to check an optional does not
+compile.
+
+Both are cases where absence is a real state the type was pretending not to have.
+`Tensor::grad()` deliberately is *not* one: a `Tensor` is already a handle that
+can be empty, `has_grad()` says so, and wrapping a nullable handle in an optional
+would be two ways of asking the same question.
+
+**There is no `std::span` because there is no `std::span` in C++17.** The places
+that would use one are the three copy helpers in `engine/cuda.hpp`, which take a
+pointer and a length. Getting `span` means either raising the whole project to
+C++20 — which is a real cost: it changes what compilers can build this, and the
+CUDA job pins nvcc to `-std=c++17` — or writing a span-shaped type of our own,
+which is inventing a vocabulary type for a library whose selling point is having
+no dependencies.
+
+For three functions in a detail header, neither is worth it. The engine takes raw
+pointers on its hot paths on purpose — `Tensor::data()` returns one *because*
+about twenty call sites immediately did `.data().data()` to get back to it — and
+a span there would be the same two values with a bounds check nobody asked for.
+
+---
+
 ## Serialisation matches by name, not by position
 
 Tensors in a checkpoint are keyed by name, so adding a layer to the end of a

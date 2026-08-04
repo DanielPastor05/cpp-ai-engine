@@ -186,7 +186,8 @@ void set_enabled(bool on) {
     ctx.on = on && ctx.usable;
 }
 
-DeviceInfo device_info() {
+std::optional<DeviceInfo> device_info() {
+    if (!available()) return std::nullopt;
     return context().info;
 }
 

@@ -24,8 +24,8 @@ bool enabled() {
 }
 void set_enabled(bool) {}
 
-DeviceInfo device_info() {
-    return DeviceInfo{};
+std::optional<DeviceInfo> device_info() {
+    return std::nullopt;
 }
 void synchronize() {}
 
