@@ -304,7 +304,7 @@ void test_conv_determinism() {
     for (size_t i = 0; i < cols_serial.size(); ++i) {
         if (cols_serial.data()[i] != cols_par.data()[i]) cols_same = false;
     }
-    check(cols_same, "im2col es identical bit for bit with 1 and with 4 threads");
+    check(cols_same, "im2col is identical bit for bit with 1 and with 4 threads");
 
     bool back_same = true;
     for (size_t i = 0; i < back_serial.size(); ++i) {

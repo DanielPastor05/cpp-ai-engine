@@ -878,6 +878,44 @@ a fact about the hardware.
 
 ---
 
+### im2col, and the checks that were inside the wrong loop
+
+With the allocator dealt with, `im2col` became the largest single entry in the
+forward pass: **4.06 ms** for the second convolution of the MNIST model, a third
+of that layer, at **1.98 GB/s**. The traffic involved is about 8 MB — 802 KB of
+input read nine times over, 7.2 MB of columns written — which at this machine's
+memory speed is 0.27 ms. Fifteen times off is not a bandwidth problem.
+
+It was arithmetic per element, and specifically two bounds checks sitting inside
+loops neither of them depended on. Written the obvious way the gather tests `h`
+inside the channel loop and `w` inside the kernel-column loop, so a 16-channel
+3×3 convolution re-derives and re-checks the same three column coordinates **48
+times per output row**.
+
+`h` is a function of `oh` and `i` alone; `w` of `ow` and `j` alone. Computing the
+valid range of each once per output row leaves the inner loop a contiguous copy
+with no branch in it. Positions falling in the padding keep the zero the buffer
+was created with, which is why `cols` is zero-filled and has to stay that way.
+
+| | before | after | |
+|---|---|---|---|
+| `im2col`, conv2 input | 3.84-4.34 ms | **1.72-2.16 ms** | ~2.2× |
+| `Conv2d(16→32)` forward | 12.16-13.42 ms | **9.89-10.16 ms** | ~1.2× |
+| forward pass, whole model | 23.1-25.0 ms | **16.2-18.5 ms** | ~1.35× |
+| MNIST end to end | 18.4 s | **17.0 s** | ~1.08× |
+
+Alternating runs of each. The end-to-end row is the median of five per side, and
+it is the honest ceiling on the rest: 3% against a published claim whose stated
+tolerance is 25%, so `mnist-engine-cpu` is left where it is rather than churned
+for a move inside its own band.
+
+The machine was in a visibly slower state on the day of this measurement than on
+the day of the one above — the same baseline binary took 57-75 ms per step here
+against 42-44 there — which is why every row is a within-session comparison and
+none of them is published as a new absolute.
+
+---
+
 ### Blocking the axis swap, which was 46% of the first convolution
 
 The swap back to `(N, C, H, W)` was running at **2.57 GB/s** on a machine whose
