@@ -1,7 +1,9 @@
 #include "engine/data.hpp"
 
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 
 namespace engine {
@@ -150,6 +152,66 @@ Dataset load_mnist_test(const MnistPaths& paths, size_t max_samples) {
     set.images = load_idx_images(paths.test_images, max_samples);
     set.labels = load_idx_labels(paths.test_labels, max_samples);
     return set;
+}
+
+// ---------------------------------------------------------
+// Text
+// ---------------------------------------------------------
+
+CharVocab::CharVocab(const std::string& corpus) {
+    std::vector<bool> seen(256, false);
+    for (unsigned char byte : corpus) seen[byte] = true;
+
+    lookup_.assign(256, 0);
+    for (size_t byte = 0; byte < 256; ++byte) {
+        if (!seen[byte]) continue;
+        lookup_[byte] = alphabet_.size();
+        alphabet_.push_back(static_cast<char>(byte));
+    }
+    // Absent bytes point one past the end, so index_of can report them without
+    // a second table and without colliding with a real index.
+    for (size_t byte = 0; byte < 256; ++byte) {
+        if (!seen[byte]) lookup_[byte] = alphabet_.size();
+    }
+}
+
+size_t CharVocab::index_of(char symbol) const {
+    return lookup_[static_cast<unsigned char>(symbol)];
+}
+
+std::vector<size_t> CharVocab::encode(const std::string& text) const {
+    std::vector<size_t> out;
+    out.reserve(text.size());
+    for (char symbol : text) {
+        const size_t index = index_of(symbol);
+        if (index < alphabet_.size()) out.push_back(index);
+    }
+    return out;
+}
+
+std::string CharVocab::decode(const std::vector<size_t>& indices) const {
+    std::string out;
+    out.reserve(indices.size());
+    for (size_t index : indices) {
+        if (index < alphabet_.size()) out.push_back(alphabet_[index]);
+    }
+    return out;
+}
+
+std::string load_text(const std::vector<std::string>& paths) {
+    std::string corpus;
+    for (const std::string& path : paths) {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) {
+            std::fprintf(stderr, "engine: could not read %s; skipping it.\n", path.c_str());
+            continue;
+        }
+        std::ostringstream buffer;
+        buffer << in.rdbuf();
+        corpus += buffer.str();
+        corpus += '\n';
+    }
+    return corpus;
 }
 
 }  // namespace data

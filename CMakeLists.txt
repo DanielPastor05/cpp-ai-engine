@@ -133,6 +133,14 @@ target_link_libraries(transformer_demo PRIVATE engine)
 add_executable(mnist_demo examples/mnist_demo.cpp)
 target_link_libraries(mnist_demo PRIVATE engine)
 
+# A character-level language model, trained on this repository's own
+# documentation. ENGINE_REPO_DIR because the corpus is read from the source tree
+# rather than copied into the build one: the demo trains on whatever the docs
+# currently say, which is the point of using them.
+add_executable(charlm_demo examples/charlm_demo.cpp)
+target_link_libraries(charlm_demo PRIVATE engine)
+target_compile_definitions(charlm_demo PRIVATE ENGINE_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+
 # The performance benchmark. Not run in CI: it measures, it does not verify.
 add_executable(bench bench/bench.cpp)
 target_link_libraries(bench PRIVATE engine)

@@ -30,6 +30,43 @@ Tensor load_idx_images(const std::string& path, size_t max_samples = 0);
 std::vector<size_t> load_idx_labels(const std::string& path, size_t max_samples = 0);
 
 // ---------------------------------------------------------
+// Text, for a character-level language model
+// ---------------------------------------------------------
+
+// A character vocabulary built from a corpus: every distinct byte that occurs,
+// in ascending order, mapped to a contiguous index.
+//
+// Bytes rather than code points, deliberately. A UTF-8 corpus turns into a
+// slightly larger alphabet and the model learns the continuation bytes as
+// characters in their own right, which is exactly what a byte-level model does
+// and is one fewer thing between this engine and a demonstration. The cost is
+// that decoding a sample can produce an incomplete sequence at a cut, and
+// `decode` leaves those bytes alone rather than pretending otherwise.
+class CharVocab {
+public:
+    explicit CharVocab(const std::string& corpus);
+
+    size_t size() const noexcept { return alphabet_.size(); }
+    char symbol(size_t index) const { return alphabet_.at(index); }
+
+    // Index of a character, or size() if the corpus never contained it.
+    size_t index_of(char symbol) const;
+
+    std::vector<size_t> encode(const std::string& text) const;
+    std::string decode(const std::vector<size_t>& indices) const;
+
+private:
+    std::string alphabet_;             // distinct bytes, ascending
+    std::vector<size_t> lookup_ = {};  // 256 entries, size() where absent
+};
+
+// Concatenates the files, in the order given, with a newline between them.
+// A file that cannot be read is skipped and named on stderr rather than
+// throwing: a corpus assembled from several documents is worth training on even
+// if one of them has moved.
+std::string load_text(const std::vector<std::string>& paths);
+
+// ---------------------------------------------------------
 // MNIST
 // ---------------------------------------------------------
 

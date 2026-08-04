@@ -51,6 +51,43 @@ for the 3×3 convolutions, which is an algorithm this engine does not implement.
 
 ---
 
+## It writes
+
+Every other number on this page asks you to trust the person who measured it.
+This one does not: `charlm_demo` trains a character-level Transformer on **this
+repository's own documentation** — around 110 000 characters, 121 distinct bytes,
+nothing downloaded and no licence question — and then writes. The exact corpus
+size moves whenever a document is edited, which is the point of using them and
+also why no number here pins it.
+
+Two blocks, `d_model` 96, four heads, 64 characters of context, 173 thousand
+parameters. 1 500 steps, four and a half minutes on twelve CPU threads. Cross
+entropy goes **8.33 → 1.97 bits per character**, against log2 of the alphabet
+size for a uniform guess.
+
+```
+The engine to build-cuda-real the spay.
+
+---
+
+## A CI With is a matten againe apposes measured to by for this also zeros an arithmetick
+allise` cuBLAS
+data different and row stame transfers **, Hoisting accumulated it;
+   is a tensor mit wase through is the already and indes: park each as lessim outputs:
+```
+
+That is the raw output of one run at temperature 0.8, not a chosen excerpt. It is
+not sentences, and a corpus this size was never going to make sentences — but it has learned
+English word shapes, Markdown headings and fences, and the vocabulary of its
+corpus, from nothing but bytes. Every layer under it is in this repository.
+
+```bash
+./build/charlm_demo          # 1 500 steps
+./build/charlm_demo 200      # or a short one first
+```
+
+---
+
 ## What makes this different
 
 **Gradients are validated against PyTorch, not just against themselves.**
@@ -213,6 +250,7 @@ addition. What it required was generalising the tensor to N dimensions.
 
 ```bash
 ./build/mnist_demo        # CNN on real MNIST digits + save/load round-trip
+./build/charlm_demo       # a character-level Transformer on this repo's docs
 ./build/cnn_demo          # CNN vs MLP on shapes drawn at random positions
 ./build/transformer_demo  # attention on a task that needs word order
 ./build/nn_demo           # MLP on an interleaved spiral
