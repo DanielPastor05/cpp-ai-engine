@@ -53,7 +53,12 @@ jobs:
           for demo in cpp_ai_engine autograd_demo nn_demo cnn_demo transformer_demo mnist_demo; do
             "$BIN/$demo" > /dev/null
           done
-          echo "All six examples finished successfully."
+          # The language model takes a step count, and twenty is enough to prove
+          # the corpus loads, the graph builds and sampling runs. Its default of
+          # 1 500 is four and a half minutes, which belongs on a machine somebody
+          # is watching rather than in front of every push.
+          "$BIN/charlm_demo" 20 > /dev/null
+          echo "All seven examples finished successfully."
 
   sanitizers:
     name: Linux / ASan + UBSan
@@ -416,10 +421,22 @@ jobs:
       - name: Install gcovr
         run: python3 -m venv .venv && .venv/bin/pip install --quiet gcovr
 
+      # -fprofile-update=atomic is the whole reason this step reports anything.
+      #
+      # gcc's coverage counters are plain increments, and this engine runs its
+      # hot loops across a thread pool, so two threads incrementing the same
+      # counter lose updates and the count can come out *negative*. gcovr then
+      # refuses the file with "this is indicative of a gcov output parse error"
+      # and produces nothing -- which is exactly what happened here for three
+      # attempts, each of which tried a different gcovr invocation rather than
+      # asking why gcov was unhappy.
+      #
+      # Atomic counters cost time this job does not care about and remove the
+      # cause rather than the symptom.
       - name: Build instrumented
         run: >
           cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug
-          -DCMAKE_CXX_FLAGS="--coverage -O0" &&
+          -DCMAKE_CXX_FLAGS="--coverage -O0 -fprofile-update=atomic" &&
           cmake --build build --parallel
 
       - name: Run the tests
@@ -428,21 +445,20 @@ jobs:
       # Only the library counts. Measuring coverage of the tests themselves
       # would inflate the number while saying nothing about the engine.
       #
-      # Not blocking, and the honest reason is the same one clang-tidy carries:
-      # three attempts at this step have failed -- lcov 2.x, then gcovr with a
-      # fuller set of flags, then gcovr trimmed down -- and none of them could
-      # be reproduced on the machine this was written on. Guessing at a fourth
-      # while the badge stays red helps nobody.
+      # The `|| true` is gone. It was there because three attempts at this step
+      # failed and none could be reproduced on the machine this was written on --
+      # but the log said what was wrong all along, in gcovr's own words: a gcov
+      # parse error on negative hit counts, with the flag to tolerate it named in
+      # the message. The build step above removes the cause instead.
       #
-      # What the job still does is real and does not depend on this step: it
-      # builds the whole engine instrumented with --coverage at -O0 and runs the
-      # full suite against it, which is a configuration nothing else in CI
-      # covers. Read the step's log on a failing run, fix the invocation, drop
-      # the `|| true`.
+      # negative_hits.warn is kept as well, because atomic counters make the race
+      # impossible rather than merely unlikely and a warning is a better failure
+      # mode than an empty report if that ever stops being true.
       - name: Summarise
         run: >
           .venv/bin/gcovr --root . --filter src/ --filter include/engine/
-          --print-summary --xml coverage.xml || true
+          --gcov-ignore-parse-errors=negative_hits.warn
+          --print-summary --xml coverage.xml
 
       - uses: actions/upload-artifact@v4
         with:
