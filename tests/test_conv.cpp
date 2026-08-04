@@ -2,6 +2,7 @@
 
 #include "engine/parallel.hpp"
 
+#include <string>
 #include <tuple>
 
 using namespace testing;
@@ -9,7 +10,7 @@ using namespace testing;
 namespace {
 
 void test_im2col() {
-    section("conv: im2col y col2im");
+    section("conv: im2col and col2im");
 
     // A 3x3 window over a 4x4 image -> 2x2 positions, rows of 9 values
     Tensor img({1, 1, 4, 4}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, false);
@@ -315,10 +316,124 @@ void test_conv_determinism() {
     par::set_num_threads(original);
 }
 
+// im2col against a reference implementation, over every shape that matters.
+//
+// The gather in src/conv.cpp hoists two bounds checks out of the loops they used
+// to sit in, which took it from 4.06 ms to 1.72 for the second convolution of
+// the MNIST model. Hoisting a bounds check is exactly the kind of change that is
+// right on the shapes somebody tried and wrong on a remainder, and the spot
+// checks above are nine hand-picked windows.
+//
+// So this is the same function written the slow, obvious way -- every coordinate
+// computed and tested inside the innermost loop, which is what the optimised one
+// used to do -- compared element by element across a matrix of configurations.
+// Exact equality, not a tolerance: im2col moves floats, it does not compute with
+// them, so any difference at all is an indexing bug.
+Tensor im2col_reference(const Tensor& input, const nn::Window2d& window) {
+    const size_t N = input.shape()[0];
+    const size_t C = input.shape()[1];
+    const size_t H = input.shape()[2];
+    const size_t W = input.shape()[3];
+    const size_t oH = window.out_h(H);
+    const size_t oW = window.out_w(W);
+    const size_t kH = window.kernel_h;
+    const size_t kW = window.kernel_w;
+    const size_t K = C * kH * kW;
+
+    Tensor cols({N * oH * oW, K}, 0.0f, false);
+    const float* src = input.data();
+    float* dst = cols.data();
+
+    for (size_t row = 0; row < N * oH * oW; ++row) {
+        const size_t n = row / (oH * oW);
+        const size_t oh = (row % (oH * oW)) / oW;
+        const size_t ow = row % oW;
+        for (size_t c = 0; c < C; ++c) {
+            for (size_t i = 0; i < kH; ++i) {
+                const long long h = static_cast<long long>(oh * window.stride + i) -
+                                    static_cast<long long>(window.padding);
+                if (h < 0 || static_cast<size_t>(h) >= H) continue;
+                for (size_t j = 0; j < kW; ++j) {
+                    const long long w = static_cast<long long>(ow * window.stride + j) -
+                                        static_cast<long long>(window.padding);
+                    if (w < 0 || static_cast<size_t>(w) >= W) continue;
+                    const size_t k = (c * kH + i) * kW + j;
+                    dst[row * K + k] = src[((n * C + c) * H + static_cast<size_t>(h)) * W +
+                                           static_cast<size_t>(w)];
+                }
+            }
+        }
+    }
+    return cols;
+}
+
+void test_im2col_against_reference() {
+    section("conv: im2col matches a reference implementation on every window");
+
+    size_t configurations = 0;
+    size_t mismatches = 0;
+    std::string first_bad;
+
+    // Sizes chosen for their remainders rather than their roundness: 5 and 7 are
+    // prime, 8 is a power of two, and the strides and paddings between them cover
+    // a window that fits exactly, one that leaves a tail, and one where an entire
+    // output position falls inside the padding.
+    for (size_t N : {1u, 2u}) {
+        for (size_t C : {1u, 3u}) {
+            for (size_t H : {5u, 8u}) {
+                for (size_t W : {5u, 7u}) {
+                    for (size_t kH : {1u, 2u, 3u}) {
+                        for (size_t kW : {1u, 3u}) {
+                            for (size_t stride : {1u, 2u, 3u}) {
+                                for (size_t padding : {0u, 1u, 2u}) {
+                                    const nn::Window2d window(kH, kW, stride, padding);
+                                    // Windows the layer itself would refuse are
+                                    // not this test's business.
+                                    if (H + 2 * padding < kH || W + 2 * padding < kW) continue;
+
+                                    Tensor input({N, C, H, W}, 0.0f, false);
+                                    float* values = input.data();
+                                    for (size_t i = 0; i < input.size(); ++i) {
+                                        // Distinct per element, so a transposed
+                                        // index shows up rather than cancelling.
+                                        values[i] = static_cast<float>(i % 977) + 0.5f;
+                                    }
+
+                                    const Tensor got = nn::im2col(input, window);
+                                    const Tensor want = im2col_reference(input, window);
+                                    ++configurations;
+
+                                    bool same = got.shape() == want.shape();
+                                    for (size_t i = 0; same && i < want.size(); ++i) {
+                                        same = got.data()[i] == want.data()[i];
+                                    }
+                                    if (!same && first_bad.empty()) {
+                                        first_bad = input.shape_str() + " k=" + std::to_string(kH) +
+                                                    "x" + std::to_string(kW) +
+                                                    " s=" + std::to_string(stride) +
+                                                    " p=" + std::to_string(padding);
+                                    }
+                                    if (!same) ++mismatches;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    check(configurations > 200, "the sweep covers more than two hundred windows");
+    check(mismatches == 0, mismatches == 0
+                               ? "im2col is exact on every one of them"
+                               : "im2col disagrees with the reference, first at " + first_bad);
+}
+
 }  // namespace
 
 void run_conv_tests() {
     test_im2col();
+    test_im2col_against_reference();
     test_conv_layers();
     test_conv_gradients();
     test_cnn_training();

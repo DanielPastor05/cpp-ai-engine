@@ -138,8 +138,21 @@ void test_nd_tensor_ops() {
     // not a composition of two other permutes. The first draft of this test used
     // one, got the composition wrong, and reported four failures against correct
     // code -- an oracle that needs its own proof is not an oracle.
-    for (const std::vector<size_t>& dims :
-         std::vector<std::vector<size_t>>{{2, 33, 31}, {1, 64, 64}, {3, 1, 65}, {2, 65, 1}}) {
+    // A sweep rather than four hand-picked shapes. 31, 33, 63, 64, 65 and 1
+    // straddle the tile in every direction: one under, exact, one over, and the
+    // degenerate single row or column where the tile is larger than the whole
+    // dimension.
+    size_t mismatches = 0;
+    std::string first_bad;
+    std::vector<std::vector<size_t>> shapes;
+    for (size_t batch : {1u, 2u}) {
+        for (size_t rows : {1u, 31u, 32u, 33u, 64u, 65u}) {
+            for (size_t cols : {1u, 31u, 32u, 33u, 64u, 65u}) {
+                shapes.push_back({batch, rows, cols});
+            }
+        }
+    }
+    for (const std::vector<size_t>& dims : shapes) {
         Tensor A(dims, 0.0f);
         for (size_t i = 0; i < A.size(); ++i) A.data()[i] = static_cast<float>(i % 251);
 
@@ -158,8 +171,13 @@ void test_nd_tensor_ops() {
                 }
             }
         }
-        check(same, "the blocked axis swap is exact on " + A.shape_str());
+        if (!same && first_bad.empty()) first_bad = A.shape_str();
+        if (!same) ++mismatches;
     }
+    check(shapes.size() > 60, "the sweep straddles the 32-wide tile in both directions");
+    check(mismatches == 0, mismatches == 0
+                               ? "the blocked axis swap is exact on every shape in it"
+                               : "the blocked axis swap is wrong, first at " + first_bad);
 
     // batched matmul: each matrix in the batch is multiplied separately
     Tensor A({2, 2, 3}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12});
