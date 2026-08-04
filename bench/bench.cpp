@@ -207,16 +207,18 @@ int main() {
             "  memory rather than by the arithmetic.\n");
     }
 
-    section("CPU frente a GPU");
+    section("CPU against GPU");
     {
         namespace cuda = engine::cuda;
 
-        if (!cuda::available()) {
+        // The optional is the guard: available() said only that a card exists,
+        // and the two calls could in principle disagree.
+        const std::optional<cuda::DeviceInfo> device = cuda::device_info();
+        if (!device) {
             printf(
                 "  Built without CUDA, or no usable device.\n"
                 "  Rebuild with: cmake -B build-cuda -S . -DENGINE_CUDA=ON\n");
         } else {
-            const std::optional<cuda::DeviceInfo> device = cuda::device_info();
             printf("  Device: %s (cc %d.%d, %d SM, %zu MiB)\n\n", device->name.c_str(),
                    device->compute_major, device->compute_minor, device->multiprocessors,
                    device->total_memory >> 20);

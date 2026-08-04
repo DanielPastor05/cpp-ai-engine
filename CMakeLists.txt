@@ -103,6 +103,21 @@ if(ENGINE_CUDA)
     target_link_libraries(engine PUBLIC CUDA::cudart_static)
 endif()
 
+# The standard library's bounds checks in Debug, which Release does not have.
+#
+# Here rather than in CMakePresets.json, and that is a bug fix. The preset used to
+# set CMAKE_CXX_FLAGS="-D_GLIBCXX_ASSERTIONS", and CMAKE_CXX_FLAGS *replaces* the
+# defaults CMake would otherwise supply -- which on MSVC include /EHsc. So the
+# Debug preset on Windows built an engine that throws 117 different exceptions
+# with unwinding semantics turned off, and said so in a C4530 warning nobody read.
+# The define is also libstdc++-only, so it was doing nothing on the compiler it
+# was breaking.
+#
+# Directory scope rather than on `engine`: the define changes libstdc++'s own
+# container headers, so it has to reach every translation unit that instantiates
+# one -- the tests and the examples included, which is what the old flag did.
+add_compile_definitions($<$<CONFIG:Debug>:_GLIBCXX_ASSERTIONS>)
+
 # The warnings are for the host compiler: nvcc does not understand these flags.
 if(MSVC)
     target_compile_options(engine PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4>)

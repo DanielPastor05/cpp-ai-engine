@@ -56,3 +56,11 @@ doxygen-out/
 # Python bytecode, from importing tools/claimcheck.py rather than running it.
 __pycache__/
 *.pyc
+
+# Weight files the security tests craft in the working directory, to check the
+# parser rejects them. tests/test_nn.cpp removes them on the way out, but only if
+# it gets there -- a failing check throws past the cleanup, and running the suite
+# from the repository root then leaves five files that `git add -A` will happily
+# commit. Which is exactly what happened in e14722e, and they went out in v0.7.0.
+hostile_*.bin
+not_weights.bin

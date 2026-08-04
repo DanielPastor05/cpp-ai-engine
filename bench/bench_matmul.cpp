@@ -312,6 +312,7 @@ int main(int argc, char** argv) {
     }
 
     const std::optional<cuda::DeviceInfo> device = cuda::device_info();
+    if (!device) return 0;  // available() said otherwise; trust the optional
     const double peak = cuda::peak_fp32_gflops();
 
     printf("Device: %s (cc %d.%d, %d SM, %zu MiB)\n", device->name.c_str(), device->compute_major,

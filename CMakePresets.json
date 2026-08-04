@@ -23,11 +23,10 @@
     {
       "name": "debug",
       "displayName": "Debug with bounds-checked containers",
-      "description": "_GLIBCXX_ASSERTIONS turns on the standard library's index checks, which Release does not have.",
+      "description": "The standard library's index checks, which Release does not have. The define itself is set in CMakeLists.txt, because putting it in CMAKE_CXX_FLAGS here replaced MSVC's defaults and took /EHsc with them.",
       "binaryDir": "${sourceDir}/build-debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_FLAGS": "-D_GLIBCXX_ASSERTIONS"
+        "CMAKE_BUILD_TYPE": "Debug"
       }
     },
     {

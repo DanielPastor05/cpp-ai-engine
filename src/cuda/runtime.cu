@@ -5,6 +5,7 @@
 // what crossing PCIe costs.
 
 #include "engine/cuda.hpp"
+#include "engine/detail/env.hpp"
 
 #include <cuda_runtime.h>
 
@@ -29,11 +30,11 @@ void check(cudaError_t status, const char* what) {
 }
 
 size_t env_size(const char* name, size_t fallback) {
-    const char* raw = std::getenv(name);
-    if (raw == nullptr || *raw == '\0') return fallback;
+    const std::optional<std::string> raw = engine::detail::env_var(name);
+    if (!raw) return fallback;
     char* end = nullptr;
-    const unsigned long long value = std::strtoull(raw, &end, 10);
-    if (end == raw) return fallback;
+    const unsigned long long value = std::strtoull(raw->c_str(), &end, 10);
+    if (end == raw->c_str()) return fallback;
     return static_cast<size_t>(value);
 }
 
@@ -145,8 +146,8 @@ struct Context {
 
         // ENGINE_CUDA=0 turns the backend off without recompiling, to compare against
         // the CPU path on the same machine and the same binary.
-        const char* flag = std::getenv("ENGINE_CUDA");
-        on = !(flag != nullptr && (flag[0] == '0' || flag[0] == 'n' || flag[0] == 'N'));
+        const std::optional<std::string> flag = engine::detail::env_var("ENGINE_CUDA");
+        on = !(flag && ((*flag)[0] == '0' || (*flag)[0] == 'n' || (*flag)[0] == 'N'));
     }
 };
 

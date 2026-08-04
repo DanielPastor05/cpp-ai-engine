@@ -183,11 +183,12 @@ jobs:
       - uses: actions/checkout@v4
 
       # In Debug the standard library bounds-checks container indices, which the
-      # Release build does not.
+      # Release build does not. The define lives in CMakeLists.txt now: passing it
+      # through CMAKE_CXX_FLAGS replaces the defaults CMake supplies, and on MSVC
+      # those include /EHsc -- so the same line that worked here silently built a
+      # Windows Debug engine with exception unwinding turned off.
       - name: Configure in Debug
-        run: >
-          cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug
-          -DCMAKE_CXX_FLAGS="-D_GLIBCXX_ASSERTIONS"
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build
         run: cmake --build build --parallel

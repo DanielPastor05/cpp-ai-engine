@@ -179,6 +179,7 @@ int main() {
     }
 
     const std::optional<cuda::DeviceInfo> device = cuda::device_info();
+    if (!device) return 0;  // available() said otherwise; trust the optional
     printf("Device: %s (cc %d.%d, %d SM)\n", device->name.c_str(), device->compute_major,
            device->compute_minor, device->multiprocessors);
     printf("Peak: %.0f GFLOP/s fp32, %.0f GB/s\n\n", cuda::peak_fp32_gflops(),

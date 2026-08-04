@@ -1,4 +1,5 @@
 #include "engine/detail/storage.hpp"
+#include "engine/detail/env.hpp"
 
 #ifdef ENGINE_CUDA
 #include "engine/cuda.hpp"
@@ -96,10 +97,9 @@ public:
     // PyTorch's caching allocator makes, and it should be as easy to refuse.
     static size_t cap_floats() {
         static const size_t cap = [] {
-            const char* raw = std::getenv("ENGINE_BUFFER_POOL_MB");
             size_t megabytes = 128;
-            if (raw != nullptr && raw[0] != '\0') {
-                const long parsed = std::strtol(raw, nullptr, 10);
+            if (const std::optional<std::string> raw = detail::env_var("ENGINE_BUFFER_POOL_MB")) {
+                const long parsed = std::strtol(raw->c_str(), nullptr, 10);
                 if (parsed >= 0) megabytes = static_cast<size_t>(parsed);
             }
             return (megabytes << 20) / sizeof(float);

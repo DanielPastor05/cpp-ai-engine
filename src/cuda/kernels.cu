@@ -13,6 +13,7 @@
 // beats launching an invalid grid and getting garbage.
 
 #include "engine/cuda.hpp"
+#include "engine/detail/env.hpp"
 #include "engine/detail/cuda_ops.hpp"
 #include "kernels_common.cuh"
 
@@ -60,8 +61,8 @@ constexpr int kMaxPermuteDims = 8;
 //   ENGINE_CUDA_SYNC=1 .\build-cuda\Release\test_engine.exe
 bool sync_after_launch() {
     static const bool on = [] {
-        const char* raw = std::getenv("ENGINE_CUDA_SYNC");
-        return raw != nullptr && raw[0] != '\0' && raw[0] != '0';
+        const std::optional<std::string> raw = engine::detail::env_var("ENGINE_CUDA_SYNC");
+        return raw && (*raw)[0] != '0';
     }();
     return on;
 }
@@ -1009,10 +1010,12 @@ bool permute(const Storage& x, Storage& out, const size_t* out_shape, const size
     // for the one that was R, with every leading axis still packed.
     if (ndim >= 2) {
         const size_t rows = out_shape[ndim - 1], cols = out_shape[ndim - 2];
-        bool swap = src_strides[ndim - 2] == 1 && src_strides[ndim - 1] == (long long)cols;
+        // No cast: out_shape and src_strides are both size_t*, and widening one
+        // side to long long only bought a signed/unsigned comparison warning.
+        bool swap = src_strides[ndim - 2] == 1 && src_strides[ndim - 1] == cols;
         size_t packed = rows * cols, batch = 1;
         for (size_t d = ndim - 2; d-- > 0 && swap;) {
-            swap = src_strides[d] == (long long)packed;
+            swap = src_strides[d] == packed;
             batch *= out_shape[d];
             packed *= out_shape[d];
         }

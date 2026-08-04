@@ -114,8 +114,18 @@ int main() {
     // through Tensor::matmul, so the conv -> relu -> pool -> conv chain stays on the
     // card end to end; the loss and the optimiser are still on the CPU and break it
     // once per step.
-    if (engine::cuda::available()) {
-        const std::optional<engine::cuda::DeviceInfo> gpu = engine::cuda::device_info();
+    // enabled() and not available(): they are different questions and they
+    // disagree exactly when somebody uses the documented off switch. This line
+    // used to guard on available() -- "is there a card" -- so `ENGINE_CUDA=0`
+    // printed "Backend: CUDA on ..." while the run took 13.8 s instead of 3.7,
+    // which is the engine correctly on the CPU and the demo lying about it.
+    //
+    // The optional then carries the answer rather than a second call that could
+    // disagree with the first, and nothing dereferences it unchecked.
+    const std::optional<engine::cuda::DeviceInfo> gpu =
+        engine::cuda::enabled() ? engine::cuda::device_info() : std::nullopt;
+
+    if (gpu) {
         std::cout << "Backend: CUDA on " << gpu->name << " (cc " << gpu->compute_major << "."
                   << gpu->compute_minor << "), convolutions included.\n";
     } else {

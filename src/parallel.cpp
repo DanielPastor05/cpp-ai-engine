@@ -1,4 +1,5 @@
 #include "engine/parallel.hpp"
+#include "engine/detail/env.hpp"
 
 #include <algorithm>
 #include <condition_variable>
@@ -24,11 +25,11 @@ size_t threads_from_environment() {
     const unsigned detected = std::thread::hardware_concurrency();
     const size_t fallback = detected > 0 ? detected : 1;
 
-    const char* value = std::getenv("ENGINE_NUM_THREADS");
-    if (value == nullptr) return fallback;
+    const std::optional<std::string> value = detail::env_var("ENGINE_NUM_THREADS");
+    if (!value) return fallback;
 
     try {
-        const int parsed = std::stoi(value);
+        const int parsed = std::stoi(*value);
         return parsed > 0 ? static_cast<size_t>(parsed) : fallback;
     } catch (const std::exception&) {
         // An unreadable value is no reason to abort: the core count is used, exactly
