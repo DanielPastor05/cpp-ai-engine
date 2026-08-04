@@ -14,6 +14,7 @@ include_directories(include)
 # The library's translation units
 set(SOURCES
     src/tensor.cpp
+    src/tensor_ops.cpp
     src/autograd.cpp
     src/nn.cpp
     src/conv.cpp
