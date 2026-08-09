@@ -389,7 +389,7 @@ misinterpreted.
 
 ## How this was built
 
-**This engine was written with heavy AI assistance — Claude (Anthropic) — and
+**This engine was written with AI assistance — Claude (Anthropic) — and
 the history is short and dense because of it.** Every commit is authored under
 my name, so `git log` will not tell you; this section is where you find out, and
 it is here for exactly that reason. What follows is what was mine and what was
