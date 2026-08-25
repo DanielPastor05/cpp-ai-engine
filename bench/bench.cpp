@@ -226,7 +226,8 @@ int main() {
             // No threshold: the point here is to measure where the crossover is, not apply it.
             const size_t saved_flops = cuda::min_matmul_flops();
             const size_t saved_elems = cuda::min_elementwise_elements();
-            cuda::set_thresholds(0, 0);
+            const size_t saved_layernorm = cuda::min_layernorm_elements();
+            cuda::set_thresholds(0, 0, 0);
 
             printf("  matmul NxNxN, with the operands already resident on the device:\n");
             printf("  %-10s %12s %12s %10s %14s\n", "N", "CPU (ms)", "GPU (ms)", "speedup",
@@ -325,7 +326,7 @@ int main() {
                        cpu * 1000.0, gpu * 1000.0, cpu / gpu);
             }
 
-            cuda::set_thresholds(saved_flops, saved_elems);
+            cuda::set_thresholds(saved_flops, saved_elems, saved_layernorm);
             cuda::set_enabled(true);
             printf(
                 "\n  Dispatch thresholds in use: %zu operations for matmul,\n"

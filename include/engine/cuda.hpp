@@ -188,16 +188,26 @@ MatmulKernel resolve_matmul_kernel(size_t rows, size_t inner_dim, size_t cols);
 // Dispatch thresholds.
 //
 // Launching a kernel costs a few microseconds, so below a certain size the GPU
-// loses to a single CPU core. These two numbers decide when it is worth it;
-// they can be set with ENGINE_CUDA_MIN_FLOPS and ENGINE_CUDA_MIN_ELEMENTS to
-// sweep them without recompiling.
+// loses to a single CPU core. These three numbers decide when it is worth it;
+// they can be set with ENGINE_CUDA_MIN_FLOPS, ENGINE_CUDA_MIN_ELEMENTS and
+// ENGINE_CUDA_MIN_LAYERNORM to sweep them without recompiling.
 // ---------------------------------------------------------
 
 // Minimum operation count (2*M*K*N) to send a matrix product to the GPU.
 size_t min_matmul_flops();
 // Minimum element count to send an element-wise operation.
 size_t min_elementwise_elements();
-void set_thresholds(size_t matmul_flops, size_t elementwise_elements);
+// Minimum element count to send a LayerNorm to the GPU.
+//
+// Its own number rather than the elementwise one, because its four-call
+// backward has a different break-even and was measured separately. It was a
+// constexpr until a consumer needed to move it: serving a small Transformer,
+// this is the threshold that decides whether a forward chains across the card
+// or comes home at every normalisation, and at a batch of one to five the
+// default keeps it on the host. Nothing about the default changes here -- what
+// changes is that it can now be swept like the other two.
+size_t min_layernorm_elements();
+void set_thresholds(size_t matmul_flops, size_t elementwise_elements, size_t layernorm_elements);
 
 // ---------------------------------------------------------
 // Host <-> device transfer accounting.

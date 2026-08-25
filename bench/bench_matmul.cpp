@@ -330,7 +330,7 @@ int main(int argc, char** argv) {
 
     // No threshold: everything is measured on the GPU here, even where it would
     // not be worth dispatching.
-    cuda::set_thresholds(0, 0);
+    cuda::set_thresholds(0, 0, 0);
 
     if (!opts.sweep) {
         const double intensity = (double)opts.size / 6.0;

@@ -187,7 +187,7 @@ int main() {
 
     // Nothing goes to the CPU here: the point is to measure the kernels, even on
     // shapes where dispatching would not normally be worth it.
-    cuda::set_thresholds(0, 0);
+    cuda::set_thresholds(0, 0, 0);
 
     occupancy_table();
     bandwidth_table(cuda::peak_bandwidth_gbs());

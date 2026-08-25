@@ -1308,7 +1308,6 @@ bool accumulate_grad(Storage& grad, const Storage& g, bool initialize) {
 // kernels were written: its rows x d_model lands at 8 192, in the losing half of
 // that table. The kernels are for the models this engine cannot run yet, not for
 // the demo that fits in a terminal.
-constexpr size_t kMinLayerNormElements = 1u << 15;
 
 bool layernorm(const Storage& x, const Storage& gamma, const Storage& beta, Storage& out,
                Storage& xhat, Storage& inv_std, size_t rows, size_t cols, float eps) {
@@ -1323,7 +1322,7 @@ bool layernorm(const Storage& x, const Storage& gamma, const Storage& beta, Stor
     // two sides are comparable in size and accepting with one on the host would
     // trade a download for an upload. Here gamma and beta are `cols` elements
     // against x's rows*cols, so uploading them to keep x resident is not a trade.
-    if (!x.resident_on_device() && x.size() < kMinLayerNormElements) return false;
+    if (!x.resident_on_device() && x.size() < min_layernorm_elements()) return false;
     if (rows == 0 || cols == 0 || cols > kMaxInt) return false;
     if (rows * cols != x.size() || out.size() != x.size() || xhat.size() != x.size()) return false;
     if (gamma.size() != cols || beta.size() != cols || inv_std.size() != rows) return false;
@@ -1347,7 +1346,9 @@ bool layernorm_backward(const Storage& grad_out, const Storage& xhat, const Stor
                         size_t rows, size_t cols) {
     if (!enabled()) return false;
     // As above: already resident means there is nothing for the floor to weigh.
-    if (!grad_out.resident_on_device() && grad_out.size() < kMinLayerNormElements) return false;
+    if (!grad_out.resident_on_device() && grad_out.size() < min_layernorm_elements()) {
+        return false;
+    }
     if (rows == 0 || cols == 0 || cols > kMaxInt) return false;
     if (rows * cols != grad_out.size() || xhat.size() != grad_out.size()) return false;
     if (dx.size() != grad_out.size() || gamma.size() != cols) return false;
