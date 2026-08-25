@@ -1312,7 +1312,18 @@ constexpr size_t kMinLayerNormElements = 1u << 15;
 
 bool layernorm(const Storage& x, const Storage& gamma, const Storage& beta, Storage& out,
                Storage& xhat, Storage& inv_std, size_t rows, size_t cols, float eps) {
-    if (!enabled() || x.size() < kMinLayerNormElements) return false;
+    if (!enabled()) return false;
+    // The floor asks whether this is worth moving across PCIe. When x is already
+    // on the device there is nothing to move, and refusing is what costs the
+    // round trip -- the host path has to pull x down and whatever runs next puts
+    // it back. Same clause as elementwise_worth_it(), for the same reason it was
+    // added there.
+    //
+    // x alone, unlike the matmul entry, which requires both operands. There the
+    // two sides are comparable in size and accepting with one on the host would
+    // trade a download for an upload. Here gamma and beta are `cols` elements
+    // against x's rows*cols, so uploading them to keep x resident is not a trade.
+    if (!x.resident_on_device() && x.size() < kMinLayerNormElements) return false;
     if (rows == 0 || cols == 0 || cols > kMaxInt) return false;
     if (rows * cols != x.size() || out.size() != x.size() || xhat.size() != x.size()) return false;
     if (gamma.size() != cols || beta.size() != cols || inv_std.size() != rows) return false;
@@ -1334,7 +1345,9 @@ bool layernorm(const Storage& x, const Storage& gamma, const Storage& beta, Stor
 bool layernorm_backward(const Storage& grad_out, const Storage& xhat, const Storage& gamma,
                         const Storage& inv_std, Storage& dx, Storage& dgamma, Storage& dbeta,
                         size_t rows, size_t cols) {
-    if (!enabled() || grad_out.size() < kMinLayerNormElements) return false;
+    if (!enabled()) return false;
+    // As above: already resident means there is nothing for the floor to weigh.
+    if (!grad_out.resident_on_device() && grad_out.size() < kMinLayerNormElements) return false;
     if (rows == 0 || cols == 0 || cols > kMaxInt) return false;
     if (rows * cols != grad_out.size() || xhat.size() != grad_out.size()) return false;
     if (dx.size() != grad_out.size() || gamma.size() != cols) return false;
