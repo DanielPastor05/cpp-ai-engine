@@ -771,7 +771,8 @@ void run_cuda_parity_tests() {
                                "LayerNorm below the floor returns the right shape");
                 testing::check(cuda::kernels_launched() > after_matmul,
                                "LayerNorm dispatches on a resident input of 4 096 elements, "
-                               "against a floor of " + std::to_string(1u << 15));
+                               "against a floor of " +
+                                   std::to_string(1u << 15));
             }
         }
 
