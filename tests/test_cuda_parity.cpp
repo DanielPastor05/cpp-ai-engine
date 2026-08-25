@@ -747,11 +747,18 @@ void run_cuda_parity_tests() {
             // Every other dispatch in this file already reasons that way -- this
             // is the case that holds LayerNorm to it.
             //
-            // Measured before the clause was added: a two-block Transformer at
-            // batches of one to five crossed PCIe five times per forward, once
-            // for each of its four LayerNorms plus the initial upload, and ran
-            // about half as fast as the same model at batch six where the floor
-            // happened to be cleared.
+            // What the clause does *not* do, measured after it landed: it does
+            // not speed up a two-block Transformer at batches of one to five.
+            // Those still cross PCIe five times per forward, once for each of
+            // the four LayerNorms plus the initial upload, because the input is
+            // never resident by the time a LayerNorm sees it -- the embedding
+            // output starts on the host and reshape and transpose put it back.
+            //
+            // The halving that was originally credited to this clause came from
+            // lowering kMinLayerNormElements instead, which dispatches whether
+            // or not x is resident and pays an upload to hold the chain
+            // afterwards. Two different changes. This one is the consistent
+            // rule; the floor is the lever, and it is still a constexpr.
             {
                 const size_t before = cuda::kernels_launched();
 
@@ -1137,16 +1144,18 @@ void run_cuda_parity_tests() {
     // gradient residency shows less than in a pure matmul chain, because reshape and
     // transpose still bring the tensor down.
     //
-    // LayerNorm was on that list until it started honouring residency. Note that the
-    // count here went *up* when it did -- 15 downloads and 6 uploads became 18 and 5
-    // -- and that is the honest shape of the change rather than an argument against
-    // it. At this deliberately small case (4x12x32 = 1 536 elements) LayerNorm now
-    // computes on the device and the reshape after it has no kernel, so the result
-    // comes straight back down; before, it never went up. The win is where the rest
-    // of the chain has kernels, which is the forward pass an inference server runs:
-    // measured at 2.0x to 2.6x for batches of three to five, and 8.0 s to 7.8 s for
-    // 400 training steps of charlm_demo, whose LayerNorms are far above the floor
-    // either way and so are untouched.
+    // LayerNorm was on that list until it started honouring residency, and the count
+    // here went *up* when it did -- 15 downloads and 6 uploads became 18 and 5. At
+    // this deliberately small case (4x12x32 = 1 536 elements) it now computes on the
+    // device and the reshape after it has no kernel, so the result comes straight
+    // back down where before it never went up.
+    //
+    // Which is the honest summary of the clause so far: it makes the rule the same
+    // everywhere, and on today's graphs it mostly has nowhere to fire, because the
+    // operations around a LayerNorm bring the tensor home anyway. It becomes worth
+    // something when reshape and transpose stop doing that. Training is untouched
+    // either way -- 400 steps of charlm_demo run 7.8 s against 8.0 s, with its
+    // LayerNorms far above the floor in both builds.
     {
         cuda::set_enabled(true);
         engine::manual_seed(11);
