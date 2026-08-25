@@ -737,6 +737,42 @@ void run_cuda_parity_tests() {
                                    : "LayerNorm's dgamma changed between two identical runs: the "
                                      "cross-row reduction depends on scheduling");
             }
+
+            // And below the floor, on a tensor that is already on the card.
+            //
+            // The floor exists to decide whether the work is worth a PCIe
+            // crossing. Once x is resident that question has no content, and
+            // refusing costs the very round trip the floor was meant to avoid:
+            // the host path pulls x down and the next operation puts it back.
+            // Every other dispatch in this file already reasons that way -- this
+            // is the case that holds LayerNorm to it.
+            //
+            // Measured before the clause was added: a two-block Transformer at
+            // batches of one to five crossed PCIe five times per forward, once
+            // for each of its four LayerNorms plus the initial upload, and ran
+            // about half as fast as the same model at batch six where the floor
+            // happened to be cleared.
+            {
+                const size_t before = cuda::kernels_launched();
+
+                // 64x1024 by 1024x64: enough work to dispatch on its own, and an
+                // output of 4 096 elements, an eighth of the LayerNorm floor.
+                Tensor wide = Tensor::randn({64, 1024}, 0.0f, 0.05f, false);
+                Tensor tall = Tensor::randn({1024, 64}, 0.0f, 0.05f, false);
+                Tensor resident = wide.matmul(tall);
+
+                const size_t after_matmul = cuda::kernels_launched();
+                testing::check(after_matmul > before,
+                               "the matmul that leaves the tensor on the device ran there");
+
+                nn::LayerNorm small(64);
+                Tensor normed = small.forward(resident);
+                testing::check(normed.shape() == std::vector<size_t>({64, 64}),
+                               "LayerNorm below the floor returns the right shape");
+                testing::check(cuda::kernels_launched() > after_matmul,
+                               "LayerNorm dispatches on a resident input of 4 096 elements, "
+                               "against a floor of " + std::to_string(1u << 15));
+            }
         }
 
         Tensor A = Tensor::randn({30, 40}, 0.0f, 1.0f, true);
@@ -1097,9 +1133,19 @@ void run_cuda_parity_tests() {
     // And the same count over a chain that only uses operations with kernels.
     //
     // Comparing the two figures maps what is left to do: in the TransformerBlock the
-    // gradient residency barely shows, because permute, reshape, transpose, LayerNorm
-    // and GELU are still on the CPU and bring the tensor down anyway. Where the whole
-    // chain has kernels, it shows.
+    // gradient residency shows less than in a pure matmul chain, because reshape and
+    // transpose still bring the tensor down.
+    //
+    // LayerNorm was on that list until it started honouring residency. Note that the
+    // count here went *up* when it did -- 15 downloads and 6 uploads became 18 and 5
+    // -- and that is the honest shape of the change rather than an argument against
+    // it. At this deliberately small case (4x12x32 = 1 536 elements) LayerNorm now
+    // computes on the device and the reshape after it has no kernel, so the result
+    // comes straight back down; before, it never went up. The win is where the rest
+    // of the chain has kernels, which is the forward pass an inference server runs:
+    // measured at 2.0x to 2.6x for batches of three to five, and 8.0 s to 7.8 s for
+    // 400 training steps of charlm_demo, whose LayerNorms are far above the floor
+    // either way and so are untouched.
     {
         cuda::set_enabled(true);
         engine::manual_seed(11);
