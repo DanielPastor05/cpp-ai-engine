@@ -177,7 +177,8 @@ void run_cuda_parity_tests() {
     //
     const size_t saved_flops = cuda::min_matmul_flops();
     const size_t saved_elements = cuda::min_elementwise_elements();
-    cuda::set_thresholds(0, 0);
+    const size_t saved_layernorm = cuda::min_layernorm_elements();
+    cuda::set_thresholds(0, 0, 0);
 
     engine::manual_seed(20260728);
 
@@ -747,6 +748,46 @@ void run_cuda_parity_tests() {
             // Every other dispatch in this file already reasons that way -- this
             // is the case that holds LayerNorm to it.
             //
+            // The floor is settable, and setting it reaches the dispatch.
+            //
+            // This is the number that decides whether a small forward chains
+            // across the card or comes home at every normalisation, so a build
+            // where the setter compiles but does not bind would be the quiet
+            // kind of broken: everything still correct, half the speed, and no
+            // test red. Both directions, because a threshold that can only be
+            // lowered is only half a knob.
+            {
+                const size_t saved = cuda::min_layernorm_elements();
+                Tensor small = Tensor::randn({16, 16}, 0.0f, 1.0f, false);  // 256 elements
+                nn::LayerNorm ln16(16);
+
+                cuda::set_thresholds(cuda::min_matmul_flops(), cuda::min_elementwise_elements(),
+                                     1u << 15);
+                const size_t before_high = cuda::kernels_launched();
+                Tensor high = ln16.forward(small);
+                testing::check(cuda::kernels_launched() == before_high,
+                               "256 elements stays on the host under the default floor");
+
+                cuda::set_thresholds(cuda::min_matmul_flops(), cuda::min_elementwise_elements(),
+                                     64);
+                const size_t before_low = cuda::kernels_launched();
+                Tensor low = ln16.forward(small);
+                testing::check(cuda::kernels_launched() > before_low,
+                               "and dispatches once the floor is lowered under it");
+
+                // Same answer either way: the threshold decides where the work
+                // runs, never what it computes. One check over all 256, because
+                // 256 green lines for one property is not 256 properties.
+                float worst = 0.0f;
+                for (size_t i = 0; i < high.size(); ++i) {
+                    worst = std::max(worst, std::abs(high.data()[i] - low.data()[i]));
+                }
+                testing::check(worst < 1e-5f, "the host and device paths agree (max difference " +
+                                                  std::to_string(worst) + ")");
+                cuda::set_thresholds(cuda::min_matmul_flops(), cuda::min_elementwise_elements(),
+                                     saved);
+            }
+
             // What the clause does *not* do, measured after it landed: it does
             // not speed up a two-block Transformer at batches of one to five.
             // Those still cross PCIe five times per forward, once for each of
@@ -1179,7 +1220,7 @@ void run_cuda_parity_tests() {
                    "no kernel failed to launch (" + std::to_string(cuda::kernels_launched()) +
                        " launched, " + std::to_string(cuda::kernels_failed()) + " failed)");
 
-    cuda::set_thresholds(saved_flops, saved_elements);
+    cuda::set_thresholds(saved_flops, saved_elements, saved_layernorm);
     cuda::set_enabled(true);
 }
 

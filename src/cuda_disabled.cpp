@@ -96,7 +96,10 @@ size_t min_matmul_flops() {
 size_t min_elementwise_elements() {
     return 0;
 }
-void set_thresholds(size_t, size_t) {}
+size_t min_layernorm_elements() {
+    return 0;
+}
+void set_thresholds(size_t, size_t, size_t) {}
 
 TransferStats transfer_stats() {
     return TransferStats{};

@@ -160,6 +160,7 @@ Context& context() {
 // thread splitting lives on the CPU path, and that never reaches here.
 size_t g_min_matmul_flops = env_size("ENGINE_CUDA_MIN_FLOPS", size_t{1} << 22);
 size_t g_min_elements = env_size("ENGINE_CUDA_MIN_ELEMENTS", size_t{1} << 20);
+size_t g_min_layernorm = env_size("ENGINE_CUDA_MIN_LAYERNORM", size_t{1} << 15);
 
 MatmulKernel g_matmul_kernel = MatmulKernel::Auto;
 
@@ -303,10 +304,14 @@ size_t min_matmul_flops() {
 size_t min_elementwise_elements() {
     return g_min_elements;
 }
+size_t min_layernorm_elements() {
+    return g_min_layernorm;
+}
 
-void set_thresholds(size_t matmul_flops, size_t elementwise_elements) {
+void set_thresholds(size_t matmul_flops, size_t elementwise_elements, size_t layernorm_elements) {
     g_min_matmul_flops = matmul_flops;
     g_min_elements = elementwise_elements;
+    g_min_layernorm = layernorm_elements;
 }
 
 TransferStats transfer_stats() {
