@@ -188,6 +188,23 @@ public:
     // Contiguous sub-tensor along an axis: [start, start + count).
     [[nodiscard]] Tensor slice(size_t axis, size_t start, size_t count) const;
 
+    // slice's inverse: writes `src` into this tensor along `axis` starting at
+    // `start`, in place. Every other dimension must match, and src's length
+    // along the axis plus start must fit.
+    //
+    // This is the operation a key/value cache is made of. Without it a cache has
+    // to be rebuilt with concat every step, which allocates and copies the whole
+    // cache to append one position -- O(L) work and O(L) allocation per token to
+    // store O(1) of new data. With it, appending is a write of exactly the new
+    // slab, and on the device it stays on the device.
+    //
+    // It mutates, which is why it is a void method and not one of the
+    // [[nodiscard]] pure functions above, and why it refuses to run on a tensor
+    // that requires grad: an in-place write inside a live graph would make the
+    // recorded backward a lie about what the forward computed. Inference is
+    // where a cache belongs and inference is where this works.
+    void copy_into(const Tensor& src, size_t axis, size_t start);
+
     // Gathers the given elements of the first axis into a mini-batch: rows from
     // an (M, N), whole images from an (N, C, H, W). This is the operation that
     // makes mini-batch training possible. Indices may repeat: their gradients

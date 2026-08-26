@@ -464,6 +464,57 @@ Tensor Tensor::slice(size_t axis, size_t start, size_t count) const {
     return res;
 }
 
+void Tensor::copy_into(const Tensor& src, size_t axis, size_t start) {
+    check_axis(axis, ndim(), "copy_into", shape_str());
+    if (src.ndim() != ndim()) {
+        throw std::invalid_argument("copy_into needs the same number of axes: " + shape_str() +
+                                    " against " + src.shape_str() + ".");
+    }
+    for (size_t d = 0; d < ndim(); ++d) {
+        if (d != axis && src.shape()[d] != shape()[d]) {
+            throw std::invalid_argument("copy_into: the two may only differ along axis " +
+                                        std::to_string(axis) + "; " + shape_str() + " against " +
+                                        src.shape_str() + ".");
+        }
+    }
+    const size_t count = src.shape()[axis];
+    if (count == 0) throw std::invalid_argument("copy_into needs at least one element.");
+    if (start + count > shape()[axis]) {
+        throw std::out_of_range("copy_into [" + std::to_string(start) + ", " +
+                                std::to_string(start + count) + ") runs off axis " +
+                                std::to_string(axis) + " of a tensor " + shape_str() + ".");
+    }
+
+    // Refused rather than handled. Every other operation here records how its
+    // output was computed; this one changes a value that some earlier output may
+    // already have been computed from, and no backward can describe that. A
+    // cache is an inference structure and this is an inference operation.
+    if (requires_grad() || src.requires_grad()) {
+        throw std::invalid_argument(
+            "copy_into writes in place and cannot run on a tensor that requires grad.");
+    }
+
+    const AxisView v = axis_view(shape(), axis);
+
+#ifdef ENGINE_CUDA
+    // No size threshold. The alternative to a small device copy is not a cheap
+    // host loop -- it is pulling the destination down, writing, and pushing it
+    // back, which for a cache is the entire cache over PCIe to append one
+    // position. Residency decides, not size.
+    if (cuda::ops::copy_into(storage(), src.storage(), v.outer, v.axis_len, count, start,
+                             v.inner)) {
+        return;
+    }
+#endif
+
+    float* dst = data();
+    const float* values = src.data();
+    for (size_t o = 0; o < v.outer; ++o) {
+        std::copy_n(values + o * count * v.inner, count * v.inner,
+                    dst + (o * v.axis_len + start) * v.inner);
+    }
+}
+
 Tensor Tensor::concat(const std::vector<Tensor>& parts, size_t axis) {
     if (parts.empty()) throw std::invalid_argument("concat needs at least one tensor.");
     const std::vector<size_t>& first = parts[0].shape();
