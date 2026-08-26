@@ -1095,6 +1095,61 @@ void run_cuda_parity_tests() {
         testing::check(same, "and the values survive the device-to-device copy");
     }
 
+    // --- copy_into stays on the device ---
+    //
+    // This is the operation a key/value cache appends with, and the whole reason
+    // for it is that appending must not move the cache. If it came down to host
+    // to take one position and went back up, a cache would cost more PCIe per
+    // token than the recomputation it replaces.
+    {
+        cuda::set_enabled(true);
+
+        // Resident because a matmul left it there, which is how a real cache
+        // gets there too -- attention reads it, and reading it uploads it.
+        Tensor seed = Tensor::randn({48, 16});
+        Tensor eye = Tensor::randn({16, 16});
+        Tensor cache = seed.matmul(eye).reshape({2, 3, 4, 32});
+        testing::check(cache.storage().resident_on_device(), "the cache starts out on the device");
+        // to_vector() reads through the const data(), which syncs the host
+        // mirror without invalidating the device one, so the cache is still
+        // resident here. That matters for the assertion below: if copy_into fell
+        // back to the host path it would take the *non-const* data(), which
+        // marks the device stale -- so "still resident afterwards" is what
+        // proves the device path ran, and not merely that nothing came down.
+        const std::vector<float> before = cache.to_vector();
+
+        Tensor step({2, 3, 1, 32}, 0.0f);
+        for (size_t i = 0; i < step.size(); ++i) step.data()[i] = 100.0f + (float)i;
+
+        cuda::reset_transfer_stats();
+        cache.copy_into(step, 2, 2);
+        const cuda::TransferStats after = cuda::transfer_stats();
+        testing::check(after.to_host_count == 0,
+                       "appending to a resident cache does not pull it down to host");
+        testing::check(cache.storage().resident_on_device(),
+                       "and the cache is still on the device afterwards");
+
+        // Written where it was asked, and nowhere else. A kernel that got the
+        // stride wrong would leave a resident cache full of plausible garbage,
+        // which is the failure mode this whole file exists for.
+        const std::vector<float> got = cache.to_vector();
+        bool written = true, intact = true;
+        for (size_t o = 0; o < 6; ++o) {  // batch x heads, flattened
+            for (size_t pos = 0; pos < 4; ++pos) {
+                for (size_t k = 0; k < 32; ++k) {
+                    const size_t at = (o * 4 + pos) * 32 + k;
+                    if (pos == 2) {
+                        if (got[at] != step.to_vector()[o * 32 + k]) written = false;
+                    } else if (got[at] != before[at]) {
+                        intact = false;
+                    }
+                }
+            }
+        }
+        testing::check(written, "the appended position holds what was written");
+        testing::check(intact, "and every other position is untouched");
+    }
+
     // --- backward residency ---
     //
     // The other half of the residency model, and the half that was missing: the

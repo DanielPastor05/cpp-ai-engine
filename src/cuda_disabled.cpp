@@ -169,6 +169,9 @@ bool reduce_sum_squares(const Storage&, double&) {
 bool scale_in_place(Storage&, float) {
     return false;
 }
+bool copy_into(Storage&, const Storage&, size_t, size_t, size_t, size_t, size_t) {
+    return false;
+}
 bool sgd_step(Storage&, const Storage&, Storage*, float, float, float) {
     return false;
 }

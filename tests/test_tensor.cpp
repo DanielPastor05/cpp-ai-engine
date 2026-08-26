@@ -321,6 +321,71 @@ void test_reductions() {
     check_close(mg.grad().data()[0], 0.0f, "the rest receive nothing");
 }
 
+void test_copy_into() {
+    section("Tensor: copy_into");
+
+    // slice's inverse, checked against slice: writing a window in and reading it
+    // back out has to give the same values, and has to leave everything else
+    // alone. The second half is the half a cache depends on -- appending one
+    // position must not disturb the positions already there.
+    Tensor dst({2, 5, 3}, 0.0f);
+    for (size_t i = 0; i < dst.size(); ++i) dst.data()[i] = static_cast<float>(i);
+    const std::vector<float> before = dst.to_vector();
+
+    Tensor src({2, 2, 3}, 0.0f);
+    for (size_t i = 0; i < src.size(); ++i) src.data()[i] = -1.0f - static_cast<float>(i);
+
+    dst.copy_into(src, 1, 2);
+    check(dst.shape() == std::vector<size_t>({2, 5, 3}), "copy_into does not change the shape");
+
+    Tensor read_back = dst.slice(1, 2, 2);
+    bool same = true;
+    for (size_t i = 0; i < src.size(); ++i) {
+        if (read_back.to_vector()[i] != src.to_vector()[i]) same = false;
+    }
+    check(same, "what copy_into writes is what slice reads back");
+
+    // Untouched rows: axis 1 positions 0, 1 and 4, in both outer blocks.
+    bool intact = true;
+    const std::vector<float> after = dst.to_vector();
+    for (size_t o = 0; o < 2; ++o) {
+        for (size_t row : {size_t{0}, size_t{1}, size_t{4}}) {
+            for (size_t k = 0; k < 3; ++k) {
+                const size_t at = (o * 5 + row) * 3 + k;
+                if (after[at] != before[at]) intact = false;
+            }
+        }
+    }
+    check(intact, "copy_into leaves everything outside the window alone");
+
+    // A one-position append, which is the shape a key/value cache uses:
+    // (batch, heads, positions, head_dim), appending along the positions.
+    // Read flat because operator() stops at three indices.
+    Tensor cache({1, 2, 4, 3}, 0.0f);
+    Tensor step({1, 2, 1, 3}, 7.0f);
+    cache.copy_into(step, 2, 3);
+    const std::vector<float> slots = cache.to_vector();
+    check_close(slots[((0 * 2 + 1) * 4 + 3) * 3 + 2], 7.0f,
+                "a single-position append lands in the last slot");
+    check_close(slots[((0 * 2 + 1) * 4 + 2) * 3 + 2], 0.0f, "and not in the one before it");
+
+    check_throws([&] { dst.copy_into(src, 1, 4); }, "a window that runs off the end throws");
+    check_throws([&] { dst.copy_into(Tensor({2, 2, 4}, 0.0f), 1, 0); },
+                 "a source differing off the axis throws");
+    check_throws([&] { dst.copy_into(Tensor({2, 2}, 0.0f), 1, 0); },
+                 "a source with the wrong number of axes throws");
+    check_throws([&] { dst.copy_into(src, 7, 0); }, "a nonexistent axis throws");
+
+    // In place inside a live graph is refused rather than silently wrong: the
+    // recorded backward would describe a forward that no longer happened.
+    Tensor tracked({2, 5, 3}, 0.0f, true);
+    check_throws([&] { tracked.copy_into(src, 1, 0); },
+                 "copy_into refuses a destination that requires grad");
+    Tensor tracked_src({2, 2, 3}, 0.0f, true);
+    check_throws([&] { dst.copy_into(tracked_src, 1, 0); },
+                 "copy_into refuses a source that requires grad");
+}
+
 void test_slice_concat_stack() {
     section("Tensor: slice, concat and stack");
 
@@ -584,6 +649,7 @@ void run_tensor_tests() {
     test_nd_tensor_ops();
     test_reductions();
     test_slice_concat_stack();
+    test_copy_into();
     test_broadcast_all_operators();
     test_parallelism();
     test_buffer_pool_recycles();

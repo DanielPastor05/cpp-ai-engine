@@ -649,6 +649,24 @@ __global__ void scale_buffer(float* __restrict__ x, float factor, long long n) {
     }
 }
 
+// One thread per element of the source, each finding its slot in a destination
+// that is wider along one axis. The source is contiguous, the destination is
+// `outer` runs of `count * inner` floats spaced `dst_axis_len * inner` apart --
+// which is a pitched copy, and would be one cudaMemcpy2D if the counter that
+// makes dispatch visible in this project counted transfers rather than kernels.
+__global__ void copy_into_window(float* __restrict__ dst, const float* __restrict__ src,
+                                 long long count_inner, long long dst_axis_len, long long start,
+                                 long long inner, long long n) {
+    const long long stride = (long long)blockDim.x * gridDim.x;
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
+        const long long o = i / count_inner;
+        const long long rem = i - o * count_inner;
+        const long long row = rem / inner;
+        const long long col = rem - row * inner;
+        dst[(o * dst_axis_len + start + row) * inner + col] = src[i];
+    }
+}
+
 // ---------------------------------------------------------
 // Optimiser steps
 // ---------------------------------------------------------
@@ -1171,6 +1189,26 @@ bool reduce_sum(const Storage& x, double& out) {
 
 bool reduce_sum_squares(const Storage& x, double& out) {
     return reduce_impl<true>(x, out);
+}
+
+bool copy_into(Storage& dst, const Storage& src, size_t outer, size_t dst_axis_len, size_t count,
+               size_t start, size_t inner) {
+    if (!enabled() || src.size() == 0) return false;
+
+    // Residency decides, not size. If the destination is not on the card then
+    // running here would upload it, write, and leave the host stale -- paying
+    // exactly the transfer this operation exists to avoid. The host path is
+    // right in that case, and it is also what leaves the first append of a
+    // freshly built cache cheap.
+    if (!dst.resident_on_device()) return false;
+
+    const long long n = (long long)(outer * count * inner);
+    // device_mut() and not device_write(): the kernel writes a window, and the
+    // rest of the buffer has to survive it.
+    copy_into_window<<<grid_for(n), kBlock>>>(dst.device_mut(), src.device(),
+                                              (long long)(count * inner), (long long)dst_axis_len,
+                                              (long long)start, (long long)inner, n);
+    return launch_ok("copy_into_window");
 }
 
 bool scale_in_place(Storage& x, float factor) {

@@ -143,6 +143,18 @@ bool reduce_sum_squares(const Storage& x, double& out);
 // see whatever was there before.
 bool scale_in_place(Storage& x, float factor);
 
+// Writes `src` into a window of `dst`, in place, on the device. This is
+// Tensor::copy_into's device path and the operation a key/value cache appends
+// with: the whole point is that a cache which lives on the card is appended to
+// on the card, instead of coming down and going back up to add one position.
+//
+// The window is described the way every axis operation here describes one --
+// (outer, axis_len, inner) -- with `count` rows of the axis written starting at
+// `start`. dst is expected to be resident; src is uploaded if it is not, which
+// is one small transfer rather than the whole destination.
+bool copy_into(Storage& dst, const Storage& src, size_t outer, size_t dst_axis_len, size_t count,
+               size_t start, size_t inner);
+
 // One optimiser step, in place on the parameter.
 //
 // These two are the largest transfer saving in the engine and the least
