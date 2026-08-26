@@ -1,3 +1,7 @@
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
 #include "test_support.hpp"
 
 using namespace testing;
@@ -280,6 +284,140 @@ void test_transformer_training() {
     check_close(nn::accuracy(forward(X), y), 1.0f, "the transformer learns the task at 100%");
 }
 
+void test_kv_cache() {
+    section("MultiHeadAttention: the key/value cache");
+
+    engine::manual_seed(53);
+
+    // The claim, and the only one worth testing: decoding one position at a time
+    // through the cache gives what a single forward over all the positions
+    // gives. Everything else about a cache is performance, and a fast wrong
+    // answer is not a cache.
+    const size_t batch = 2, heads = 4, d_model = 32, seq = 6;
+    const size_t head_dim = d_model / heads;
+
+    nn::MultiHeadAttention attention(d_model, heads);
+    attention.train(false);
+
+    Tensor x = Tensor::randn({batch, seq, d_model});
+    const Tensor mask = nn::causal_mask(seq);
+
+    // With the graph on, the cached path refuses rather than building one that
+    // cannot be differentiated. Checked before the guard goes up, because the
+    // error a caller actually hits is this one.
+    {
+        nn::KVCache tracked(batch, heads, seq, head_dim);
+        check_throws(
+            [&] { (void)attention.forward(x.slice(1, 0, 1), tracked, mask.slice(0, 0, 1)); },
+            "a cached forward with autograd on throws and names the guard");
+    }
+
+    engine::autograd::NoGradGuard no_grad;
+
+    const Tensor uncached = attention.forward(x, &mask);
+
+    // The cache is exactly as wide as the sequence here. It does not have to be
+    // -- the point of the mask is that it can be wider -- and the case where it
+    // is wider gets its own check below.
+    nn::KVCache cache(batch, heads, seq, head_dim);
+    check(cache.filled == 0, "a fresh cache holds nothing");
+    check(cache.capacity() == seq, "and reports the capacity it was built with");
+
+    std::vector<float> stepwise;
+    stepwise.reserve(uncached.size());
+    for (size_t p = 0; p < seq; ++p) {
+        // One position in, one position out -- and its mask is the row of the
+        // causal mask for where it sits, which allows 0..p and blocks the rest.
+        const Tensor step = x.slice(1, p, 1);
+        const Tensor row = mask.slice(0, p, 1);
+        const Tensor out = attention.forward(step, cache, row);
+        if (p == 0) {
+            check(out.shape() == std::vector<size_t>({batch, 1, d_model}),
+                  "a cached step returns one position");
+        }
+        const std::vector<float> values = out.to_vector();
+        stepwise.insert(stepwise.end(), values.begin(), values.end());
+    }
+    check(cache.filled == seq, "the cache filled one position per step");
+
+    // stepwise is (seq, batch, d_model) because it was built a step at a time;
+    // uncached is (batch, seq, d_model). Compare through the indices rather than
+    // reshaping, which would compare a bug against itself.
+    const std::vector<float> whole = uncached.to_vector();
+    float worst = 0.0f;
+    for (size_t b = 0; b < batch; ++b) {
+        for (size_t p = 0; p < seq; ++p) {
+            for (size_t k = 0; k < d_model; ++k) {
+                const float a = stepwise[(p * batch + b) * d_model + k];
+                const float e = whole[(b * seq + p) * d_model + k];
+                const float denom = std::max(1.0f, std::abs(e));
+                worst = std::max(worst, std::abs(a - e) / denom);
+            }
+        }
+    }
+    check(worst < 1e-5f, "decoding position by position equals one forward over all of them");
+
+    // A cache wider than the sequence: the tail is zeros, and zeros are not
+    // neutral to a softmax, so this is the check that the mask is doing its job
+    // rather than the tail happening not to matter.
+    nn::KVCache roomy(batch, heads, seq + 5, head_dim);
+    const Tensor wide = nn::causal_mask(seq + 5);
+    std::vector<float> roomy_first;
+    for (size_t p = 0; p < seq; ++p) {
+        const Tensor out = attention.forward(x.slice(1, p, 1), roomy, wide.slice(0, p, 1));
+        if (p == 0) roomy_first = out.to_vector();
+    }
+    float roomy_worst = 0.0f;
+    for (size_t b = 0; b < batch; ++b) {
+        for (size_t k = 0; k < d_model; ++k) {
+            const float a = roomy_first[b * d_model + k];
+            const float e = whole[b * seq * d_model + k];
+            roomy_worst = std::max(roomy_worst, std::abs(a - e) / std::max(1.0f, std::abs(e)));
+        }
+    }
+    check(roomy_worst < 1e-5f, "a cache with room to spare gives the same answer");
+
+    // Prefill: several positions at once, which is how a new worker rebuilds a
+    // cache it did not compute. It has to agree with the same positions fed one
+    // at a time, or failover would change what a client sees.
+    nn::KVCache prefilled(batch, heads, seq, head_dim);
+    const Tensor bulk = attention.forward(x.slice(1, 0, 4), prefilled, mask.slice(0, 0, 4));
+    check(prefilled.filled == 4, "a prefill of four advances the cache by four");
+    const std::vector<float> bulk_values = bulk.to_vector();
+    float prefill_worst = 0.0f;
+    for (size_t b = 0; b < batch; ++b) {
+        for (size_t p = 0; p < 4; ++p) {
+            for (size_t k = 0; k < d_model; ++k) {
+                const float a = bulk_values[(b * 4 + p) * d_model + k];
+                const float e = whole[(b * seq + p) * d_model + k];
+                prefill_worst =
+                    std::max(prefill_worst, std::abs(a - e) / std::max(1.0f, std::abs(e)));
+            }
+        }
+    }
+    check(prefill_worst < 1e-5f, "a prefill agrees with the same positions decoded one by one");
+
+    // reset() is what a slot handed to a new sequence needs: forget everything,
+    // free nothing.
+    prefilled.reset();
+    check(prefilled.filled == 0 && prefilled.capacity() == seq,
+          "reset forgets the positions and keeps the room");
+
+    nn::KVCache small(batch, heads, 2, head_dim);
+    check_throws([&] { (void)attention.forward(x, small, nn::causal_mask(2)); },
+                 "more positions than the cache holds throws");
+    check_throws([&] { (void)attention.forward(x.slice(1, 0, 1), cache, mask.slice(0, 0, 1)); },
+                 "a full cache refuses one more position");
+    nn::KVCache wrong_batch(batch + 1, heads, seq, head_dim);
+    check_throws(
+        [&] { (void)attention.forward(x.slice(1, 0, 1), wrong_batch, mask.slice(0, 0, 1)); },
+        "a cache built for another batch size throws");
+    nn::KVCache fresh(batch, heads, seq, head_dim);
+    check_throws(
+        [&] { (void)attention.forward(x.slice(1, 0, 1), fresh, nn::causal_mask(seq - 1)); },
+        "a mask that does not span the cache throws");
+}
+
 }  // namespace
 
 void run_transformer_tests() {
@@ -287,5 +425,6 @@ void run_transformer_tests() {
     test_attention();
     test_positional_encoding();
     test_multihead_and_block();
+    test_kv_cache();
     test_transformer_training();
 }

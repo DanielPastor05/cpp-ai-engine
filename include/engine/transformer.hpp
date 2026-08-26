@@ -87,6 +87,40 @@ Tensor scaled_dot_product_attention(const Tensor& query, const Tensor& key, cons
                                     Tensor* attention_weights = nullptr);
 
 // ---------------------------------------------------------
+// Key/value cache
+//
+// Generating text one token at a time recomputes every earlier position on
+// every step, because attention needs the keys and values of the whole prefix
+// and a stateless forward has nowhere to keep them. They do not change: the key
+// of position 7 is the same on the eighth step as on the eightieth. Keeping
+// them turns a step over S positions into a step over one.
+//
+// The cache is the caller's, not the module's. A module is shared -- one
+// MultiHeadAttention serves every sequence that passes through it -- and a cache
+// belongs to one batch of sequences in flight, so a module that owned one would
+// be a module that could only be used once at a time.
+//
+// It is allocated at full capacity and stays there. Growing it would mean
+// reallocating and copying the whole thing to add one position, which is the
+// cost the cache exists to remove.
+// ---------------------------------------------------------
+struct KVCache {
+    // Both (batch, heads, capacity, head_dim).
+    Tensor keys;
+    Tensor values;
+    // How many positions have been written. The rest is zeros, and the caller's
+    // mask is what stops attention from reading them.
+    size_t filled = 0;
+
+    KVCache(size_t batch, size_t heads, size_t capacity, size_t head_dim);
+
+    [[nodiscard]] size_t capacity() const { return keys.shape()[2]; }
+    // Forgets everything without freeing anything, which is what a slot being
+    // handed to a new sequence needs.
+    void reset() { filled = 0; }
+};
+
+// ---------------------------------------------------------
 // Multi-head attention
 //
 // Projects the input into num_heads independent subspaces, applies attention
@@ -100,6 +134,26 @@ public:
     // Self-attention: the (batch, seq, d_model) input acts as Q, K and V.
     Tensor forward(const Tensor& input) override;
     Tensor forward(const Tensor& input, const Tensor* mask);
+
+    // Self-attention with a cache: `input` is the *new* positions only, and the
+    // keys and values of everything before them come from `cache`. It projects
+    // the new positions, appends their keys and values, and attends over the
+    // whole cache.
+    //
+    // The mask is required rather than optional, and it is (new_positions,
+    // capacity). Attention runs over the full capacity, not over the part
+    // written so far: slicing the cache down to its filled length would copy it
+    // every step, which is the cost being avoided. The unwritten tail is zeros,
+    // and zeros are not neutral to a softmax -- exp(0) is 1 -- so what keeps
+    // them out of the result is the mask and only the mask. For decoding one
+    // token at absolute position p, that mask is row p of causal_mask(capacity).
+    //
+    // Inference only, and it says so: with autograd on it throws rather than
+    // building a graph nobody could differentiate. The cache is written in
+    // place, and a backward through a value a later step overwrote would
+    // describe a forward that did not happen. Wrap the call in an
+    // autograd::NoGradGuard.
+    Tensor forward(const Tensor& input, KVCache& cache, const Tensor& mask);
 
     std::vector<Tensor> parameters() override;
     std::vector<std::pair<std::string, Tensor>> named_parameters(

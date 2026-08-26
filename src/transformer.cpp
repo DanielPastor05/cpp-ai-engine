@@ -357,6 +357,78 @@ Tensor MultiHeadAttention::forward(const Tensor& input, const Tensor* mask) {
     return w_out_(merged);
 }
 
+KVCache::KVCache(size_t batch, size_t heads, size_t capacity, size_t head_dim)
+    : keys({batch, heads, capacity, head_dim}, 0.0f, false),
+      values({batch, heads, capacity, head_dim}, 0.0f, false) {
+    if (batch == 0 || heads == 0 || capacity == 0 || head_dim == 0) {
+        throw std::invalid_argument("KVCache needs every dimension to be at least one.");
+    }
+}
+
+Tensor MultiHeadAttention::forward(const Tensor& input, KVCache& cache, const Tensor& mask) {
+    // Checked first, and by name, because the failure without it is obscure: the
+    // key projection of a Linear whose weights require grad produces a tensor
+    // that requires grad, copy_into refuses to write one in place, and the
+    // caller gets an error about a tensor rather than about a cache. There is no
+    // version of this that works with the graph on -- a cached key is a value
+    // later steps overwrite, and no backward can describe that -- so the honest
+    // answer is to say which guard is missing.
+    if (autograd::grad_enabled()) {
+        throw std::invalid_argument(
+            "a cached forward is inference only and needs an autograd::NoGradGuard: the cache is "
+            "written in place, and a backward through a value a later step overwrote would "
+            "describe a forward that did not happen.");
+    }
+    if (input.ndim() != 3 || input.shape()[2] != d_model_) {
+        throw std::invalid_argument("MultiHeadAttention expects (batch, seq, " +
+                                    std::to_string(d_model_) + "), received " + input.shape_str() +
+                                    ".");
+    }
+    const size_t batch = input.shape()[0];
+    const size_t seq = input.shape()[1];
+    const size_t capacity = cache.capacity();
+
+    if (cache.keys.shape() != std::vector<size_t>({batch, num_heads_, capacity, head_dim_})) {
+        throw std::invalid_argument("the cache is " + cache.keys.shape_str() + " where this " +
+                                    "attention over a batch of " + std::to_string(batch) +
+                                    " needs (" + std::to_string(batch) + ", " +
+                                    std::to_string(num_heads_) + ", capacity, " +
+                                    std::to_string(head_dim_) + ").");
+    }
+    if (cache.filled + seq > capacity) {
+        throw std::out_of_range("the cache holds " + std::to_string(capacity) +
+                                " positions and already has " + std::to_string(cache.filled) +
+                                "; " + std::to_string(seq) + " more will not fit.");
+    }
+    // Checked rather than broadcast. A mask of the wrong width would let the
+    // unwritten tail of the cache into the softmax as a run of zero keys, which
+    // is not an error anywhere -- it is a plausible answer computed from
+    // positions that do not exist yet.
+    if (mask.shape() != std::vector<size_t>({seq, capacity})) {
+        throw std::invalid_argument("a cached forward over " + std::to_string(seq) +
+                                    " positions needs a (" + std::to_string(seq) + ", " +
+                                    std::to_string(capacity) + ") mask, not " + mask.shape_str() +
+                                    ".");
+    }
+
+    auto split_heads = [&](const Tensor& projected) {
+        return projected.reshape({batch, seq, num_heads_, head_dim_}).permute({0, 2, 1, 3});
+    };
+
+    Tensor q = split_heads(w_query_(input));
+    // Appended before the attention reads them, so the new positions attend to
+    // themselves the way the uncached path lets them.
+    cache.keys.copy_into(split_heads(w_key_(input)), 2, cache.filled);
+    cache.values.copy_into(split_heads(w_value_(input)), 2, cache.filled);
+    cache.filled += seq;
+
+    Tensor attended = scaled_dot_product_attention(q, cache.keys, cache.values, &mask,
+                                                   keep_attention_ ? &last_attention_ : nullptr);
+
+    Tensor merged = attended.permute({0, 2, 1, 3}).reshape({batch, seq, d_model_});
+    return w_out_(merged);
+}
+
 std::vector<Tensor> MultiHeadAttention::parameters() {
     std::vector<Tensor> params;
     for (Linear* layer : {&w_query_, &w_key_, &w_value_, &w_out_}) {
