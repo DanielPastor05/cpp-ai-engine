@@ -197,6 +197,15 @@ public:
     Tensor forward(const Tensor& input) override;
     Tensor forward(const Tensor& input, const Tensor* mask);
 
+    // The cached path. `input` is the new positions only; the block's attention
+    // reads everything before them from the cache. Everything else in a block --
+    // both LayerNorms and the feed-forward -- is per-position and does not care
+    // how many positions it is given, which is why only the attention needs to
+    // know a cache exists.
+    //
+    // Inference only, like the attention overload it forwards to.
+    Tensor forward(const Tensor& input, KVCache& cache, const Tensor& mask);
+
     std::vector<Tensor> parameters() override;
     std::vector<std::pair<std::string, Tensor>> named_parameters(
         const std::string& prefix = "") override;

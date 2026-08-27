@@ -485,6 +485,14 @@ Tensor TransformerBlock::forward(const Tensor& input, const Tensor* mask) {
     return h + ff2_(ff1_(norm2_(h)).relu());
 }
 
+Tensor TransformerBlock::forward(const Tensor& input, KVCache& cache, const Tensor& mask) {
+    // The same block, and only the attention line differs. The residual adds the
+    // new positions to themselves, and both norms and the feed-forward act on
+    // one position exactly as they act on two hundred and fifty-six.
+    Tensor h = input + attention_.forward(norm1_(input), cache, mask);
+    return h + ff2_(ff1_(norm2_(h)).relu());
+}
+
 std::vector<Tensor> TransformerBlock::parameters() {
     std::vector<Tensor> params;
     for (Module* layer : {static_cast<Module*>(&norm1_), static_cast<Module*>(&norm2_),

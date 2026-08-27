@@ -403,6 +403,40 @@ void test_kv_cache() {
     check(prefilled.filled == 0 && prefilled.capacity() == seq,
           "reset forgets the positions and keeps the room");
 
+    // The block's cached path, which is the one a model actually calls: the same
+    // equality, one layer up. If only the attention were checked, a block that
+    // passed the cache to the wrong place -- or normalised the new positions
+    // against the wrong thing -- would still pass.
+    {
+        nn::TransformerBlock block(d_model, heads, d_model * 2);
+        block.train(false);
+
+        const Tensor whole_block = block.forward(x, &mask);
+        const std::vector<float> expected = whole_block.to_vector();
+
+        nn::KVCache block_cache(batch, heads, seq, head_dim);
+        std::vector<float> piecewise;
+        piecewise.reserve(expected.size());
+        for (size_t p = 0; p < seq; ++p) {
+            const Tensor out = block.forward(x.slice(1, p, 1), block_cache, mask.slice(0, p, 1));
+            const std::vector<float> values = out.to_vector();
+            piecewise.insert(piecewise.end(), values.begin(), values.end());
+        }
+        float block_worst = 0.0f;
+        for (size_t b = 0; b < batch; ++b) {
+            for (size_t p = 0; p < seq; ++p) {
+                for (size_t k = 0; k < d_model; ++k) {
+                    const float a = piecewise[(p * batch + b) * d_model + k];
+                    const float e = expected[(b * seq + p) * d_model + k];
+                    block_worst =
+                        std::max(block_worst, std::abs(a - e) / std::max(1.0f, std::abs(e)));
+                }
+            }
+        }
+        check(block_worst < 1e-5f,
+              "a whole block decodes position by position to what one pass gives");
+    }
+
     nn::KVCache small(batch, heads, 2, head_dim);
     check_throws([&] { (void)attention.forward(x, small, nn::causal_mask(2)); },
                  "more positions than the cache holds throws");
