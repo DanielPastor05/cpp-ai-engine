@@ -534,6 +534,13 @@ void Tensor::copy_into_rows(const Tensor& src, size_t axis, const std::vector<si
         }
     }
     const size_t rows = shape()[0];
+    // Checked for its own sake and for the division below, which the static
+    // analyser is right to refuse to take on trust: a tensor with a zero-length
+    // first axis has no rows to give offsets to.
+    if (rows == 0) {
+        throw std::invalid_argument("copy_into_rows needs at least one row, and " + shape_str() +
+                                    " has none.");
+    }
     if (offsets.size() != rows) {
         throw std::invalid_argument("copy_into_rows was given " + std::to_string(offsets.size()) +
                                     " offsets for " + std::to_string(rows) + " rows.");
