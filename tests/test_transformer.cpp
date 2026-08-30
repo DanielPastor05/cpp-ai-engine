@@ -320,7 +320,7 @@ void test_kv_cache() {
     // -- the point of the mask is that it can be wider -- and the case where it
     // is wider gets its own check below.
     nn::KVCache cache(batch, heads, seq, head_dim);
-    check(cache.filled == 0, "a fresh cache holds nothing");
+    check(cache.filled[0] == 0, "a fresh cache holds nothing");
     check(cache.capacity() == seq, "and reports the capacity it was built with");
 
     std::vector<float> stepwise;
@@ -338,7 +338,7 @@ void test_kv_cache() {
         const std::vector<float> values = out.to_vector();
         stepwise.insert(stepwise.end(), values.begin(), values.end());
     }
-    check(cache.filled == seq, "the cache filled one position per step");
+    check(cache.filled[0] == seq, "the cache filled one position per step");
 
     // stepwise is (seq, batch, d_model) because it was built a step at a time;
     // uncached is (batch, seq, d_model). Compare through the indices rather than
@@ -382,7 +382,7 @@ void test_kv_cache() {
     // at a time, or failover would change what a client sees.
     nn::KVCache prefilled(batch, heads, seq, head_dim);
     const Tensor bulk = attention.forward(x.slice(1, 0, 4), prefilled, mask.slice(0, 0, 4));
-    check(prefilled.filled == 4, "a prefill of four advances the cache by four");
+    check(prefilled.filled[0] == 4, "a prefill of four advances the cache by four");
     const std::vector<float> bulk_values = bulk.to_vector();
     float prefill_worst = 0.0f;
     for (size_t b = 0; b < batch; ++b) {
@@ -400,7 +400,7 @@ void test_kv_cache() {
     // reset() is what a slot handed to a new sequence needs: forget everything,
     // free nothing.
     prefilled.reset();
-    check(prefilled.filled == 0 && prefilled.capacity() == seq,
+    check(prefilled.filled[0] == 0 && prefilled.capacity() == seq,
           "reset forgets the positions and keeps the room");
 
     // The block's cached path, which is the one a model actually calls: the same
@@ -452,6 +452,101 @@ void test_kv_cache() {
         "a mask that does not span the cache throws");
 }
 
+void test_kv_cache_per_row() {
+    section("MultiHeadAttention: rows at different positions");
+
+    engine::manual_seed(61);
+
+    // The case the per-row machinery exists for, and the one a server is made
+    // of: two sequences of different lengths sharing a batch, each appending its
+    // next token at its own position. With one fill for the batch they would
+    // write to the same slot and each would read the other's key.
+    const size_t batch = 2, heads = 4, d_model = 32, capacity = 12;
+    const size_t head_dim = d_model / heads;
+    const size_t lengths[2] = {7, 3};
+    const size_t longest = 7;
+
+    nn::MultiHeadAttention attention(d_model, heads);
+    attention.train(false);
+    engine::autograd::NoGradGuard no_grad;
+
+    Tensor x = Tensor::randn({batch, capacity, d_model});
+
+    // What each row must produce, computed alone through the uncached path over
+    // its own prefix plus its next token, taking the answer at the last position.
+    std::vector<std::vector<float>> alone(batch);
+    for (size_t r = 0; r < batch; ++r) {
+        const size_t through = lengths[r] + 1;
+        const Tensor mask = nn::causal_mask(through);
+        const Tensor out = attention.forward(x.slice(0, r, 1).slice(1, 0, through), &mask);
+        alone[r] = out.slice(1, through - 1, 1).to_vector();
+    }
+
+    // Prefill both rows to the longest, because a batched forward cannot do
+    // otherwise, and then roll the shorter row's fill back to where its sequence
+    // really ends. The slots past it hold keys computed from ids that row never
+    // had -- which is exactly the situation the mask has to survive: they are in
+    // the cache, and the answer must not depend on them.
+    nn::KVCache cache(batch, heads, capacity, head_dim);
+    check(cache.filled.size() == batch, "a cache tracks one fill per row");
+    check(cache.rows() == batch, "and reports how many rows it has");
+
+    const Tensor prefill_mask = nn::causal_mask(capacity).slice(0, 0, longest);
+    (void)attention.forward(x.slice(1, 0, longest), cache, prefill_mask);
+    check(cache.filled[0] == longest && cache.filled[1] == longest,
+          "a prefill advances every row by what it wrote");
+    cache.filled[1] = lengths[1];
+
+    // Each row's next token: row r's is at index lengths[r], so the batch cannot
+    // be one slice.
+    const Tensor next = Tensor::concat(
+        {x.slice(0, 0, 1).slice(1, lengths[0], 1), x.slice(0, 1, 1).slice(1, lengths[1], 1)}, 0);
+
+    // One mask per row, at the scores' own shape. Row r allows 0..lengths[r] and
+    // blocks the rest -- including, for the short row, the slots the prefill left
+    // behind. Materialised per head because this engine broadcasts by suffix and
+    // cannot expand a middle dimension.
+    Tensor mask({batch, heads, 1, capacity}, 0.0f, false);
+    float* values = mask.data();
+    for (size_t r = 0; r < batch; ++r) {
+        for (size_t h = 0; h < heads; ++h) {
+            for (size_t c = 0; c < capacity; ++c) {
+                if (c > lengths[r]) values[(r * heads + h) * capacity + c] = -1e9f;
+            }
+        }
+    }
+
+    const Tensor together = attention.forward(next, cache, mask);
+    check(cache.filled[0] == longest + 1 && cache.filled[1] == lengths[1] + 1,
+          "each row advanced from its own fill");
+
+    const std::vector<float> got = together.to_vector();
+    float worst = 0.0f;
+    for (size_t r = 0; r < batch; ++r) {
+        for (size_t k = 0; k < d_model; ++k) {
+            const float want = alone[r][k];
+            worst = std::max(
+                worst, std::abs(got[r * d_model + k] - want) / std::max(1.0f, std::abs(want)));
+        }
+    }
+    check(worst < 1e-5f, "two rows at different positions decode to what each gives on its own");
+
+    // reset(row) forgets one row and leaves its neighbour alone: a slot handed to
+    // a new sequence while the rest of the batch keeps going, which is ordinary.
+    nn::KVCache slots(batch, heads, capacity, head_dim);
+    (void)attention.forward(x.slice(1, 0, 2), slots, nn::causal_mask(capacity).slice(0, 0, 2));
+    slots.reset(1);
+    check(slots.filled[0] == 2 && slots.filled[1] == 0,
+          "reset(row) forgets one row and leaves the other where it was");
+    slots.reset();
+    check(slots.filled[0] == 0 && slots.filled[1] == 0, "reset() forgets every row");
+    check_throws([&] { slots.reset(batch); }, "resetting a row that does not exist throws");
+
+    check_throws(
+        [&] { (void)attention.forward(next, slots, Tensor({batch, 1, 1, capacity}, 0.0f, false)); },
+        "a mask that would need a middle dimension broadcast throws");
+}
+
 }  // namespace
 
 void run_transformer_tests() {
@@ -460,5 +555,6 @@ void run_transformer_tests() {
     test_positional_encoding();
     test_multihead_and_block();
     test_kv_cache();
+    test_kv_cache_per_row();
     test_transformer_training();
 }

@@ -108,16 +108,25 @@ struct KVCache {
     // Both (batch, heads, capacity, head_dim).
     Tensor keys;
     Tensor values;
-    // How many positions have been written. The rest is zeros, and the caller's
-    // mask is what stops attention from reading them.
-    size_t filled = 0;
+
+    // How many positions each row of the batch has written. One per row, not one
+    // for the batch: rows sit wherever their sequences have got to, and a single
+    // count would force them all to the same position -- which is the thing a
+    // continuously batched server cannot arrange, because requests arrive when
+    // they arrive. The rest of each row is zeros, and the caller's mask is what
+    // stops attention from reading it.
+    std::vector<size_t> filled;
 
     KVCache(size_t batch, size_t heads, size_t capacity, size_t head_dim);
 
+    [[nodiscard]] size_t rows() const { return keys.shape()[0]; }
     [[nodiscard]] size_t capacity() const { return keys.shape()[2]; }
-    // Forgets everything without freeing anything, which is what a slot being
-    // handed to a new sequence needs.
-    void reset() { filled = 0; }
+
+    // Forgets every row.
+    void reset();
+    // Forgets one, which is what a slot handed to a new sequence needs while its
+    // neighbours keep going -- and that is the ordinary case, not the exception.
+    void reset(size_t row);
 };
 
 // ---------------------------------------------------------
