@@ -155,6 +155,18 @@ bool scale_in_place(Storage& x, float factor);
 bool copy_into(Storage& dst, const Storage& src, size_t outer, size_t dst_axis_len, size_t count,
                size_t start, size_t inner);
 
+// copy_into with a start per row of the first axis. `rows` is that axis's
+// length, `per_row` how many (outer) blocks belong to each of its indices, and
+// `offsets` has `rows` entries.
+//
+// The offsets travel as a kernel argument rather than a device buffer: there are
+// at most a few hundred of them, they change every step, and a buffer would mean
+// an allocation and an upload per step to carry a kilobyte. Above the cap the
+// call declines and the caller falls back, which for a resident cache means a
+// round trip -- so the cap is set well above any batch size worth serving.
+bool copy_into_rows(Storage& dst, const Storage& src, size_t rows, size_t per_row,
+                    size_t dst_axis_len, size_t count, const size_t* offsets, size_t inner);
+
 // One optimiser step, in place on the parameter.
 //
 // These two are the largest transfer saving in the engine and the least

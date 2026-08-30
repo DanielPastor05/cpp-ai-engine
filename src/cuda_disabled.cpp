@@ -172,6 +172,10 @@ bool scale_in_place(Storage&, float) {
 bool copy_into(Storage&, const Storage&, size_t, size_t, size_t, size_t, size_t) {
     return false;
 }
+bool copy_into_rows(Storage&, const Storage&, size_t, size_t, size_t, size_t, const size_t*,
+                    size_t) {
+    return false;
+}
 bool sgd_step(Storage&, const Storage&, Storage*, float, float, float) {
     return false;
 }
