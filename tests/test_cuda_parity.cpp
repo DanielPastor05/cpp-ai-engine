@@ -1240,6 +1240,63 @@ void run_cuda_parity_tests() {
         testing::check(same, "every gathered row is the row that was asked for");
     }
 
+    // --- slice stays on the device ---
+    //
+    // copy_into has had a device path since the cache landed, on the argument
+    // that a cache living on the card is appended to on the card. Narrowing one
+    // is the same argument: a cached forward attends over its whole capacity, so
+    // a server hands the model a cache cut to the width its batch has reached,
+    // every step, and cutting it through the host moves the whole thing across
+    // PCIe to read a prefix of it.
+    {
+        cuda::set_enabled(true);
+
+        // (4, 6, 32, 5): slots, heads, positions, head_dim -- the shape the
+        // caller actually slices, so the axis being cut has real strides on
+        // both sides of it rather than being the last or the first.
+        Tensor seed = Tensor::randn({4 * 6 * 32, 5});
+        Tensor eye = Tensor::randn({5, 5});
+        Tensor pool = seed.matmul(eye).reshape({4, 6, 32, 5});
+        testing::check(pool.storage().resident_on_device(),
+                       "the tensor to slice starts on the device");
+        const std::vector<float> before = pool.to_vector();
+
+        cuda::reset_transfer_stats();
+        Tensor narrow = pool.slice(2, 7, 11);
+        const cuda::TransferStats after = cuda::transfer_stats();
+        testing::check(after.to_host_count == 0, "slicing does not pull the source down to host");
+        testing::check(narrow.storage().resident_on_device(), "and the slice is on the device");
+        testing::check(narrow.shape() == std::vector<size_t>({4, 6, 11, 5}),
+                       "the slice has the width it asked for");
+
+        const std::vector<float> got = narrow.to_vector();
+        bool same = true;
+        for (size_t s = 0; s < 4; ++s) {
+            for (size_t h = 0; h < 6; ++h) {
+                for (size_t p = 0; p < 11; ++p) {
+                    for (size_t d = 0; d < 5; ++d) {
+                        const float a = got[(((s * 6 + h) * 11 + p) * 5) + d];
+                        const float b = before[(((s * 6 + h) * 32 + (p + 7)) * 5) + d];
+                        if (a != b) same = false;
+                    }
+                }
+            }
+        }
+        testing::check(same, "the device slice is element for element the host slice");
+
+        // A source that never reached the card must still slice, on the host,
+        // and must not be uploaded to do it.
+        Tensor host_only({3, 8}, 2.0f, false);
+        for (size_t i = 0; i < 24; ++i) host_only.data()[i] = static_cast<float>(i);
+        cuda::reset_transfer_stats();
+        Tensor cut = host_only.slice(1, 2, 3);
+        const cuda::TransferStats host_after = cuda::transfer_stats();
+        testing::check(host_after.to_device_count == 0,
+                       "a host-only source is not uploaded just to be sliced");
+        testing::check(cut.data()[0] == 2.0f && cut.data()[3] == 10.0f,
+                       "and the host slice is still right");
+    }
+
     // --- backward residency ---
     //
     // The other half of the residency model, and the half that was missing: the
