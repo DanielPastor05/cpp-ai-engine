@@ -686,6 +686,42 @@ __global__ void gather_rows_kernel(float* __restrict__ out, const float* __restr
     }
 }
 
+// Two lists rather than one, so the cap halves: 256 of each is the same 2 KB of
+// kernel argument that 512 of one was, and the ceiling worth serving is still
+// far below it.
+constexpr int kMaxScatterRows = 256;
+
+struct RowPlan {
+    int into[kMaxScatterRows];   // which row of dst this row of src belongs to
+    int start[kMaxScatterRows];  // and where along the axis it goes
+};
+
+// copy_into_rows with an index list: row i of `src` is written into row
+// `plan.into[i]` of `dst`, at `plan.start[i]` along the axis.
+//
+// The write counterpart of gather_rows, and the operation a slot-indexed cache
+// finishes a step with. Neither existing call does it: select_rows takes indices
+// and no offset, copy_into_rows takes an offset per row and no indices, so
+// putting a compact batch back into the slots it came from was one call per row
+// per block -- 192 launches at a batch of sixteen, measured at 2.2 ms of pure
+// launch overhead against a cached step of three to four.
+__global__ void scatter_rows_window(float* __restrict__ dst, const float* __restrict__ src,
+                                    RowPlan plan, long long per_row, long long count_inner,
+                                    long long dst_axis_len, long long inner, long long n) {
+    const long long row_block = per_row * count_inner;
+    const long long stride = (long long)blockDim.x * gridDim.x;
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
+        const long long row = i / row_block;
+        const long long within = i - row * row_block;
+        const long long block = within / count_inner;
+        const long long rem = within - block * count_inner;
+        const long long position = rem / inner;
+        const long long col = rem - position * inner;
+        const long long outer = (long long)plan.into[row] * per_row + block;
+        dst[(outer * dst_axis_len + plan.start[row] + position) * inner + col] = src[i];
+    }
+}
+
 __global__ void copy_into_rows_window(float* __restrict__ dst, const float* __restrict__ src,
                                       RowOffsets offsets, long long per_row, long long count_inner,
                                       long long dst_axis_len, long long inner, long long n) {
@@ -1297,6 +1333,38 @@ bool copy_into(Storage& dst, const Storage& src, size_t outer, size_t dst_axis_l
                                               (long long)(count * inner), (long long)dst_axis_len,
                                               (long long)start, (long long)inner, n);
     return launch_ok("copy_into_window");
+}
+
+bool scatter_rows(Storage& dst, const Storage& src, size_t rows, size_t per_row,
+                  size_t dst_axis_len, size_t count, const size_t* into, const size_t* offsets,
+                  size_t inner) {
+    if (!enabled() || src.size() == 0) return false;
+    if (rows > (size_t)kMaxScatterRows) return false;
+    // Residency decides, as for copy_into_rows: writing here into a destination
+    // that lives on the host would upload it, write, and leave the host stale.
+    if (!dst.resident_on_device()) return false;
+
+    RowPlan plan{};
+    for (size_t r = 0; r < rows; ++r) {
+        if (into[r] > (size_t)kMaxInt || offsets[r] > (size_t)kMaxInt) return false;
+        if (offsets[r] + count > dst_axis_len) return false;
+        plan.into[r] = (int)into[r];
+        plan.start[r] = (int)offsets[r];
+    }
+    // Two rows of the batch writing into the same slot would race, and the
+    // result would depend on which block finished last. Refused rather than
+    // ordered: a caller that wants both writes wants two calls.
+    for (size_t a = 0; a < rows; ++a) {
+        for (size_t b = a + 1; b < rows; ++b) {
+            if (into[a] == into[b]) return false;
+        }
+    }
+
+    const long long n = (long long)(rows * per_row * count * inner);
+    scatter_rows_window<<<grid_for(n), kBlock>>>(dst.device_mut(), src.device(), plan,
+                                                 (long long)per_row, (long long)(count * inner),
+                                                 (long long)dst_axis_len, (long long)inner, n);
+    return launch_ok("scatter_rows_window");
 }
 
 bool gather_rows(Storage& out, const Storage& src, const size_t* indices, size_t count,
