@@ -152,6 +152,26 @@ bool scale_in_place(Storage& x, float factor);
 // (outer, axis_len, inner) -- with `count` rows of the axis written starting at
 // `start`. dst is expected to be resident; src is uploaded if it is not, which
 // is one small transfer rather than the whole destination.
+// Reads a window out of `src` on the device: Tensor::slice's device path, and
+// the mirror of copy_into below.
+//
+// The asymmetry this closes: copy_into has had a device path since the key/value
+// cache landed, on the argument that a cache living on the card should be
+// appended to on the card. Narrowing one is the same argument -- a cached
+// forward costs what its capacity is, so a server wants to hand the model a
+// cache cut to the width its batch has reached, and cutting it through the host
+// moves the whole thing across PCIe twice to read a prefix of it.
+//
+// Measured before it was written: gathering sixteen slots of a 1024-position
+// pool is 1.86 ms for a whole model's keys and values, and slicing the result to
+// 464 positions took that to 149 ms. Two orders of magnitude, all of it PCIe.
+//
+// The window is described as every axis operation here describes one --
+// (outer, axis_len, inner) -- reading `count` rows of the axis from `start`.
+// `src` is expected to be resident; if it is not, the host loop is right.
+bool slice(Storage& out, const Storage& src, size_t outer, size_t src_axis_len, size_t count,
+           size_t start, size_t inner);
+
 bool copy_into(Storage& dst, const Storage& src, size_t outer, size_t dst_axis_len, size_t count,
                size_t start, size_t inner);
 

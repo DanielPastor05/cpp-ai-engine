@@ -441,10 +441,26 @@ Tensor Tensor::slice(size_t axis, size_t start, size_t count) const {
     bool req_g = track(requires_grad());
     Tensor res(out_shape, 0.0f, req_g);
 
-    for (size_t o = 0; o < v.outer; ++o) {
-        const float* src = data() + (o * v.axis_len + start) * v.inner;
-        float* dst = res.data() + o * count * v.inner;
-        std::copy_n(src, count * v.inner, dst);
+    // The device path, admitted on residency rather than size, and for the same
+    // reason copy_into's is: a tensor that lives on the card should be narrowed
+    // on the card. The caller this exists for is a key/value cache -- a cached
+    // forward attends over its whole capacity, so a server hands the model a
+    // cache cut to the width its batch has reached, every step. Cutting it
+    // through the host moves the whole cache across PCIe to read a prefix.
+    //
+    // The gradient path stays on the host. Slicing inside a live graph is a
+    // training operation, and training does not slice a cache per step.
+    bool on_device = false;
+#ifdef ENGINE_CUDA
+    on_device = !req_g && cuda::ops::slice(res.storage(), storage(), v.outer, v.axis_len, count,
+                                           start, v.inner);
+#endif
+    if (!on_device) {
+        for (size_t o = 0; o < v.outer; ++o) {
+            const float* src = data() + (o * v.axis_len + start) * v.inner;
+            float* dst = res.data() + o * count * v.inner;
+            std::copy_n(src, count * v.inner, dst);
+        }
     }
 
     if (req_g) {

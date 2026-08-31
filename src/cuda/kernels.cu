@@ -703,6 +703,22 @@ __global__ void copy_into_rows_window(float* __restrict__ dst, const float* __re
     }
 }
 
+// Reads a window out of `src`, which is copy_into_window with the assignment
+// turned round. Tensor::slice's device path: a cache that lives on the card is
+// narrowed on the card, rather than coming down to be cut and going back up.
+__global__ void slice_window(float* __restrict__ out, const float* __restrict__ src,
+                             long long count_inner, long long src_axis_len, long long start,
+                             long long inner, long long n) {
+    const long long stride = (long long)blockDim.x * gridDim.x;
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
+        const long long o = i / count_inner;
+        const long long rem = i - o * count_inner;
+        const long long row = rem / inner;
+        const long long col = rem - row * inner;
+        out[i] = src[(o * src_axis_len + start + row) * inner + col];
+    }
+}
+
 __global__ void copy_into_window(float* __restrict__ dst, const float* __restrict__ src,
                                  long long count_inner, long long dst_axis_len, long long start,
                                  long long inner, long long n) {
@@ -1238,6 +1254,29 @@ bool reduce_sum(const Storage& x, double& out) {
 
 bool reduce_sum_squares(const Storage& x, double& out) {
     return reduce_impl<true>(x, out);
+}
+
+bool slice(Storage& out, const Storage& src, size_t outer, size_t src_axis_len, size_t count,
+           size_t start, size_t inner) {
+    if (!enabled() || out.size() == 0) return false;
+
+    // Residency decides, exactly as it does for copy_into and for the same
+    // reason turned round: if the source is not on the card, running here would
+    // upload the whole thing to read a window out of it, which is the transfer
+    // this path exists to avoid. The host loop is right in that case.
+    if (!src.resident_on_device()) return false;
+
+    const long long n = (long long)(outer * count * inner);
+    // device_write() and not device_mut(): the kernel fills the output
+    // completely, so whatever the freshly built tensor holds need not be read.
+    slice_window<<<grid_for(n), kBlock>>>(out.device_write(), src.device(),
+                                          (long long)(count * inner), (long long)src_axis_len,
+                                          (long long)start, (long long)inner, n);
+    if (!launch_ok("slice_window")) {
+        out.revert_device_write();
+        return false;
+    }
+    return true;
 }
 
 bool copy_into(Storage& dst, const Storage& src, size_t outer, size_t dst_axis_len, size_t count,
