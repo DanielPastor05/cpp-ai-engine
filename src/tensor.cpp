@@ -614,10 +614,9 @@ void Tensor::scatter_rows(const Tensor& src, size_t axis, const std::vector<size
     }
     for (size_t d = 1; d < ndim(); ++d) {
         if (d != axis && src.shape()[d] != shape()[d]) {
-            throw std::invalid_argument("scatter_rows: the two may only differ along axis 0 and "
-                                        "axis " +
-                                        std::to_string(axis) + "; " + shape_str() + " against " +
-                                        src.shape_str() + ".");
+            throw std::invalid_argument(
+                "scatter_rows: the two may only differ along axis 0 and axis " +
+                std::to_string(axis) + "; " + shape_str() + " against " + src.shape_str() + ".");
         }
     }
     const size_t rows = src.shape()[0];
