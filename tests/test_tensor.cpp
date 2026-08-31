@@ -386,6 +386,60 @@ void test_copy_into() {
                  "copy_into refuses a source that requires grad");
 }
 
+void test_select_rows_window() {
+    section("Tensor: select_rows_window");
+
+    // The shape a key/value cache pool has, and the reason this primitive
+    // exists: a batch wants some of the slots at some of the positions, and
+    // doing it as a gather then a slice moves the rows at the full width while
+    // a slice then a gather moves every slot at the right width. This is the
+    // corner of both.
+    Tensor pool({4, 2, 10, 3}, 0.0f);  // (slots, heads, positions, head_dim)
+    for (size_t i = 0; i < pool.size(); ++i) pool.data()[i] = static_cast<float>(i);
+
+    // Out of order and with a repeat, because a batch's slots are neither
+    // sorted nor distinct from one another's point of view.
+    const std::vector<size_t> want = {2, 0, 2};
+    Tensor got = pool.select_rows_window(want, 2, 4, 3);
+
+    check(got.shape() == std::vector<size_t>({3, 2, 3, 3}),
+          "one row per index, at the width asked for");
+
+    bool same = true;
+    for (size_t r = 0; r < want.size(); ++r) {
+        for (size_t h = 0; h < 2; ++h) {
+            for (size_t p = 0; p < 3; ++p) {
+                for (size_t d = 0; d < 3; ++d) {
+                    const float a = got.data()[(((r * 2 + h) * 3 + p) * 3) + d];
+                    const float b = pool.data()[(((want[r] * 2 + h) * 10 + (p + 4)) * 3) + d];
+                    if (a != b) same = false;
+                }
+            }
+        }
+    }
+    check(same, "every element is the one the indices and the window name");
+
+    // Against the composition it replaces, which is what "correct" means here.
+    const std::vector<float> composed = pool.select_rows(want).slice(2, 4, 3).to_vector();
+    const std::vector<float> fused = got.to_vector();
+    bool agrees = composed.size() == fused.size();
+    for (size_t i = 0; agrees && i < fused.size(); ++i) {
+        if (composed[i] != fused[i]) agrees = false;
+    }
+    check(agrees, "and it agrees with select_rows().slice() exactly");
+
+    check_throws([&] { (void)pool.select_rows_window(want, 0, 0, 2); },
+                 "windowing axis 0 is refused");
+    check_throws([&] { (void)pool.select_rows_window({}, 2, 0, 2); },
+                 "an empty index list is refused");
+    check_throws([&] { (void)pool.select_rows_window(want, 2, 0, 0); },
+                 "a zero-width window is refused");
+    check_throws([&] { (void)pool.select_rows_window(want, 2, 8, 4); },
+                 "a window running off the axis is refused");
+    check_throws([&] { (void)pool.select_rows_window({9}, 2, 0, 2); },
+                 "an index outside the first axis is refused");
+}
+
 void test_copy_into_rows() {
     section("Tensor: copy_into_rows");
 
@@ -716,6 +770,7 @@ void run_tensor_tests() {
     test_reductions();
     test_slice_concat_stack();
     test_copy_into();
+    test_select_rows_window();
     test_copy_into_rows();
     test_broadcast_all_operators();
     test_parallelism();

@@ -686,6 +686,37 @@ __global__ void gather_rows_kernel(float* __restrict__ out, const float* __restr
     }
 }
 
+// gather_rows and slice in one pass: the named rows of the first axis, but only
+// `count` elements from `start` along a later axis.
+//
+// Composing the two costs the intersection twice over. A key/value cache pool of
+// (slots, heads, context, head_dim) served to a batch wants `active` rows at
+// `width` positions -- gathering first moves `active * context`, narrowing first
+// moves `slots * width`, and what is actually wanted is `active * width`. On a
+// server holding sixty-four slots of a thousand positions and stepping sixteen
+// rows at forty-eight, the cheaper composition still moves four times too much,
+// and the one that looks natural moves twenty-one times too much.
+//
+// The tensor is read as (rows, per_row, axis_len, inner), the same decomposition
+// every axis operation here uses.
+__global__ void gather_rows_window(float* __restrict__ out, const float* __restrict__ src,
+                                   RowOffsets from, long long per_row, long long count_inner,
+                                   long long src_axis_len, long long start, long long inner,
+                                   long long n) {
+    const long long row_block = per_row * count_inner;
+    const long long stride = (long long)blockDim.x * gridDim.x;
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
+        const long long row = i / row_block;
+        const long long within = i - row * row_block;
+        const long long block = within / count_inner;
+        const long long rem = within - block * count_inner;
+        const long long position = rem / inner;
+        const long long col = rem - position * inner;
+        const long long outer = (long long)from.start[row] * per_row + block;
+        out[i] = src[(outer * src_axis_len + start + position) * inner + col];
+    }
+}
+
 // Two lists rather than one, so the cap halves: 256 of each is the same 2 KB of
 // kernel argument that 512 of one was, and the ceiling worth serving is still
 // far below it.
@@ -1365,6 +1396,34 @@ bool scatter_rows(Storage& dst, const Storage& src, size_t rows, size_t per_row,
                                                  (long long)per_row, (long long)(count * inner),
                                                  (long long)dst_axis_len, (long long)inner, n);
     return launch_ok("scatter_rows_window");
+}
+
+bool gather_rows_win(Storage& out, const Storage& src, size_t rows, size_t per_row,
+                     size_t src_axis_len, size_t count, size_t start, const size_t* indices,
+                     size_t inner, size_t src_rows) {
+    if (!enabled() || out.size() == 0) return false;
+    if (rows > (size_t)kMaxOffsetRows) return false;
+    // Residency decides, as for the plain gather: uploading the pool in order to
+    // read a window out of it is the transfer this path exists to avoid.
+    if (!src.resident_on_device()) return false;
+
+    RowOffsets plan{};
+    for (size_t r = 0; r < rows; ++r) {
+        if (indices[r] >= src_rows) return false;
+        if (indices[r] > (size_t)kMaxInt) return false;
+        plan.start[r] = (int)indices[r];
+    }
+    if (start + count > src_axis_len) return false;
+
+    const long long n = (long long)(rows * per_row * count * inner);
+    gather_rows_window<<<grid_for(n), kBlock>>>(
+        out.device_write(), src.device(), plan, (long long)per_row, (long long)(count * inner),
+        (long long)src_axis_len, (long long)start, (long long)inner, n);
+    if (!launch_ok("gather_rows_window")) {
+        out.revert_device_write();
+        return false;
+    }
+    return true;
 }
 
 bool gather_rows(Storage& out, const Storage& src, const size_t* indices, size_t count,

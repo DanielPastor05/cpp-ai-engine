@@ -1372,6 +1372,66 @@ void run_cuda_parity_tests() {
         testing::check(off_end, "and an offset that runs off the axis is refused");
     }
 
+    // --- select_rows_window stays on the device ---
+    //
+    // The two halves fused. Composing them moves the intersection twice over:
+    // gathering first takes the rows at the full axis, narrowing first takes
+    // every row at the right width, and what is wanted is the corner of both.
+    {
+        cuda::set_enabled(true);
+
+        Tensor seed = Tensor::randn({5 * 3 * 24, 4});
+        Tensor eye = Tensor::randn({4, 4});
+        Tensor pool = seed.matmul(eye).reshape({5, 3, 24, 4});
+        testing::check(pool.storage().resident_on_device(),
+                       "the pool to gather a window from starts on the device");
+        const std::vector<float> before = pool.to_vector();
+
+        // Out of order and with a repeat, as a batch's slots are.
+        const std::vector<size_t> want = {3, 0, 3, 1};
+
+        cuda::reset_transfer_stats();
+        Tensor got_t = pool.select_rows_window(want, 2, 6, 9);
+        const cuda::TransferStats after = cuda::transfer_stats();
+        testing::check(after.to_host_count == 0,
+                       "a windowed gather does not pull the source down to host");
+        testing::check(got_t.storage().resident_on_device(),
+                       "and the windowed gather's result is on the device");
+        testing::check(got_t.shape() == std::vector<size_t>({4, 3, 9, 4}),
+                       "it has one row per index and the width asked for");
+
+        const std::vector<float> got = got_t.to_vector();
+        bool same = true;
+        for (size_t r = 0; r < want.size(); ++r) {
+            for (size_t h = 0; h < 3; ++h) {
+                for (size_t p = 0; p < 9; ++p) {
+                    for (size_t d = 0; d < 4; ++d) {
+                        const float a = got[(((r * 3 + h) * 9 + p) * 4) + d];
+                        const float b = before[(((want[r] * 3 + h) * 24 + (p + 6)) * 4) + d];
+                        if (a != b) same = false;
+                    }
+                }
+            }
+        }
+        testing::check(same, "and it is element for element gather-then-slice");
+
+        // Against the composition it replaces, which is the definition of right.
+        const std::vector<float> composed = pool.select_rows(want).slice(2, 6, 9).to_vector();
+        bool agrees = composed.size() == got.size();
+        for (size_t i = 0; agrees && i < got.size(); ++i) {
+            if (got[i] != composed[i]) agrees = false;
+        }
+        testing::check(agrees, "and it agrees with select_rows().slice() exactly");
+
+        bool refused = false;
+        try {
+            (void)pool.select_rows_window(want, 0, 0, 2);
+        } catch (const std::invalid_argument&) {
+            refused = true;
+        }
+        testing::check(refused, "windowing axis 0 is refused; that is what select_rows is for");
+    }
+
     // --- backward residency ---
     //
     // The other half of the residency model, and the half that was missing: the
