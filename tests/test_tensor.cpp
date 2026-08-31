@@ -386,6 +386,72 @@ void test_copy_into() {
                  "copy_into refuses a source that requires grad");
 }
 
+void test_copy_into_rows() {
+    section("Tensor: copy_into_rows");
+
+    // The shape a key/value cache has, and the case that makes this primitive
+    // exist: two rows of the batch sitting at different positions, each
+    // appending one position at its own place. copy_into can only write both at
+    // the same slot, which is why a server cannot use it.
+    Tensor cache({2, 3, 6, 4}, 0.0f);  // (batch, heads, positions, head_dim)
+    for (size_t i = 0; i < cache.size(); ++i) cache.data()[i] = -1.0f;
+    const std::vector<float> before = cache.to_vector();
+
+    Tensor step({2, 3, 1, 4}, 0.0f);
+    for (size_t i = 0; i < step.size(); ++i) step.data()[i] = 100.0f + (float)i;
+
+    cache.copy_into_rows(step, 2, {1, 4});
+
+    const std::vector<float> got = cache.to_vector();
+    const std::vector<float> written = step.to_vector();
+    const size_t offsets[2] = {1, 4};
+    bool landed = true, intact = true;
+    for (size_t r = 0; r < 2; ++r) {
+        for (size_t h = 0; h < 3; ++h) {
+            for (size_t p = 0; p < 6; ++p) {
+                for (size_t k = 0; k < 4; ++k) {
+                    const size_t at = (((r * 3 + h) * 6) + p) * 4 + k;
+                    if (p == offsets[r]) {
+                        if (got[at] != written[(r * 3 + h) * 4 + k]) landed = false;
+                    } else if (got[at] != before[at]) {
+                        intact = false;
+                    }
+                }
+            }
+        }
+    }
+    check(landed, "each row is written at its own offset");
+    check(intact, "and nothing else in the tensor moves");
+
+    // Every head of a row shares that row's offset, which is the whole point of
+    // the offsets indexing axis 0 rather than the flattened outer block.
+    check_close(got[((0 * 3 + 2) * 6 + 1) * 4 + 0], 100.0f + (float)((0 * 3 + 2) * 4),
+                "the third head of row 0 is at row 0's offset");
+
+    // Reading back through slice, per row, has to give what was written.
+    Tensor row1 = cache.slice(0, 1, 1).slice(2, 4, 1);
+    check(row1.shape() == std::vector<size_t>({1, 3, 1, 4}), "the second row's slot reads back");
+
+    // Offsets that all agree are copy_into, and must behave like it.
+    Tensor shared({2, 3, 6, 4}, 0.0f);
+    Tensor same({2, 3, 6, 4}, 0.0f);
+    shared.copy_into_rows(step, 2, {3, 3});
+    same.copy_into(step, 2, 3);
+    check(shared.to_vector() == same.to_vector(),
+          "equal offsets give exactly what copy_into gives");
+
+    check_throws([&] { cache.copy_into_rows(step, 2, {1}); }, "one offset for two rows throws");
+    check_throws([&] { cache.copy_into_rows(step, 2, {1, 6}); },
+                 "an offset that runs a row off the end throws");
+    check_throws([&] { cache.copy_into_rows(step, 0, {0, 0}); },
+                 "writing along the axis the offsets index throws");
+    check_throws([&] { cache.copy_into_rows(Tensor({2, 3, 1, 5}, 0.0f), 2, {0, 0}); },
+                 "a source differing off the axis throws");
+    Tensor tracked({2, 3, 6, 4}, 0.0f, true);
+    check_throws([&] { tracked.copy_into_rows(step, 2, {0, 0}); },
+                 "copy_into_rows refuses a destination that requires grad");
+}
+
 void test_slice_concat_stack() {
     section("Tensor: slice, concat and stack");
 
@@ -650,6 +716,7 @@ void run_tensor_tests() {
     test_reductions();
     test_slice_concat_stack();
     test_copy_into();
+    test_copy_into_rows();
     test_broadcast_all_operators();
     test_parallelism();
     test_buffer_pool_recycles();

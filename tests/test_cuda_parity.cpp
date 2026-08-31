@@ -1150,6 +1150,56 @@ void run_cuda_parity_tests() {
         testing::check(intact, "and every other position is untouched");
     }
 
+    // --- copy_into_rows stays on the device, and scatters correctly ---
+    //
+    // The same residency claim as copy_into, plus the part that is new: each row
+    // of the batch writes at its own offset. A kernel that got the row
+    // arithmetic wrong would put one sequence's key into another sequence's
+    // cache, which is a resident tensor full of somebody else's context and
+    // exactly the failure this file exists to catch.
+    {
+        cuda::set_enabled(true);
+
+        Tensor seed = Tensor::randn({36, 16});
+        Tensor eye = Tensor::randn({16, 16});
+        Tensor cache = seed.matmul(eye).reshape({3, 2, 4, 24});
+        testing::check(cache.storage().resident_on_device(),
+                       "the per-row cache starts out on the device");
+        const std::vector<float> before = cache.to_vector();
+
+        Tensor step({3, 2, 1, 24}, 0.0f);
+        for (size_t i = 0; i < step.size(); ++i) step.data()[i] = 500.0f + (float)i;
+
+        const std::vector<size_t> offsets = {0, 2, 3};
+        cuda::reset_transfer_stats();
+        cache.copy_into_rows(step, 2, offsets);
+        const cuda::TransferStats after = cuda::transfer_stats();
+        testing::check(after.to_host_count == 0,
+                       "a per-row append does not pull the cache down to host");
+        testing::check(cache.storage().resident_on_device(),
+                       "and the cache is still on the device afterwards");
+
+        const std::vector<float> got = cache.to_vector();
+        const std::vector<float> written = step.to_vector();
+        bool landed = true, intact = true;
+        for (size_t r = 0; r < 3; ++r) {
+            for (size_t h = 0; h < 2; ++h) {
+                for (size_t p = 0; p < 4; ++p) {
+                    for (size_t k = 0; k < 24; ++k) {
+                        const size_t at = (((r * 2 + h) * 4) + p) * 24 + k;
+                        if (p == offsets[r]) {
+                            if (got[at] != written[(r * 2 + h) * 24 + k]) landed = false;
+                        } else if (got[at] != before[at]) {
+                            intact = false;
+                        }
+                    }
+                }
+            }
+        }
+        testing::check(landed, "every row landed at its own offset");
+        testing::check(intact, "and no other position moved");
+    }
+
     // --- backward residency ---
     //
     // The other half of the residency model, and the half that was missing: the

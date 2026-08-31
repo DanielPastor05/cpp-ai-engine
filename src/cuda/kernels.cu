@@ -654,6 +654,40 @@ __global__ void scale_buffer(float* __restrict__ x, float factor, long long n) {
 // `outer` runs of `count * inner` floats spaced `dst_axis_len * inner` apart --
 // which is a pitched copy, and would be one cudaMemcpy2D if the counter that
 // makes dispatch visible in this project counted transfers rather than kernels.
+// At most this many rows carry their own offset. They travel as a kernel
+// argument, so the real cap is the 4 KB CUDA allows for those; narrowed to int,
+// 512 of them is 2 KB and leaves room for the rest of the signature. That is
+// generous against any batch size worth serving -- this engine's own measurements
+// put the useful ceiling near sixty.
+constexpr int kMaxOffsetRows = 512;
+
+struct RowOffsets {
+    int start[kMaxOffsetRows];
+};
+
+// One thread per element of the source. Each works out which row of the first
+// axis it belongs to, and writes at that row's own start along the axis.
+//
+// The tensor is read as (rows, per_row, axis_len, inner): `rows` is the axis
+// whose offsets differ, `per_row` is everything between it and the axis being
+// written -- heads, for a key/value cache -- and `inner` is everything after.
+__global__ void copy_into_rows_window(float* __restrict__ dst, const float* __restrict__ src,
+                                      RowOffsets offsets, long long per_row, long long count_inner,
+                                      long long dst_axis_len, long long inner, long long n) {
+    const long long row_block = per_row * count_inner;
+    const long long stride = (long long)blockDim.x * gridDim.x;
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
+        const long long row = i / row_block;
+        const long long within = i - row * row_block;
+        const long long block = within / count_inner;
+        const long long rem = within - block * count_inner;
+        const long long position = rem / inner;
+        const long long col = rem - position * inner;
+        const long long outer = row * per_row + block;
+        dst[(outer * dst_axis_len + offsets.start[row] + position) * inner + col] = src[i];
+    }
+}
+
 __global__ void copy_into_window(float* __restrict__ dst, const float* __restrict__ src,
                                  long long count_inner, long long dst_axis_len, long long start,
                                  long long inner, long long n) {
@@ -1209,6 +1243,29 @@ bool copy_into(Storage& dst, const Storage& src, size_t outer, size_t dst_axis_l
                                               (long long)(count * inner), (long long)dst_axis_len,
                                               (long long)start, (long long)inner, n);
     return launch_ok("copy_into_window");
+}
+
+bool copy_into_rows(Storage& dst, const Storage& src, size_t rows, size_t per_row,
+                    size_t dst_axis_len, size_t count, const size_t* offsets, size_t inner) {
+    if (!enabled() || src.size() == 0) return false;
+    if (rows == 0 || rows > (size_t)kMaxOffsetRows) return false;
+    if (!dst.resident_on_device()) return false;
+
+    // Narrowed here rather than in the kernel: an offset that does not fit an
+    // int is an offset into a tensor larger than this ever builds, and it is
+    // better to decline than to wrap.
+    RowOffsets plan{};
+    for (size_t r = 0; r < rows; ++r) {
+        if (offsets[r] + count > dst_axis_len) return false;
+        if (offsets[r] > (size_t)kMaxInt) return false;
+        plan.start[r] = (int)offsets[r];
+    }
+
+    const long long n = (long long)(rows * per_row * count * inner);
+    copy_into_rows_window<<<grid_for(n), kBlock>>>(dst.device_mut(), src.device(), plan,
+                                                   (long long)per_row, (long long)(count * inner),
+                                                   (long long)dst_axis_len, (long long)inner, n);
+    return launch_ok("copy_into_rows_window");
 }
 
 bool scale_in_place(Storage& x, float factor) {

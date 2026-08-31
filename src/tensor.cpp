@@ -515,6 +515,75 @@ void Tensor::copy_into(const Tensor& src, size_t axis, size_t start) {
     }
 }
 
+void Tensor::copy_into_rows(const Tensor& src, size_t axis, const std::vector<size_t>& offsets) {
+    check_axis(axis, ndim(), "copy_into_rows", shape_str());
+    if (axis == 0) {
+        throw std::invalid_argument(
+            "copy_into_rows writes along an axis after the one the offsets index, so the axis "
+            "cannot be 0.");
+    }
+    if (src.ndim() != ndim()) {
+        throw std::invalid_argument("copy_into_rows needs the same number of axes: " + shape_str() +
+                                    " against " + src.shape_str() + ".");
+    }
+    for (size_t d = 0; d < ndim(); ++d) {
+        if (d != axis && src.shape()[d] != shape()[d]) {
+            throw std::invalid_argument("copy_into_rows: the two may only differ along axis " +
+                                        std::to_string(axis) + "; " + shape_str() + " against " +
+                                        src.shape_str() + ".");
+        }
+    }
+    const size_t rows = shape()[0];
+    // Checked for its own sake and for the division below, which the static
+    // analyser is right to refuse to take on trust: a tensor with a zero-length
+    // first axis has no rows to give offsets to.
+    if (rows == 0) {
+        throw std::invalid_argument("copy_into_rows needs at least one row, and " + shape_str() +
+                                    " has none.");
+    }
+    if (offsets.size() != rows) {
+        throw std::invalid_argument("copy_into_rows was given " + std::to_string(offsets.size()) +
+                                    " offsets for " + std::to_string(rows) + " rows.");
+    }
+    const size_t count = src.shape()[axis];
+    if (count == 0) throw std::invalid_argument("copy_into_rows needs at least one element.");
+    for (size_t r = 0; r < rows; ++r) {
+        if (offsets[r] + count > shape()[axis]) {
+            throw std::out_of_range("copy_into_rows: row " + std::to_string(r) + " writes [" +
+                                    std::to_string(offsets[r]) + ", " +
+                                    std::to_string(offsets[r] + count) + ") off axis " +
+                                    std::to_string(axis) + " of a tensor " + shape_str() + ".");
+        }
+    }
+    if (requires_grad() || src.requires_grad()) {
+        throw std::invalid_argument(
+            "copy_into_rows writes in place and cannot run on a tensor that requires grad.");
+    }
+
+    const AxisView v = axis_view(shape(), axis);
+    // Everything between the row axis and the written axis. For a key/value
+    // cache of (batch, heads, positions, head_dim) written along positions, this
+    // is the heads: every head of a row shares that row's offset.
+    const size_t per_row = v.outer / rows;
+
+#ifdef ENGINE_CUDA
+    if (cuda::ops::copy_into_rows(storage(), src.storage(), rows, per_row, v.axis_len, count,
+                                  offsets.data(), v.inner)) {
+        return;
+    }
+#endif
+
+    float* dst = data();
+    const float* values = src.data();
+    for (size_t r = 0; r < rows; ++r) {
+        for (size_t o = 0; o < per_row; ++o) {
+            const size_t block = r * per_row + o;
+            std::copy_n(values + block * count * v.inner, count * v.inner,
+                        dst + (block * v.axis_len + offsets[r]) * v.inner);
+        }
+    }
+}
+
 Tensor Tensor::concat(const std::vector<Tensor>& parts, size_t axis) {
     if (parts.empty()) throw std::invalid_argument("concat needs at least one tensor.");
     const std::vector<size_t>& first = parts[0].shape();

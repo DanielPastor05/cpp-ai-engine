@@ -205,6 +205,22 @@ public:
     // where a cache belongs and inference is where this works.
     void copy_into(const Tensor& src, size_t axis, size_t start);
 
+    // copy_into with a start per row of the first axis, rather than one shared
+    // by all of them.
+    //
+    // This is the difference between a key/value cache that a batch of one can
+    // use and one a *server* can use. A cache is indexed by position, and with a
+    // single write offset every row of the batch has to be at the same position
+    // -- which continuous batching is the practice of preventing, since requests
+    // arrive when they arrive. Measured on one such server: about 2% of steps
+    // had every row aligned. Per-row starts are what make the other 98% cachable,
+    // and they are the primitive underneath a block table.
+    //
+    // `offsets` has one entry per index of axis 0, and `axis` must be after it.
+    // Same restrictions as copy_into otherwise: shapes match off the axis, the
+    // write must fit, and neither tensor may require grad.
+    void copy_into_rows(const Tensor& src, size_t axis, const std::vector<size_t>& offsets);
+
     // Gathers the given elements of the first axis into a mini-batch: rows from
     // an (M, N), whole images from an (N, C, H, W). This is the operation that
     // makes mini-batch training possible. Indices may repeat: their gradients
