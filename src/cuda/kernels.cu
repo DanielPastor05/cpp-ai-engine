@@ -671,6 +671,21 @@ struct RowOffsets {
 // The tensor is read as (rows, per_row, axis_len, inner): `rows` is the axis
 // whose offsets differ, `per_row` is everything between it and the axis being
 // written -- heads, for a key/value cache -- and `inner` is everything after.
+// The read counterpart of copy_into_rows_window: one thread per element of the
+// output, each finding which source row it came from.
+//
+// Reused for the indices: a gather needs the same at-most-a-few-hundred integers
+// a scatter does, and the kernel argument carries them for the same reason.
+__global__ void gather_rows_kernel(float* __restrict__ out, const float* __restrict__ src,
+                                   RowOffsets from, long long row_size, long long n) {
+    const long long stride = (long long)blockDim.x * gridDim.x;
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
+        const long long row = i / row_size;
+        const long long col = i - row * row_size;
+        out[i] = src[(long long)from.start[row] * row_size + col];
+    }
+}
+
 __global__ void copy_into_rows_window(float* __restrict__ dst, const float* __restrict__ src,
                                       RowOffsets offsets, long long per_row, long long count_inner,
                                       long long dst_axis_len, long long inner, long long n) {
@@ -1243,6 +1258,36 @@ bool copy_into(Storage& dst, const Storage& src, size_t outer, size_t dst_axis_l
                                               (long long)(count * inner), (long long)dst_axis_len,
                                               (long long)start, (long long)inner, n);
     return launch_ok("copy_into_window");
+}
+
+bool gather_rows(Storage& out, const Storage& src, const size_t* indices, size_t count,
+                 size_t row_size) {
+    if (!enabled() || count == 0 || row_size == 0) return false;
+    if (count > (size_t)kMaxOffsetRows) return false;
+    // Residency decides. If the source is on the host, uploading it to gather a
+    // subset would cost more than the gather saves -- and the whole reason this
+    // exists is that the source is a cache which lives on the card.
+    if (!src.resident_on_device()) return false;
+
+    const size_t rows = (row_size == 0) ? 0 : src.size() / row_size;
+    RowOffsets plan{};
+    for (size_t i = 0; i < count; ++i) {
+        if (indices[i] >= rows) return false;
+        if (indices[i] > (size_t)kMaxInt) return false;
+        plan.start[i] = (int)indices[i];
+    }
+
+    const long long n = (long long)(count * row_size);
+    gather_rows_kernel<<<grid_for(n), kBlock>>>(out.device_write(), src.device(), plan,
+                                                (long long)row_size, n);
+    if (!launch_ok("gather_rows_kernel")) {
+        // The output was marked valid on the device by device_write() and the
+        // kernel never ran, so the host copy below would read whatever was in
+        // that allocation. Undo it, or the CPU fallback silently returns rubbish.
+        out.revert_device_write();
+        return false;
+    }
+    return true;
 }
 
 bool copy_into_rows(Storage& dst, const Storage& src, size_t rows, size_t per_row,

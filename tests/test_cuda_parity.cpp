@@ -1200,6 +1200,46 @@ void run_cuda_parity_tests() {
         testing::check(intact, "and no other position moved");
     }
 
+    // --- select_rows stays on the device ---
+    //
+    // The read counterpart of copy_into_rows, and it exists for the same caller:
+    // a cache indexed by slot, read as whatever subset of slots the batch holds
+    // this step. Through the host that is the whole cache across PCIe twice a
+    // step to read a part of it.
+    {
+        cuda::set_enabled(true);
+
+        Tensor seed = Tensor::randn({40, 16});
+        Tensor eye = Tensor::randn({16, 16});
+        Tensor cache = seed.matmul(eye).reshape({8, 80});
+        testing::check(cache.storage().resident_on_device(),
+                       "the tensor to gather from starts on the device");
+        const std::vector<float> before = cache.to_vector();
+
+        // Out of order, and with a repeat: a batch does not hold its slots in
+        // slot order, and nothing says two rows cannot want the same one.
+        const std::vector<size_t> want = {5, 0, 5, 3};
+
+        cuda::reset_transfer_stats();
+        Tensor picked = cache.select_rows(want);
+        const cuda::TransferStats after = cuda::transfer_stats();
+        testing::check(after.to_host_count == 0,
+                       "gathering rows does not pull the source down to host");
+        testing::check(picked.storage().resident_on_device(),
+                       "and the gathered rows are on the device");
+        testing::check(picked.shape() == std::vector<size_t>({4, 80}),
+                       "the gather has one row per index");
+
+        const std::vector<float> got = picked.to_vector();
+        bool same = true;
+        for (size_t i = 0; i < want.size(); ++i) {
+            for (size_t k = 0; k < 80; ++k) {
+                if (got[i * 80 + k] != before[want[i] * 80 + k]) same = false;
+            }
+        }
+        testing::check(same, "every gathered row is the row that was asked for");
+    }
+
     // --- backward residency ---
     //
     // The other half of the residency model, and the half that was missing: the

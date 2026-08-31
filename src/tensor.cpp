@@ -699,8 +699,25 @@ Tensor Tensor::select_rows(const std::vector<size_t>& indices) const {
 
     bool req_g = track(requires_grad());
     Tensor res(out_shape, 0.0f, req_g);
-    for (size_t i = 0; i < indices.size(); ++i) {
-        std::copy_n(data() + indices[i] * row_size, row_size, res.data() + i * row_size);
+
+#ifdef ENGINE_CUDA
+    // Admitted on residency, like the other two. The caller this was added for
+    // is a key/value cache that lives on the card and is indexed by slot: the
+    // batch being stepped is some subset of those slots in some order, so
+    // reading it is a gather, and doing it through the host would move the whole
+    // cache across PCIe twice a step to read a part of it.
+    //
+    // The gradient path stays on the host. A gather inside a live graph is a
+    // training operation and training does not have this problem.
+    const bool on_device =
+        !req_g &&
+        cuda::ops::gather_rows(res.storage(), storage(), indices.data(), indices.size(), row_size);
+    if (!on_device)
+#endif
+    {
+        for (size_t i = 0; i < indices.size(); ++i) {
+            std::copy_n(data() + indices[i] * row_size, row_size, res.data() + i * row_size);
+        }
     }
 
     if (req_g) {
