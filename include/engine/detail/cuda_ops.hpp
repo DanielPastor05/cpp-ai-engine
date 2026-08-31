@@ -167,6 +167,20 @@ bool copy_into(Storage& dst, const Storage& src, size_t outer, size_t dst_axis_l
 bool copy_into_rows(Storage& dst, const Storage& src, size_t rows, size_t per_row,
                     size_t dst_axis_len, size_t count, const size_t* offsets, size_t inner);
 
+// select_rows on the device: gathers whole rows of the first axis into a new
+// tensor, in the order given.
+//
+// The read counterpart of copy_into_rows, and it exists for the same caller. A
+// key/value cache lives on the card and is indexed by slot; the batch being
+// stepped is some subset of those slots in some order, so getting from one to
+// the other is a gather. Doing it through the host would move the whole cache
+// across PCIe twice per step to read a part of it.
+//
+// The indices travel as a kernel argument for the same reasons as the offsets
+// do; above the cap the call declines and the caller falls back to host.
+bool gather_rows(Storage& out, const Storage& src, const size_t* indices, size_t count,
+                 size_t row_size);
+
 // One optimiser step, in place on the parameter.
 //
 // These two are the largest transfer saving in the engine and the least
