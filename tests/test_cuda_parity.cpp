@@ -1297,6 +1297,81 @@ void run_cuda_parity_tests() {
                        "and the host slice is still right");
     }
 
+    // --- scatter_rows stays on the device ---
+    //
+    // The write counterpart of select_rows. A batch gathered out of a slot pool,
+    // stepped, and put back: a different slot each, at a different position
+    // each. Neither existing call does both, and without it the write-back is
+    // one launch per row per block.
+    {
+        cuda::set_enabled(true);
+
+        // (6, 2, 20, 3): slots, heads, positions, head_dim.
+        Tensor seed = Tensor::randn({6 * 2 * 20, 3});
+        Tensor eye = Tensor::randn({3, 3});
+        Tensor pool = seed.matmul(eye).reshape({6, 2, 20, 3});
+        testing::check(pool.storage().resident_on_device(),
+                       "the pool to scatter into starts on the device");
+        const std::vector<float> before = pool.to_vector();
+
+        // Three rows of one new position each, going to three scattered slots
+        // at three different offsets -- out of slot order, as a batch is.
+        Tensor fresh = Tensor::randn({3, 2, 1, 3});
+        const std::vector<float> values = fresh.to_vector();
+        const std::vector<size_t> into = {4, 0, 3};
+        const std::vector<size_t> at = {11, 2, 19};
+
+        cuda::reset_transfer_stats();
+        pool.scatter_rows(fresh, 2, into, at);
+        const cuda::TransferStats after = cuda::transfer_stats();
+        testing::check(after.to_host_count == 0,
+                       "scattering does not pull the destination down to host");
+        testing::check(pool.storage().resident_on_device(),
+                       "and the pool is still on the device afterwards");
+
+        const std::vector<float> got = pool.to_vector();
+        bool written = true, intact = true;
+        for (size_t s = 0; s < 6; ++s) {
+            for (size_t h = 0; h < 2; ++h) {
+                for (size_t p = 0; p < 20; ++p) {
+                    for (size_t d = 0; d < 3; ++d) {
+                        const size_t k = ((s * 2 + h) * 20 + p) * 3 + d;
+                        // Which source row, if any, owns this position?
+                        size_t from = into.size();
+                        for (size_t r = 0; r < into.size(); ++r) {
+                            if (into[r] == s && at[r] == p) from = r;
+                        }
+                        if (from < into.size()) {
+                            if (got[k] != values[(from * 2 + h) * 3 + d]) written = false;
+                        } else if (got[k] != before[k]) {
+                            intact = false;
+                        }
+                    }
+                }
+            }
+        }
+        testing::check(written, "every scattered row landed in its slot at its own offset");
+        testing::check(intact, "and no other position moved");
+
+        // Two rows for one slot would race on the device; refused on both paths
+        // so that the two agree about what is a bug.
+        bool refused = false;
+        try {
+            pool.scatter_rows(fresh, 2, {1, 1, 5}, {0, 4, 8});
+        } catch (const std::invalid_argument&) {
+            refused = true;
+        }
+        testing::check(refused, "two rows writing the same slot is refused, not ordered");
+
+        bool off_end = false;
+        try {
+            pool.scatter_rows(fresh, 2, {0, 1, 2}, {0, 4, 20});
+        } catch (const std::out_of_range&) {
+            off_end = true;
+        }
+        testing::check(off_end, "and an offset that runs off the axis is refused");
+    }
+
     // --- backward residency ---
     //
     // The other half of the residency model, and the half that was missing: the

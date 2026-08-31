@@ -187,6 +187,25 @@ bool copy_into(Storage& dst, const Storage& src, size_t outer, size_t dst_axis_l
 bool copy_into_rows(Storage& dst, const Storage& src, size_t rows, size_t per_row,
                     size_t dst_axis_len, size_t count, const size_t* offsets, size_t inner);
 
+// copy_into_rows with an index list: row i of `src` goes into row `into[i]` of
+// `dst`, at `offsets[i]` along the axis. The write counterpart of gather_rows,
+// and the call a slot-indexed cache ends a step with.
+//
+// Neither existing operation does it. select_rows takes indices and no offset;
+// copy_into_rows takes an offset per row and no indices. Putting a compact batch
+// back into the slots it was gathered from therefore took one call per row per
+// block -- 192 launches at a batch of sixteen, measured at 2.2 ms of launch
+// overhead against a cached step of three to four milliseconds.
+//
+// Two rows naming the same destination are refused rather than ordered: they
+// would race, and which won would depend on which block finished last.
+//
+// The cap is 256 rows rather than 512, because two lists travel where one did
+// and the limit is the 4 KB CUDA allows for kernel arguments.
+bool scatter_rows(Storage& dst, const Storage& src, size_t rows, size_t per_row,
+                  size_t dst_axis_len, size_t count, const size_t* into, const size_t* offsets,
+                  size_t inner);
+
 // select_rows on the device: gathers whole rows of the first axis into a new
 // tensor, in the order given.
 //

@@ -221,6 +221,27 @@ public:
     // write must fit, and neither tensor may require grad.
     void copy_into_rows(const Tensor& src, size_t axis, const std::vector<size_t>& offsets);
 
+    // copy_into_rows with an index list: row i of `src` is written into row
+    // `into[i]` of this tensor, at `offsets[i]` along `axis`.
+    //
+    // The write counterpart of select_rows, and the call that finishes a step
+    // over a slot-indexed cache. The batch was gathered out of the slots it
+    // belongs to, stepped, and now each row's new key and value have to go back
+    // where they came from -- a different slot each, at a different position
+    // each. select_rows has the indices and no offset; copy_into_rows has the
+    // offset and no indices; this has both, and without it the write-back is one
+    // call per row per block.
+    //
+    // Two source rows naming the same destination are refused rather than
+    // ordered: on the device they would race, and a caller that means to write
+    // twice means two calls.
+    //
+    // Same restrictions as copy_into_rows otherwise: `axis` must be after 0, the
+    // shapes match off axis 0 and `axis`, the writes must fit, and neither
+    // tensor may require grad.
+    void scatter_rows(const Tensor& src, size_t axis, const std::vector<size_t>& into,
+                      const std::vector<size_t>& offsets);
+
     // Gathers the given elements of the first axis into a mini-batch: rows from
     // an (M, N), whole images from an (N, C, H, W). This is the operation that
     // makes mini-batch training possible. Indices may repeat: their gradients

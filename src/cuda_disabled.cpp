@@ -179,6 +179,10 @@ bool copy_into_rows(Storage&, const Storage&, size_t, size_t, size_t, size_t, co
                     size_t) {
     return false;
 }
+bool scatter_rows(Storage&, const Storage&, size_t, size_t, size_t, size_t, const size_t*,
+                  const size_t*, size_t) {
+    return false;
+}
 bool gather_rows(Storage&, const Storage&, const size_t*, size_t, size_t) {
     return false;
 }

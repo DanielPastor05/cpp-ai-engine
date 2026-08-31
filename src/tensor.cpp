@@ -600,6 +600,88 @@ void Tensor::copy_into_rows(const Tensor& src, size_t axis, const std::vector<si
     }
 }
 
+void Tensor::scatter_rows(const Tensor& src, size_t axis, const std::vector<size_t>& into,
+                          const std::vector<size_t>& offsets) {
+    check_axis(axis, ndim(), "scatter_rows", shape_str());
+    if (axis == 0) {
+        throw std::invalid_argument(
+            "scatter_rows writes along an axis after the one the indices select, so the axis "
+            "cannot be 0.");
+    }
+    if (src.ndim() != ndim()) {
+        throw std::invalid_argument("scatter_rows needs the same number of axes: " + shape_str() +
+                                    " against " + src.shape_str() + ".");
+    }
+    for (size_t d = 1; d < ndim(); ++d) {
+        if (d != axis && src.shape()[d] != shape()[d]) {
+            throw std::invalid_argument("scatter_rows: the two may only differ along axis 0 and "
+                                        "axis " +
+                                        std::to_string(axis) + "; " + shape_str() + " against " +
+                                        src.shape_str() + ".");
+        }
+    }
+    const size_t rows = src.shape()[0];
+    if (rows == 0) {
+        throw std::invalid_argument("scatter_rows needs at least one row to write.");
+    }
+    if (into.size() != rows || offsets.size() != rows) {
+        throw std::invalid_argument("scatter_rows was given " + std::to_string(into.size()) +
+                                    " indices and " + std::to_string(offsets.size()) +
+                                    " offsets for " + std::to_string(rows) + " rows of source.");
+    }
+    const size_t count = src.shape()[axis];
+    if (count == 0) throw std::invalid_argument("scatter_rows needs at least one element.");
+    for (size_t r = 0; r < rows; ++r) {
+        if (into[r] >= shape()[0]) {
+            throw std::out_of_range("scatter_rows: row " + std::to_string(r) + " names slot " +
+                                    std::to_string(into[r]) + " of a tensor " + shape_str() + ".");
+        }
+        if (offsets[r] + count > shape()[axis]) {
+            throw std::out_of_range("scatter_rows: row " + std::to_string(r) + " writes [" +
+                                    std::to_string(offsets[r]) + ", " +
+                                    std::to_string(offsets[r] + count) + ") off axis " +
+                                    std::to_string(axis) + " of a tensor " + shape_str() + ".");
+        }
+    }
+    // Two source rows naming the same destination would race on the device and
+    // would be order-dependent on the host. Refused in both, so the two paths
+    // agree about what is a program and what is a bug.
+    for (size_t a = 0; a < rows; ++a) {
+        for (size_t b = a + 1; b < rows; ++b) {
+            if (into[a] == into[b]) {
+                throw std::invalid_argument("scatter_rows: rows " + std::to_string(a) + " and " +
+                                            std::to_string(b) + " both write slot " +
+                                            std::to_string(into[a]) + ".");
+            }
+        }
+    }
+    if (requires_grad() || src.requires_grad()) {
+        throw std::invalid_argument(
+            "scatter_rows writes in place and cannot run on a tensor that requires grad.");
+    }
+
+    const AxisView v = axis_view(shape(), axis);
+    const size_t per_row = v.outer / shape()[0];
+
+#ifdef ENGINE_CUDA
+    if (cuda::ops::scatter_rows(storage(), src.storage(), rows, per_row, v.axis_len, count,
+                                into.data(), offsets.data(), v.inner)) {
+        return;
+    }
+#endif
+
+    float* dst = data();
+    const float* values = src.data();
+    for (size_t r = 0; r < rows; ++r) {
+        for (size_t o = 0; o < per_row; ++o) {
+            const size_t from = r * per_row + o;
+            const size_t to = into[r] * per_row + o;
+            std::copy_n(values + from * count * v.inner, count * v.inner,
+                        dst + (to * v.axis_len + offsets[r]) * v.inner);
+        }
+    }
+}
+
 Tensor Tensor::concat(const std::vector<Tensor>& parts, size_t axis) {
     if (parts.empty()) throw std::invalid_argument("concat needs at least one tensor.");
     const std::vector<size_t>& first = parts[0].shape();
