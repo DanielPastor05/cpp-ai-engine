@@ -248,6 +248,24 @@ public:
     // accumulate into the source element.
     [[nodiscard]] Tensor select_rows(const std::vector<size_t>& indices) const;
 
+    // select_rows and slice in one pass: the named rows of the first axis, but
+    // only `count` elements from `start` along `axis`.
+    //
+    // Composing the two moves the intersection twice over, and neither order is
+    // close to right. A key/value cache pool of (slots, heads, context,
+    // head_dim) served to a batch wants `active` rows at `width` positions:
+    // gathering first moves `active * context`, narrowing first moves
+    // `slots * width`, and what is wanted is `active * width`. Measured on a
+    // server holding sixty-four slots of a thousand positions and stepping
+    // sixteen rows at forty-eight, the better composition still moved four times
+    // too much and the server was slower with its cache than without one.
+    //
+    // `axis` must be after 0. Inside a live graph this falls back to
+    // select_rows().slice(), because a gather with a window is a serving
+    // operation and training gathers whole rows.
+    [[nodiscard]] Tensor select_rows_window(const std::vector<size_t>& indices, size_t axis,
+                                            size_t start, size_t count) const;
+
     // A copy detached from the graph (shares shape and values, not history)
     [[nodiscard]] Tensor detach() const;
 

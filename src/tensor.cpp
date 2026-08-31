@@ -770,6 +770,66 @@ Tensor Tensor::stack(const std::vector<Tensor>& parts, size_t axis) {
 }
 
 // Row selection (gathering a mini-batch)
+Tensor Tensor::select_rows_window(const std::vector<size_t>& indices, size_t axis, size_t start,
+                                  size_t count) const {
+    check_axis(axis, ndim(), "select_rows_window", shape_str());
+    if (axis == 0) {
+        throw std::invalid_argument(
+            "select_rows_window windows an axis after the one the indices select, so the axis "
+            "cannot be 0. For whole rows, use select_rows.");
+    }
+    if (indices.empty()) {
+        throw std::invalid_argument("select_rows_window received an empty index list.");
+    }
+    if (count == 0) {
+        throw std::invalid_argument("select_rows_window needs at least one element.");
+    }
+    if (start + count > shape()[axis]) {
+        throw std::out_of_range("select_rows_window reads [" + std::to_string(start) + ", " +
+                                std::to_string(start + count) + ") off axis " +
+                                std::to_string(axis) + " of a tensor " + shape_str() + ".");
+    }
+    for (size_t index : indices) {
+        if (index >= shape()[0]) {
+            throw std::out_of_range("select_rows_window: index " + std::to_string(index) +
+                                    " is outside a tensor " + shape_str() + ".");
+        }
+    }
+
+    std::vector<size_t> out_shape = shape();
+    out_shape[0] = indices.size();
+    out_shape[axis] = count;
+
+    // The gradient path stays on the host and out of this entirely: a gather
+    // with a window is a serving operation, and training gathers whole rows.
+    if (track(requires_grad())) {
+        return select_rows(indices).slice(axis, start, count);
+    }
+
+    Tensor res(out_shape, 0.0f, false);
+    const AxisView v = axis_view(shape(), axis);
+    const size_t per_row = v.outer / shape()[0];
+
+#ifdef ENGINE_CUDA
+    if (cuda::ops::gather_rows_win(res.storage(), storage(), indices.size(), per_row, v.axis_len,
+                                   count, start, indices.data(), v.inner, shape()[0])) {
+        return res;
+    }
+#endif
+
+    float* out = res.data();
+    const float* src = data();
+    for (size_t r = 0; r < indices.size(); ++r) {
+        for (size_t o = 0; o < per_row; ++o) {
+            const size_t from = indices[r] * per_row + o;
+            const size_t to = r * per_row + o;
+            std::copy_n(src + (from * v.axis_len + start) * v.inner, count * v.inner,
+                        out + to * count * v.inner);
+        }
+    }
+    return res;
+}
+
 Tensor Tensor::select_rows(const std::vector<size_t>& indices) const {
     if (ndim() < 2) {
         throw std::invalid_argument("select_rows requires at least 2 dimensions; this tensor is " +

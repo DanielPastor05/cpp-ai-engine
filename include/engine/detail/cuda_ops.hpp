@@ -217,6 +217,24 @@ bool scatter_rows(Storage& dst, const Storage& src, size_t rows, size_t per_row,
 //
 // The indices travel as a kernel argument for the same reasons as the offsets
 // do; above the cap the call declines and the caller falls back to host.
+// gather_rows and slice fused: the named rows of the first axis, but only
+// `count` elements from `start` along a later axis.
+//
+// Composing the two moves the intersection twice over, and neither order is
+// close. A cache pool of (slots, heads, context, head_dim) served to a batch
+// wants `active` rows at `width` positions; gathering first moves
+// `active * context`, narrowing first moves `slots * width`, and the answer is
+// `active * width`. Measured on a server holding sixty-four slots of a thousand
+// positions and stepping sixteen rows at forty-eight: the better composition
+// still moves four times too much, the natural one twenty-one times too much,
+// and the server ran slower with its key/value cache than without it.
+//
+// `src_rows` is the first axis's length, for checking the indices; `per_row` is
+// everything between it and the windowed axis.
+bool gather_rows_win(Storage& out, const Storage& src, size_t rows, size_t per_row,
+                     size_t src_axis_len, size_t count, size_t start, const size_t* indices,
+                     size_t inner, size_t src_rows);
+
 bool gather_rows(Storage& out, const Storage& src, const size_t* indices, size_t count,
                  size_t row_size);
 
