@@ -359,10 +359,26 @@ Tensor MultiHeadAttention::forward(const Tensor& input, const Tensor* mask) {
 
 KVCache::KVCache(size_t batch, size_t heads, size_t capacity, size_t head_dim)
     : keys({batch, heads, capacity, head_dim}, 0.0f, false),
-      values({batch, heads, capacity, head_dim}, 0.0f, false) {
+      values({batch, heads, capacity, head_dim}, 0.0f, false),
+      filled(batch, 0) {
     if (batch == 0 || heads == 0 || capacity == 0 || head_dim == 0) {
         throw std::invalid_argument("KVCache needs every dimension to be at least one.");
     }
+}
+
+void KVCache::reset() {
+    std::fill(filled.begin(), filled.end(), size_t{0});
+}
+
+void KVCache::reset(size_t row) {
+    if (row >= filled.size()) {
+        throw std::out_of_range("KVCache::reset: row " + std::to_string(row) + " of " +
+                                std::to_string(filled.size()) + ".");
+    }
+    // The row's contents are left where they are. Nothing reads past a row's
+    // fill -- the mask sees to that -- so zeroing 100 KB of stale keys would be
+    // work whose only effect is to make a debugger's output tidier.
+    filled[row] = 0;
 }
 
 Tensor MultiHeadAttention::forward(const Tensor& input, KVCache& cache, const Tensor& mask) {
@@ -395,20 +411,43 @@ Tensor MultiHeadAttention::forward(const Tensor& input, KVCache& cache, const Te
                                     std::to_string(num_heads_) + ", capacity, " +
                                     std::to_string(head_dim_) + ").");
     }
-    if (cache.filled + seq > capacity) {
-        throw std::out_of_range("the cache holds " + std::to_string(capacity) +
-                                " positions and already has " + std::to_string(cache.filled) +
-                                "; " + std::to_string(seq) + " more will not fit.");
+    if (cache.filled.size() != batch) {
+        throw std::invalid_argument("the cache tracks " + std::to_string(cache.filled.size()) +
+                                    " rows for a batch of " + std::to_string(batch) + ".");
     }
-    // Checked rather than broadcast. A mask of the wrong width would let the
-    // unwritten tail of the cache into the softmax as a run of zero keys, which
-    // is not an error anywhere -- it is a plausible answer computed from
-    // positions that do not exist yet.
-    if (mask.shape() != std::vector<size_t>({seq, capacity})) {
-        throw std::invalid_argument("a cached forward over " + std::to_string(seq) +
-                                    " positions needs a (" + std::to_string(seq) + ", " +
-                                    std::to_string(capacity) + ") mask, not " + mask.shape_str() +
-                                    ".");
+    for (size_t r = 0; r < batch; ++r) {
+        if (cache.filled[r] + seq > capacity) {
+            throw std::out_of_range("the cache holds " + std::to_string(capacity) +
+                                    " positions and row " + std::to_string(r) + " already has " +
+                                    std::to_string(cache.filled[r]) + "; " + std::to_string(seq) +
+                                    " more will not fit.");
+        }
+    }
+
+    // Checked rather than broadcast, and two shapes are accepted.
+    //
+    // (seq, capacity) is one mask for the whole batch, which is right when every
+    // row is at the same position -- a batch of one, or a prefill.
+    //
+    // (batch, heads, seq, capacity) is one per row, which is what a server needs
+    // and is the scores' own shape, so it costs no broadcast. It has to be
+    // materialised per head even though it does not vary by head, because this
+    // engine broadcasts by suffix after dropping leading ones and so cannot
+    // expand a middle dimension: (batch, 1, seq, capacity) would be rejected
+    // rather than repeated.
+    //
+    // Nothing about a mask of the wrong width is an error further down. The
+    // unwritten tail of the cache is zeros, exp(0) is 1, and the answer would be
+    // a plausible one computed partly from positions that do not exist yet.
+    const std::vector<size_t> shared = {seq, capacity};
+    const std::vector<size_t> per_row = {batch, num_heads_, seq, capacity};
+    if (mask.shape() != shared && mask.shape() != per_row) {
+        throw std::invalid_argument(
+            "a cached forward over " + std::to_string(seq) + " positions needs a (" +
+            std::to_string(seq) + ", " + std::to_string(capacity) + ") mask shared by the batch, " +
+            "or a (" + std::to_string(batch) + ", " + std::to_string(num_heads_) + ", " +
+            std::to_string(seq) + ", " + std::to_string(capacity) + ") one per row; got " +
+            mask.shape_str() + ".");
     }
 
     auto split_heads = [&](const Tensor& projected) {
@@ -417,10 +456,12 @@ Tensor MultiHeadAttention::forward(const Tensor& input, KVCache& cache, const Te
 
     Tensor q = split_heads(w_query_(input));
     // Appended before the attention reads them, so the new positions attend to
-    // themselves the way the uncached path lets them.
-    cache.keys.copy_into(split_heads(w_key_(input)), 2, cache.filled);
-    cache.values.copy_into(split_heads(w_value_(input)), 2, cache.filled);
-    cache.filled += seq;
+    // themselves the way the uncached path lets them. Each row writes at its own
+    // fill, which is the whole difference between a cache one sequence can use
+    // and a cache a batch of them can.
+    cache.keys.copy_into_rows(split_heads(w_key_(input)), 2, cache.filled);
+    cache.values.copy_into_rows(split_heads(w_value_(input)), 2, cache.filled);
+    for (size_t& at : cache.filled) at += seq;
 
     Tensor attended = scaled_dot_product_attention(q, cache.keys, cache.values, &mask,
                                                    keep_attention_ ? &last_attention_ : nullptr);
